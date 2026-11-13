@@ -11,8 +11,7 @@
 - **Each planned run happens once per trigger**, on exactly one node. Crashed or hanging nodes are detected, and
   another node takes over safely.
 - **Every data item is traceable**: which steps it passed, where it was routed back, who approved what, and in which
-  package it left the system. A **journey diagram** shows the path of a single item, and a **live heat map** and
-  telemetry metrics show where the flow jams or fails.
+  package it left the system.
 - **Simple by default** (a handler class + one definition row), **powerful on demand** (parallel branches, approvals,
   collection windows, time slots, lanes), with a **type-safe** API.
 
@@ -25,8 +24,7 @@
 | 3 | [08 – Sample order flow](docs/design/08-sample-order-flow.md) | The whole idea in one story, incl. code |
 | 4 | [05 – Coordination flows](docs/design/05-coordination-flows.md) | How cluster coordination works (claiming, takeover, fencing, leader election) |
 | 5 | [07 – Sample application](docs/design/07-sample-app.md) | The minimal setup from a developer's point of view |
-| 6 | [09 – Monitoring](docs/design/09-monitoring-heatmap.md) | Heat map, live feed, jam detection, telemetry metrics and traces, journey diagram per item |
-| 7 | 01–04, 06 | Architecture, domain model, persistence, lifecycles, API in depth |
+| 6 | 01–04, 06 | Architecture, domain model, persistence, lifecycles, API in depth |
 
 ## Guarantees – Precisely
 
@@ -42,7 +40,7 @@
 
 | Step | Content |
 |------|---------|
-| **Core** | Leases, fencing, takeover, leader election (PostgreSQL + H2) · job definitions via SQL/REST · triggers (ASAP, cron + calendar, external, successor) · transitions and run joins · items with routing, back-routing, loop limit, defer and journey · decision requests with fallback · soft stop · red/green capabilities · business vs. technical failures · monitoring read model (heat map, live feed) · telemetry metrics and traces · MP Health, REST · Quarkus |
+| **Core** | Leases, fencing, takeover, leader election (PostgreSQL + H2) · job definitions via SQL/REST · triggers (ASAP, cron + calendar, external, successor) · transitions and run joins · items with routing, back-routing, loop limit, defer and journey · decision requests with fallback · soft stop · red/green capabilities · MP Health, MP Telemetry, REST · Quarkus |
 | **Showcase extensions** | Work packages, processing slots and limits · collection windows · approvals with quorum and responsible teams · item fork/join · lanes · parallel batches · optional acknowledgements |
 | **Later / out** | Further databases and coordination providers (e.g. Kubernetes Lease) · fine-grained checkpoints · UI · archiving · Helidon/Meecrowave (only if the spike is positive) · red/green activation details (mission Q-1) |
 

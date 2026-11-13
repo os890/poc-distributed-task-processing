@@ -573,12 +573,9 @@ Design consequences:
 Only MicroProfile/Jakarta APIs are used. There is no UI in the PoC.
 
 - **MP Health** – liveness/readiness, coordination status, DB reachability, definition validation result
-- **MP Telemetry** – traces (span per unit of work, linked across steps to the request that tracked the item) and
-  metrics: per-node real-time metrics (throughput, wait times, durations, business vs. technical failures, leases,
-  claims) and cluster-wide gauges (queue depths, oldest queued item, jam score, open decisions). See
-  [design 09](docs/design/09-monitoring-heatmap.md).
-- **Heat map and live feed** – a CQRS read model, updated by an elected projector every few seconds, shows per step
-  where items jam and where technical exceptions pile up. Clients read it on demand (REST) or as a live feed (SSE).
+- **MP Telemetry** – traces (span per run/package, correlated by flow instance/run id) and metrics (runs by status,
+  durations, claim lag, inbox depth per job, items routed/back-routed/escalated, pending/deferred packages,
+  open decision requests and their age, window state and duration, lease renewals/takeovers)
 - **MP OpenAPI** – documented REST API
 - **REST API** (Jakarta REST, secured via **MP JWT + `@RolesAllowed`**: `dtp-viewer`, `dtp-operator`, `dtp-business`,
   `dtp-admin`; security can be switched off for dev/tests):
@@ -588,8 +585,7 @@ Only MicroProfile/Jakarta APIs are used. There is no UI in the PoC.
   - runs: list/filter, inspect (incl. run info), trigger, **soft cancel**, retry, decide on abandoned runs (decision requests)
   - packages: list per run/slot/window, inspect contained items
   - **decision requests**: list open ones, inspect context, **decide** (pick an option + comment) – role `dtp-business`
-  - items: lookup by `ItemRef`/business key, **full journey** (as a table and as a **diagram** of only the steps
-    the item passed), re-route/release
+  - items: lookup by `ItemRef`/business key, **full journey**, re-route/park/release
   - nodes: cluster view, drain, activation switch (red/green)
 - Structured logging with MDC (`namespace`, `flowInstanceId`, `runId`, `packageId`, `nodeId`)
 
