@@ -1,0 +1,388 @@
+/*
+ * Copyright 2026 os890
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.os890.dtp.core;
+
+import java.net.InetAddress;
+import java.net.UnknownHostException;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Random;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.stream.Collectors;
+
+import javax.sql.DataSource;
+
+import org.os890.dtp.api.Items;
+import org.os890.dtp.api.JobEngine;
+import org.os890.dtp.api.ProcessStep;
+import org.os890.dtp.api.StopReason;
+import org.os890.dtp.core.engine.ClaimedRun;
+import org.os890.dtp.core.engine.EngineContext;
+import org.os890.dtp.core.engine.Housekeeping;
+import org.os890.dtp.core.engine.ItemRouting;
+import org.os890.dtp.core.engine.ItemsImpl;
+import org.os890.dtp.core.engine.JobCatalog;
+import org.os890.dtp.core.engine.JobEngineImpl;
+import org.os890.dtp.core.engine.JsonCodec;
+import org.os890.dtp.core.engine.LeaderElector;
+import org.os890.dtp.core.engine.RunClaimer;
+import org.os890.dtp.core.engine.RunContext;
+import org.os890.dtp.core.engine.RunExecutor;
+import org.os890.dtp.core.engine.RunPlanner;
+import org.os890.dtp.core.engine.StepInfo;
+import org.os890.dtp.core.jdbc.DbClock;
+import org.os890.dtp.core.jdbc.ItemStore;
+import org.os890.dtp.core.jdbc.JdbcTransactions;
+import org.os890.dtp.core.jdbc.JobStore;
+import org.os890.dtp.core.jdbc.LeaderStore;
+import org.os890.dtp.core.jdbc.LeaseStore;
+import org.os890.dtp.core.jdbc.NodeStore;
+import org.os890.dtp.core.jdbc.RunStore;
+import org.os890.dtp.core.jdbc.SchemaMigrator;
+import org.os890.dtp.core.jdbc.SqlDialect;
+import org.os890.dtp.core.query.DtpQueries;
+import org.os890.dtp.core.spi.StepRegistry;
+import org.os890.dtp.core.spi.Transactions;
+
+/**
+ * The dtp engine of one node. Every deployment that contains the library starts one engine and so joins the cluster;
+ * the database is the only coordination point (D1).
+ *
+ * <p>Loops of a node: heartbeat and lease renewal, leader election, housekeeping (leader only: planner, lease
+ * takeover, dead nodes) and the run claimer (adaptive polling with jitter, DD-11 and DD-14).
+ */
+public class DtpEngine {
+
+    private static final System.Logger LOG = System.getLogger(DtpEngine.class.getName());
+
+    private static final int MAX_IDLE_BACKOFF = 2;
+
+    private final DataSource dataSource;
+    private final Transactions tx;
+    private final StepRegistry registry;
+    private final DtpConfig config;
+    private final UUID nodeId = UUID.randomUUID();
+    private final Random random;
+    private final ReentrantLock claimLock = new ReentrantLock();
+
+    private EngineContext ctx;
+    private LeaderElector leader;
+    private Housekeeping housekeeping;
+    private RunClaimer claimer;
+    private RunExecutor executor;
+    private JobEngine jobEngine;
+    private Items items;
+    private DtpQueries queries;
+    private ScheduledExecutorService scheduler;
+    private int idleRounds;
+
+    private volatile boolean running;
+    private volatile boolean draining;
+
+    private DtpEngine(Builder builder) {
+        this.dataSource = Objects.requireNonNull(builder.dataSource, "dataSource");
+        this.registry = Objects.requireNonNull(builder.registry, "steps");
+        this.config = builder.config != null ? builder.config : DtpConfig.builder().build();
+        this.tx = builder.transactions != null ? builder.transactions : new JdbcTransactions(dataSource);
+        long seed = config.randomSeed() != null ? config.randomSeed() ^ nodeId.getLeastSignificantBits()
+                                                 : new Random().nextLong();
+        this.random = new Random(seed);
+    }
+
+    /**
+     * A builder.
+     *
+     * @return a new builder
+     */
+    public static Builder builder() {
+        return new Builder();
+    }
+
+    /** Builder of {@link DtpEngine}. */
+    public static class Builder {
+
+        private DataSource dataSource;
+        private Transactions transactions;
+        private StepRegistry registry;
+        private DtpConfig config;
+
+        public Builder dataSource(DataSource value) {
+            dataSource = value;
+            return this;
+        }
+
+        public Builder transactions(Transactions value) {
+            transactions = value;
+            return this;
+        }
+
+        public Builder steps(StepRegistry value) {
+            registry = value;
+            return this;
+        }
+
+        public Builder config(DtpConfig value) {
+            config = value;
+            return this;
+        }
+
+        public DtpEngine build() {
+            return new DtpEngine(this);
+        }
+    }
+
+    /**
+     * Starts the node: migrates the schema (optional), validates the process steps, registers the node and starts
+     * the loops.
+     *
+     * @return this engine
+     */
+    public synchronized DtpEngine start() {
+        if (running) {
+            return this;
+        }
+        SqlDialect dialect = tx.withConnection(SqlDialect::detect);
+        if (config.migrateSchema()) {
+            ClassLoader loader = Thread.currentThread().getContextClassLoader();
+            SchemaMigrator.migrate(dataSource, dialect, loader != null ? loader : getClass().getClassLoader());
+        }
+        Map<Class<? extends ProcessStep>, StepInfo> steps = new LinkedHashMap<>();
+        registry.stepClasses().forEach(step -> steps.put(step, StepInfo.of(step)));
+        JobStore jobStore = new JobStore();
+        ctx = new EngineContext(config, nodeId, tx, dialect, new DbClock(dialect), jobStore, new LeaseStore(dialect),
+                new RunStore(dialect), new NodeStore(), new LeaderStore(dialect), new ItemStore(dialect),
+                new JobCatalog(tx, jobStore, config.namespace(), config.definitionRefresh().toNanos()),
+                new JsonCodec(), registry, Map.copyOf(steps));
+        RunPlanner planner = new RunPlanner(ctx);
+        ItemRouting routing = new ItemRouting(ctx);
+        Set<String> capabilities = steps.keySet().stream().map(Class::getName).collect(Collectors.toSet());
+        leader = new LeaderElector(ctx);
+        housekeeping = new Housekeeping(ctx, planner);
+        claimer = new RunClaimer(ctx, capabilities, random);
+        executor = new RunExecutor(ctx, planner, routing, this::claimSoon);
+        jobEngine = new JobEngineImpl(ctx, planner);
+        items = new ItemsImpl(ctx, routing, null);
+        queries = new DtpQueries(tx, config.namespace());
+
+        tx.required(() -> tx.withConnection(c -> {
+            ctx.nodes().register(c, nodeId, config.namespace(), config.nodeName(), hostName(),
+                    ctx.json().write(capabilities.stream().sorted().toList()), ctx.clock().now(c));
+            return null;
+        }));
+        leader.init();
+
+        scheduler = Executors.newScheduledThreadPool(2, Thread.ofPlatform().daemon()
+                .name("dtp-" + config.nodeName() + "-", 0).factory());
+        long heartbeat = config.heartbeatInterval().toMillis();
+        long leaderTick = config.leaderLeaseDuration().toMillis() / 3;
+        scheduler.scheduleWithFixedDelay(this::heartbeat, heartbeat, heartbeat, TimeUnit.MILLISECONDS);
+        scheduler.scheduleWithFixedDelay(leader::tick, jitter(leaderTick / 4), leaderTick, TimeUnit.MILLISECONDS);
+        scheduler.scheduleWithFixedDelay(this::housekeeping, jitter(config.housekeepingInterval().toMillis()),
+                config.housekeepingInterval().toMillis(), TimeUnit.MILLISECONDS);
+        running = true;
+        scheduler.schedule(this::claimLoop, jitter(config.pollInterval().toMillis()), TimeUnit.MILLISECONDS);
+        LOG.log(System.Logger.Level.INFO, "dtp node {0} ({1}) started in namespace {2} with {3} process steps",
+                config.nodeName(), nodeId, config.namespace(), steps.size());
+        return this;
+    }
+
+    /**
+     * Graceful shutdown (drain): no new runs, running runs are asked to stop softly and get time to finish, the
+     * leadership is handed over.
+     */
+    public synchronized void stop() {
+        if (!running) {
+            return;
+        }
+        draining = true;
+        executor.stopAll(StopReason.DRAIN, config.drainTimeout().toMillis());
+        running = false;
+        scheduler.shutdownNow();
+        leader.resign();
+        try {
+            tx.required(() -> tx.withConnection(c -> {
+                ctx.nodes().setState(c, nodeId, "LEFT");
+                return null;
+            }));
+        } catch (RuntimeException e) {
+            LOG.log(System.Logger.Level.WARNING, "deregistering the node failed", e);
+        }
+        LOG.log(System.Logger.Level.INFO, "dtp node {0} stopped", config.nodeName());
+    }
+
+    /**
+     * Test support: simulates a crashed or partitioned node. All loops stop immediately, nothing is released, leases
+     * and the leadership expire. Running handlers continue as zombies, their commits are fenced once their leases
+     * were taken over.
+     */
+    public synchronized void kill() {
+        running = false;
+        if (scheduler != null) {
+            scheduler.shutdownNow();
+        }
+        if (executor != null) {
+            executor.abandon();
+        }
+    }
+
+    /** Injectable entry point for external triggers. */
+    public JobEngine jobEngine() {
+        return requireStarted(jobEngine);
+    }
+
+    /** Tracks items outside of runs, joining the caller's transaction. */
+    public Items items() {
+        return requireStarted(items);
+    }
+
+    /** Read-only views. */
+    public DtpQueries queries() {
+        return requireStarted(queries);
+    }
+
+    /** The id of this node. */
+    public UUID nodeId() {
+        return nodeId;
+    }
+
+    /** The settings. */
+    public DtpConfig config() {
+        return config;
+    }
+
+    /** {@code true} while the node runs. */
+    public boolean isRunning() {
+        return running;
+    }
+
+    /** {@code true} while this node leads the housekeeping. */
+    public boolean isLeader() {
+        return running && leader.isLeader();
+    }
+
+    /** Number of runs executed by this node right now. */
+    public int activeRuns() {
+        return executor == null ? 0 : executor.active().size();
+    }
+
+    /**
+     * Cancels a run: a pending run is finished as CANCELLED, a running one is asked to stop softly.
+     *
+     * @param runId the run
+     * @return {@code true} if the run was pending or running
+     */
+    public boolean cancel(UUID runId) {
+        return requireStarted(ctx).tx().required(() -> tx.withConnection(c -> ctx.runs().cancel(c, runId,
+                ctx.clock().now(c))));
+    }
+
+    private void heartbeat() {
+        try {
+            tx.required(() -> tx.withConnection(c -> {
+                ctx.nodes().heartbeat(c, nodeId, draining ? "DRAINING" : "ACTIVE", ctx.clock().now(c));
+                return null;
+            }));
+            for (RunContext run : executor.active()) {
+                ClaimedRun claimed = run.claimed();
+                boolean renewed = tx.required(() -> tx.withConnection(c -> ctx.leases().renew(c, claimed.jobId(),
+                        claimed.runId(), claimed.token(), ctx.clock().now(c).plus(claimed.leaseDuration()))));
+                if (!renewed) {
+                    LOG.log(System.Logger.Level.WARNING, "run {0} lost its lease", claimed.runId());
+                    run.requestStop(StopReason.LEASE_LOST);
+                }
+            }
+            var ids = executor.active().stream().map(run -> run.claimed().runId()).toList();
+            if (!ids.isEmpty()) {
+                tx.withConnection(c -> ctx.runs().stopRequests(c, ids)).forEach(requested ->
+                        executor.active().stream()
+                                .filter(run -> run.claimed().runId().equals(requested.id()))
+                                .forEach(run -> run.requestStop(requested.stopReason())));
+            }
+        } catch (RuntimeException e) {
+            LOG.log(System.Logger.Level.WARNING, "heartbeat failed", e);
+        }
+    }
+
+    private void housekeeping() {
+        if (running && leader.isLeader()) {
+            housekeeping.tick();
+        }
+    }
+
+    private void claimLoop() {
+        if (!running || draining) {
+            return;
+        }
+        int claimed = claimOnce();
+        idleRounds = claimed > 0 ? 0 : Math.min(idleRounds + 1, MAX_IDLE_BACKOFF);
+        long delay = jitter(config.pollInterval().toMillis() << idleRounds);
+        if (running && !scheduler.isShutdown()) {
+            scheduler.schedule(this::claimLoop, delay, TimeUnit.MILLISECONDS);
+        }
+    }
+
+    private void claimSoon() {
+        if (running && !draining && !scheduler.isShutdown()) {
+            scheduler.execute(this::claimOnce);
+        }
+    }
+
+    private int claimOnce() {
+        if (!claimLock.tryLock()) {
+            return 0;
+        }
+        try {
+            int free = executor.freeSlots();
+            if (free <= 0 || !running || draining) {
+                return 0;
+            }
+            var runs = claimer.claim(free);
+            runs.forEach(executor::submit);
+            return runs.size();
+        } catch (RuntimeException e) {
+            LOG.log(System.Logger.Level.WARNING, "claiming runs failed", e);
+            return 0;
+        } finally {
+            claimLock.unlock();
+        }
+    }
+
+    private long jitter(long base) {
+        // +-25 % (DD-14)
+        return Math.max(1, Math.round(base * (0.75 + random.nextDouble() * 0.5)));
+    }
+
+    private <T> T requireStarted(T value) {
+        if (value == null) {
+            throw new IllegalStateException("the engine isn't started");
+        }
+        return value;
+    }
+
+    private static String hostName() {
+        try {
+            return InetAddress.getLocalHost().getHostName();
+        } catch (UnknownHostException e) {
+            return "unknown";
+        }
+    }
+}

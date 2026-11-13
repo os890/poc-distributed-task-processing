@@ -37,3 +37,4 @@ release.properties
 pom.xml.tag
 pom.xml.next
 pom.xml.releaseBackup
+cluster-data/

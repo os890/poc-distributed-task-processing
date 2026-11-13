@@ -53,6 +53,11 @@
   (Run vs. Task), the model for continuous runs, item uniqueness per version, the retry scope, one step for several
   jobs, and how an `ItemProcessor` finds its item type.
 
+## First Implementation
+
+Branch `poc-impl` contains a first implementation (slice 1) with a runtime demo on three Quarkus nodes: see
+[IMPLEMENTATION.md](IMPLEMENTATION.md).
+
 ## License
 
 [Apache License, Version 2.0](LICENSE)
