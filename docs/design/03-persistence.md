@@ -57,6 +57,9 @@ erDiagram
         bool ack_required
         ID fallback_job_id FK
         varchar fallback_delay "ISO-8601"
+        varchar expected_max_queue_age "ISO-8601, jam detection, 09"
+        int technical_failure_threshold "per 5 min, 09"
+        varchar technical_responsible_group "default dtp-operator, DD-29"
         json default_parameters
         varchar changed_by
         timestamp changed_at
@@ -308,10 +311,16 @@ erDiagram
         ID from_job_id
         ID to_job_id
         ID run_id
+        int run_attempt "shows work redone after a takeover"
         ID work_package_id
         ID flow_instance_id
         ID node_id
         varchar reason
+        varchar failure_kind "BUSINESS TECHNICAL, DD-29"
+        varchar error_type "exception class"
+        varchar error_hash "hash of the top stack frames"
+        bigint wait_ms "departures: time in the inbox"
+        varchar trace_id
         json data
         timestamp occurred_at "partition key"
     }
@@ -538,6 +547,7 @@ INSERT INTO dtp_item_event (...) VALUES (... 'BRANCH_FINISHED' ...), (... 'JOINE
 | `dtp_item` | unique `(namespace, item_type, ref_id, ref_version)` | lookup by `ItemRef` |
 | `dtp_item` | `(namespace, business_key)`, `(work_package_id)` | lookups |
 | `dtp_item_event` | `(item_id, occurred_at)` | journey |
+| `dtp_item_event` | `(namespace, occurred_at)` | monitoring projection (09) |
 | `dtp_item_event` | `(run_id)`, `(work_package_id)` | "what happened in run/package X" |
 | `dtp_work_package` | `(job_id, state, next_attempt_at, sequence)` | pending packages |
 | `dtp_decision_request` | `(namespace, state, created_at)`, `(state, fallback_due_at)` | business inbox, fallback planning |

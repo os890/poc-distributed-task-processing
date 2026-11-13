@@ -217,6 +217,7 @@ stateDiagram-v2
 ## 8.7 Journey of Order 4711
 
 What `GET /dtp/items/order/O-4711/journey` returns (abbreviated). This is the transparency the mission asks for (G8).
+The same journey as a diagram is shown in [09 §9.9](09-monitoring-heatmap.md).
 
 | # | Time | Event | From → To | Node / run | Details |
 |---|------|-------|-----------|------------|---------|

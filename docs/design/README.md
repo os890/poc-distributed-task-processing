@@ -18,6 +18,7 @@
 | 6 | [Developer API](06-api.md) | Public API (type-safe), SPIs, usage per complexity level |
 | 7 | [Sample application](07-sample-app.md) | What an app provides (minimal case: dependency + handler + definition), sample classes, item flow, startup sequence, code incl. test |
 | 8 | [Sample order flow](08-sample-order-flow.md) | Level-3 showcase incl. the code of the demo app: order processing, parallel checks (fork/join), VIP lanes, supplier sub-flow, four-eyes approval by the responsible department, daily supplier window, back-routing after delivery, item journey |
+| 9 | [Monitoring](09-monitoring-heatmap.md) | Heat map and live feed as a CQRS read model, jam detection, business vs. technical failures, telemetry metrics and traces, journey diagram per item |
 
 ## Ubiquitous Language (proposal)
 
@@ -60,6 +61,8 @@ Transitions match on either one: `on_result_status = 'SUCCESS'` or `on_outcome =
 | EOD | End of day: the daily processing of a business day. |
 | Keyset pagination | Reading the next page "after the last seen key" instead of `OFFSET`, which stays fast for large inboxes. |
 | Process step | A CDI bean that processes items (`ItemProcessor`) or runs (`JobHandler`). One step corresponds to one job definition. |
+| Projection | Read model derived from the journal by an elected projector (CQRS). Clients only read it (09). |
+| Jam score | 0–100 per step: how far the step lags behind its expected throughput. Only steps that should be processing can be jammed (09 §9.4). |
 
 ## Proposed Design Decisions
 
@@ -93,6 +96,12 @@ Transitions match on either one: `on_result_status = 'SUCCESS'` or `on_outcome =
 | DD-26 | **`ItemProcessor<E, ID>` is the default way to write a process step**: one `process(item)` method, while the framework does iteration, batches, transactions, soft stops and the outcome. `JobHandler<P, R>` remains for full control (packages and windows, typed parameters, jobs without items). Both extend `ProcessStep`, which is the type of all routing targets. `RunInfo` is injectable. | Ease of use: the common step needs one method instead of plumbing (inbox, batching, result). |
 | DD-27 | **`includeDeferred`**: a step can look at deferred items before they are due, e.g. `DeliveryMonitoring` after every goods receipt. | Waiting items react to external events immediately, not only when their defer delay ends. |
 | DD-28 | **Process steps are named after the business activity** (`CreditCheck`, `StockReservation`, `OrderShipment`), not as commands (`CheckCredit`). Job names in the DB follow the class names (`credit-check`). | DDD ubiquitous language: code, definitions, journey and REST speak the language of the business. |
+| DD-29 | **Business vs. technical failures**: `item.fail(reason)` is a business failure. An exception thrown by a step is a technical failure (error type and stack hash in the journal). A failed batch is rolled back and retried item by item (poison-item isolation). Exhausted technical retries go to operations (`technical_responsible_group`, default `dtp-operator`). | One bad item never blocks its batch. Technical problems reach the people who can fix them, and the heat map can show unexpected exceptions separately. |
+| DD-30 | **Monitoring as a CQRS read model**: an elected projector (leader role `projection`) derives small views from the journal and the item state every ~10 s. It recomputes the minute buckets of the last two lease durations, which is complete because no unit of work can commit later than its lease. | Cluster-wide heat map without load on the processing tables, without extra writes on the hot path, and rebuildable at any time. |
+| DD-31 | **Clients read on demand**: REST snapshots and a live feed via Server-Sent Events, served by any node from the views. Alert state transitions fire CDI events (`StepCongested`, `TechnicalFailureSpike`) exactly once. | Reads scale with the number of nodes. The application decides whom to notify. |
+| DD-32 | **Jam detection with status reasons**: a closed slot, an open window or a disabled job is an *expected backlog*, not a jam. `NO_CAPABLE_NODE` is always alarming. Thresholds per step are part of the job definition. | No false alarms, and real jams stand out. |
+| DD-33 | **Telemetry in two layers**: per-node real-time metrics on the processing path (incl. wait-time histograms per lane) and cluster gauges exported only by the projector leader. Bounded attribute cardinality. Traces link an item's units of work across steps to the request that tracked it. | Standard tooling (OTel, Prometheus, Grafana) gets real-time signals, percentiles and end-to-end traces, consistent with the heat map. |
+| DD-34 | **Journey diagram per item**: `GET /dtp/items/{type}/{businessKey}/journey/diagram` folds the item's journal entries into a graph of only the steps it passed (incl. branches, decisions, packages, back-routes, current position) and returns Mermaid source or JSON. Labels are escaped, and technical details are only shown to operators. | Users can check how one item was processed, without reading tables. No rendering library and no UI in the framework: Mermaid renders in browsers, tickets and wikis. |
 
 ## Open Design Questions
 

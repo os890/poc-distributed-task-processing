@@ -429,11 +429,17 @@ classDiagram
         JobId fromJob
         JobId toJob
         RunId run
+        int runAttempt
         PackageId workPackage
         FlowInstanceId flowInstance
         NodeId node
         Instant occurredAt
         String reason
+        FailureKind failureKind
+        String errorType
+        String errorHash
+        Long waitMs
+        String traceId
         Json data
     }
     class ItemState {
@@ -460,6 +466,7 @@ classDiagram
         REJECTED
         FAILED
         RETRY_SCHEDULED
+        REPROCESSED
         DEFERRED
         LOOP_LIMIT_EXCEEDED
         ESCALATED
@@ -485,6 +492,10 @@ Invariants
   exceeded, the item becomes `WAITING_FOR_DECISION` (`LOOP_LIMIT_EXCEEDED` + `ESCALATED`) instead (D25, DD-5).
 - `fail` within the retry budget → `QUEUED` with `nextAttemptAt` (`RETRY_SCHEDULED`). When the budget is exhausted →
   `WAITING_FOR_DECISION` (D36).
+- **Business vs. technical failures (DD-29)**: `fail(reason)` is a *business* failure. An exception thrown by the
+  step is a *technical* failure (exception class and stack hash in the journal). The batch is rolled back, and its
+  items are processed one by one, so only the poison item fails. Exhausted technical retries go to operations, not to
+  the business team (09 §9.5).
 - `defer` → `QUEUED` in the **same** inbox with `nextAttemptAt` (`DEFERRED`). It is not a failure, so no retry is counted
   (DD-18). Example: waiting for a supplier delivery.
 - After a decision, the item is re-queued in the inbox of the **job that requested it**, with the decision attached.

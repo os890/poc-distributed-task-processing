@@ -192,6 +192,9 @@ Notes
 - The full signatures are generic in two parameters: `JobHandler<P, R extends ResultStatus>`,
   `JobResult<R extends ResultStatus>`, `ItemRef<E, ID>`, `TrackedItem<E, ID>`, `Inbox<E, ID>`.
   (Mermaid can't render generics with two parameters, so the diagram shows one.)
+- **Exceptions** (DD-29): an exception thrown by `process(item)` is a *technical* failure of that item. The framework
+  rolls the batch back and retries its items one by one, so other items aren't blocked. `item.fail(reason)` is a
+  *business* failure. Both use the step's retry policy, but exhausted technical failures go to operations.
 - **Two ways to write a process step** (DD-26): `ItemProcessor<E, ID>` for the common case (one method per item,
   the framework does iteration, batches, transactions, soft stops and the outcome), and `JobHandler<P, R>` for full
   control (collectors with packages, typed parameters, jobs without items). Both are `ProcessStep`s.

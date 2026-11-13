@@ -102,6 +102,9 @@ stateDiagram-v2
 ```
 
 - Items survive runs, slots, days and flow instances until `COMPLETED`/`DISCARDED` (D30).
+- `fail` covers both kinds of failures (DD-29): business failures via `item.fail(reason)`, and technical failures
+  when the step throws. Technical ones are isolated per item (the batch is retried item by item) and, once the
+  retries are exhausted, go to operations (09 §9.5).
 - While `FORKED`, the item's branches have their own small lifecycle in `dtp_item_branch`:
   `QUEUED → IN_PROGRESS → FINISHED`, with retries and `WAITING_FOR_DECISION` like a normal item (DD-22).
 - If the owning run loses its lease, `IN_PROGRESS` items of uncommitted units of work roll back to `QUEUED`

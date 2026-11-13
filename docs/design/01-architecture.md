@@ -207,6 +207,7 @@ Configuration (MP Config, typed via `@ConfigProperties(prefix = "dtp")`), with d
 | `dtp.claim.conflict-backoff` | `250ms`, capped at `max-interval` | Exponential backoff with full jitter after claim conflicts |
 | `dtp.leader.lease-duration` / `dtp.leader.renew-interval` / `dtp.leader.safety-margin` | `30s` / `10s` / `5s` | Leader election (DD-3). The leader stops acting `safety-margin` before its lease could expire |
 | `dtp.random.seed` | none (random) | Fixed seed for reproducible tests (DD-14) |
+| `dtp.monitoring.enabled` / `dtp.monitoring.projection-interval` | `true` / `10s` | Monitoring read model and live feed (09, DD-30) |
 | `dtp.lease.duration` / `dtp.lease.renew-interval` | `60s` / `20s` | Default lease, overridable per job |
 | `dtp.node.heartbeat-interval` / `dtp.node.dead-after` | `10s` / `60s` | Node liveness |
 | `dtp.datasource` | default datasource | Optional separate datasource (D20) |
