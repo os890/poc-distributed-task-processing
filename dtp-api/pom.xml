@@ -16,7 +16,7 @@
     <parent>
         <groupId>org.os890.dtp</groupId>
         <artifactId>dtp-parent</artifactId>
-        <version>0.1.0-SNAPSHOT</version>
+        <version>0.0.1</version>
     </parent>
     <artifactId>dtp-api</artifactId>
     <name>dtp - API</name>
