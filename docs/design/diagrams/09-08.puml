@@ -1,0 +1,51 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 13
+skinparam roundCorner 8
+skinparam ArrowColor #444444
+skinparam BorderColor #555555
+left to right direction
+skinparam RectangleBackgroundColor #eef3fb
+skinparam RectangleBorderColor #4a6fa5
+skinparam UsecaseBackgroundColor #eef3fb
+skinparam UsecaseBorderColor #4a6fa5
+skinparam DatabaseBackgroundColor #f3eefb
+skinparam DatabaseBorderColor #6a4aa5
+skinparam HexagonBackgroundColor #fff3c4
+skinparam HexagonBorderColor #b28704
+skinparam ActorBorderColor #4a6fa5
+usecase "tracked via POST /orders\nFri 10:00:02, lane STANDARD" as START
+rectangle "OrderValidation\nnode A" as VAL
+rectangle "CreditCheck\nPASSED, node B" as CC
+rectangle "PlausibilityCheck\nPASSED 0.92, node C" as PC
+rectangle "AddressCheck\nPASSED, node A" as AC
+rectangle "ScreeningEvaluation\nnode B" as SE
+rectangle "AvailabilityCheck\n2 visits" as AV
+rectangle "Procurement\n2 visits" as PR
+hexagon "Approval D-88, quorum 2\nalice APPROVE 11:42\nbob APPROVE 14:05" as D88 #fff3c4;line:b28704;text:1b1b1b
+rectangle "SupplierExport\npackage ACME-312-1, Fri 18:00" as EX
+rectangle "DeliveryMonitoring\ndeferred once" as DM
+rectangle "StockReservation" as SR
+rectangle "OrderShipment\nshipment SH-5521" as SH
+usecase "COMPLETED\nTue 09:30" as DONE #d8f0dc;line:2e7d32;text:1b1b1b
+
+START --> VAL : 1
+VAL --> CC : 2 fork
+VAL --> PC : 2 fork
+VAL --> AC : 2 fork
+CC --> SE : 3
+AC --> SE : 4
+PC --> SE : 5 join
+SE --> AV : 6
+AV --> PR : 7 not in stock
+PR --> D88 : 8 approval
+D88 --> PR : 10 approved
+PR --> EX : 11
+EX --> DM : 13
+DM ..> AV : 15 back-route: delivered with DN-9917
+AV --> SR : 16
+SR --> SH : 17
+SH --> DONE : 18
+@enduml

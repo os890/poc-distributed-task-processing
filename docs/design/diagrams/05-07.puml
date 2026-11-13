@@ -1,0 +1,48 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 13
+skinparam roundCorner 8
+skinparam ArrowColor #444444
+skinparam BorderColor #555555
+skinparam sequenceMessageAlign left
+skinparam ParticipantPadding 10
+skinparam BoxPadding 10
+skinparam NoteBackgroundColor #fffbe6
+skinparam NoteBorderColor #b28704
+skinparam ParticipantBackgroundColor #eef3fb
+skinparam ParticipantBorderColor #4a6fa5
+skinparam SequenceGroupBodyBackgroundColor transparent
+autonumber
+participant "WindowCoordinator (leader)" as WC
+participant "Database" as DB
+participant "Paused jobs (runs on any node)" as P
+participant "Collector run (any node)" as COL
+participant "External system" as EXT
+
+WC -> DB : occurrence n SCHEDULED to QUIESCING
+WC -> DB : stop request WINDOW for active runs of paused jobs
+DB --> P : LeaseKeeper reads stop flag
+P -> P : finish current unit of work, no new batch or package
+P -> DB : finish run, outcome DEFERRED, release lease
+loop until all paused jobs are idle or quiesce timeout
+WC -> DB : any active run of a paused job?
+end
+alt all idle
+WC -> DB : QUIESCING to OPEN, cut_off = CURRENT_TIMESTAMP, from_ts = previous cut_off
+WC -> DB : INSERT collector run, run_key window + occurrence n
+COL -> DB : claim collector run
+COL -> DB : read changes in from_ts to cut_off, create work packages
+loop each pending package
+COL -> EXT : send package, e.g. XML
+EXT --> COL : optional ack
+COL -> DB : package DONE, items and events written
+end
+COL -> DB : finish run
+WC -> DB : OPEN to CLOSED
+note over P, DB : paused jobs are planned and claimed again,\nlater changes belong to occurrence n+1
+else quiesce timeout
+WC -> DB : WAITING_FOR_DECISION, decision request KEEP_WAITING, FORCE_OPEN, SKIP_OCCURRENCE
+end
+@enduml

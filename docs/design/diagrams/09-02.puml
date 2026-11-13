@@ -1,0 +1,43 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 13
+skinparam roundCorner 8
+skinparam ArrowColor #444444
+skinparam BorderColor #555555
+skinparam sequenceMessageAlign left
+skinparam ParticipantPadding 10
+skinparam BoxPadding 10
+skinparam NoteBackgroundColor #fffbe6
+skinparam NoteBorderColor #b28704
+skinparam ParticipantBackgroundColor #eef3fb
+skinparam ParticipantBorderColor #4a6fa5
+skinparam SequenceGroupBodyBackgroundColor transparent
+autonumber
+participant "MonitoringProjector (leader of role projection)" as P
+participant "Database" as DB
+participant "Any node - live feed endpoint" as N
+participant "Clients (dashboard)" as C
+
+loop every projection interval (default 10 s)
+P -> DB : BEGIN, read journal entries of the recompute horizon (last 2 x lease duration)
+P -> DB : aggregate per step, route, failure type and minute, UPSERT minute buckets
+note over P, DB : buckets older than the horizon are final. Recent ones are recomputed,\nso entries that committed late are still counted
+P -> DB : per step: queue depth per lane, age of the oldest item, waiting and deferred items
+P -> DB : per step: status reason from leases, slots, windows, nodes and decisions
+P -> DB : jam score, alert state, UPSERT dtp_view_step_status
+P -> DB : increment projection version, COMMIT
+P -> P : alert state changed? fire StepCongested or TechnicalFailureSpike after commit
+end
+loop every 2 s on every node with connected clients
+N -> DB : read projection version (one tiny row)
+alt version changed
+N -> DB : read changed rows of dtp_view_step_status
+N --> C : SSE event heatmap-update
+end
+end
+C -> N : GET /dtp/monitor/heatmap?range=15m (snapshot on demand)
+N -> DB : read views only
+N --> C : steps, edges, failures with load and jam score
+@enduml

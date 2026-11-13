@@ -1,0 +1,39 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 13
+skinparam roundCorner 8
+skinparam ArrowColor #444444
+skinparam BorderColor #555555
+left to right direction
+skinparam RectangleBackgroundColor #eef3fb
+skinparam RectangleBorderColor #4a6fa5
+skinparam UsecaseBackgroundColor #eef3fb
+skinparam UsecaseBorderColor #4a6fa5
+skinparam DatabaseBackgroundColor #f3eefb
+skinparam DatabaseBorderColor #6a4aa5
+skinparam HexagonBackgroundColor #fff3c4
+skinparam HexagonBorderColor #b28704
+skinparam ActorBorderColor #4a6fa5
+rectangle "CDI developer\nimplements job handlers" as DEV
+rectangle "Operator\nroles dtp-operator, dtp-admin" as OPS
+rectangle "Business user\nrole dtp-business" as BIZ
+rectangle "Application cluster - n deployments, possibly two colors (red/green)" as CLUSTER #fbfbfb;line:999999 {
+  rectangle "Node A\napplication + dtp engine" as N1
+  rectangle "Node B\napplication + dtp engine" as N2
+  rectangle "Node C\napplication + dtp engine" as N3
+}
+database "Shared database\nbusiness tables + dtp_* tables" as DB
+rectangle "External systems\ne.g. receivers of XML packages" as EXT
+rectangle "Monitoring\nOTel collector, health probes" as MON
+
+DEV ..> CLUSTER : deploys handlers + Flyway scripts
+OPS --> CLUSTER : REST: definitions, runs, items, nodes
+BIZ --> CLUSTER : REST: decision requests
+N1 <--> DB
+N2 <--> DB
+N3 <--> DB
+CLUSTER --> EXT : work packages, optional ack
+CLUSTER --> MON : MP Telemetry, MP Health
+@enduml

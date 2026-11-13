@@ -1,0 +1,54 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 13
+skinparam roundCorner 8
+skinparam ArrowColor #444444
+skinparam BorderColor #555555
+left to right direction
+skinparam RectangleBackgroundColor #eef3fb
+skinparam RectangleBorderColor #4a6fa5
+skinparam UsecaseBackgroundColor #eef3fb
+skinparam UsecaseBorderColor #4a6fa5
+skinparam DatabaseBackgroundColor #f3eefb
+skinparam DatabaseBorderColor #6a4aa5
+skinparam HexagonBackgroundColor #fff3c4
+skinparam HexagonBorderColor #b28704
+skinparam ActorBorderColor #4a6fa5
+rectangle "Write side - all nodes" as WRITE #fbfbfb;line:999999 {
+  rectangle "Units of work of the process steps\nfenced transactions" as UOW
+  database "dtp_item\ncurrent state" as ITEM
+  database "dtp_item_event\njournal = event stream" as JOURNAL
+}
+rectangle "Projection - leader of role projection (DD-30)" as PROJ #fbfbfb;line:999999 {
+  rectangle "MonitoringProjector\nevery 10 s" as P
+}
+rectangle "Read side - read-only views" as READ #fbfbfb;line:999999 {
+  database "dtp_view_step_status\none row per step" as V1
+  database "dtp_view_step_minute\nper step and minute" as V2
+  database "dtp_view_edge_minute\nper route and minute" as V3
+  database "dtp_view_failure_minute\nper step, error type and minute" as V4
+}
+rectangle "Clients - read on demand, any node" as CLIENTS #fbfbfb;line:999999 {
+  rectangle "REST snapshot\nGET /dtp/monitor/heatmap" as REST
+  rectangle "Live feed\nServer-Sent Events" as SSE
+  rectangle "MP Telemetry\ncluster-wide gauges" as OTEL
+  rectangle "CDI events\nStepCongested, TechnicalFailureSpike" as EVT
+}
+
+UOW --> ITEM
+UOW --> JOURNAL
+JOURNAL --> P
+ITEM --> P
+P --> V1
+P --> V2
+P --> V3
+P --> V4
+V1 --> REST
+V2 --> REST
+V3 --> REST
+V1 --> SSE
+V1 --> OTEL
+P ..> EVT : on alert state change, after commit
+@enduml

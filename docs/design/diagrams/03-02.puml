@@ -1,0 +1,141 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 13
+skinparam roundCorner 8
+skinparam ArrowColor #444444
+skinparam BorderColor #555555
+hide circle
+skinparam linetype ortho
+skinparam ClassBackgroundColor #eef3fb
+skinparam ClassBorderColor #4a6fa5
+skinparam ClassAttributeFontSize 12
+entity dtp_job_lease {
+  <b>job_id : ID</b> <<PK>> <color:#666666><i>one row per job, DD-1</i></color>
+  namespace : varchar
+  run_id : ID <color:#666666><i>null means free</i></color>
+  owner_node_id : ID
+  lease_until : timestamp
+  fencing_token : bigint <color:#666666><i>incremented on acquire and expire</i></color>
+}
+entity dtp_run {
+  <b>id : ID</b> <<PK>>
+  namespace : varchar <<UK>>
+  run_key : varchar <<UK>> <color:#666666><i>idempotency key</i></color>
+  job_id : ID <<FK>>
+  job_revision : int
+  handler_class : varchar <color:#666666><i>denormalized for capability filter</i></color>
+  state : varchar <color:#666666><i>PENDING RUNNING STOPPING WAITING_FOR_DECISION FINISHED</i></color>
+  stop_reason : varchar
+  outcome : varchar
+  result_status : varchar <color:#666666><i>typed R, stored by name</i></color>
+  trigger_type : varchar
+  triggered_by : varchar <color:#666666><i>cron slot, user, predecessor run, decision</i></color>
+  flow_instance_id : ID <<FK>>
+  window_occurrence_id : ID <<FK>>
+  slot_end : timestamp <color:#666666><i>null means no slot</i></color>
+  not_before : timestamp
+  priority : int
+  attempt : int
+  owner_node_id : ID
+  fencing_token : bigint
+  info : json <color:#666666><i>custom run info, typed keys</i></color>
+  error : json
+  created_at : timestamp
+  started_at : timestamp
+  finished_at : timestamp
+}
+entity dtp_run_attempt {
+  <b>run_id : ID</b> <<PK, FK>>
+  <b>attempt : int</b> <<PK>>
+  node_id : ID <<FK>>
+  fencing_token : bigint
+  started_at : timestamp
+  ended_at : timestamp
+  end_reason : varchar <color:#666666><i>FINISHED, LEASE_EXPIRED, LEASE_LOST, ERROR</i></color>
+}
+entity dtp_node {
+  <b>id : ID</b> <<PK>>
+  namespace : varchar
+  host : varchar
+  color : varchar
+  app_version : varchar
+  state : varchar <color:#666666><i>ACTIVE DRAINING LEFT DEAD</i></color>
+  capabilities : json <color:#666666><i>handler classes</i></color>
+  started_at : timestamp
+  heartbeat_at : timestamp
+}
+entity dtp_namespace_control {
+  <b>namespace : varchar</b> <<PK>>
+  active_color : varchar <color:#666666><i>red/green activation switch</i></color>
+}
+entity dtp_leader {
+  <b>namespace : varchar</b> <<PK>>
+  <b>role : varchar</b> <<PK>> <color:#666666><i>e.g. housekeeping</i></color>
+  holder_node_id : ID <color:#666666><i>null means vacant</i></color>
+  lease_until : timestamp
+  term : bigint <color:#666666><i>incremented on every new election</i></color>
+  acquired_at : timestamp
+}
+entity dtp_flow_instance {
+  <b>id : ID</b> <<PK>>
+  namespace : varchar <<UK>>
+  flow_name : varchar <<UK>>
+  business_key : varchar <<UK>>
+  state : varchar <color:#666666><i>OPEN COMPLETED</i></color>
+  info : json
+  started_at : timestamp
+  completed_at : timestamp
+}
+entity dtp_join_instance {
+  <b>target_job_id : ID</b> <<PK>>
+  <b>flow_instance_id : ID</b> <<PK, FK>>
+  fired : bool
+  created_at : timestamp
+}
+entity dtp_join_arrival {
+  <b>target_job_id : ID</b> <<PK, FK>>
+  <b>flow_instance_id : ID</b> <<PK, FK>>
+  <b>member_job_id : ID</b> <<PK>>
+  run_id : ID
+  outcome : varchar
+  arrived_at : timestamp
+}
+entity dtp_window_occurrence {
+  <b>id : ID</b> <<PK>>
+  window_id : ID <<UK>>
+  sequence : bigint <<UK>>
+  scheduled_at : timestamp
+  state : varchar <color:#666666><i>SCHEDULED QUIESCING OPEN CLOSED WAITING_FOR_DECISION SKIPPED</i></color>
+  from_ts : timestamp <color:#666666><i>cut-off of the previous occurrence</i></color>
+  cut_off : timestamp
+  collector_run_id : ID <<FK>>
+}
+entity dtp_work_package {
+  <b>id : ID</b> <<PK>>
+  namespace : varchar
+  job_id : ID <<FK>>
+  created_by_run_id : ID <<FK>>
+  processed_by_run_id : ID
+  sequence : bigint
+  state : varchar <color:#666666><i>PENDING IN_PROGRESS SENT DONE WAITING_FOR_DECISION DISCARDED</i></color>
+  attempts : int
+  item_count : int
+  window_occurrence_id : ID <<FK>>
+  next_attempt_at : timestamp
+  info : json <color:#666666><i>file name, delivery id</i></color>
+  created_at : timestamp
+  updated_at : timestamp
+}
+
+dtp_job_lease ||--o| dtp_run : held by
+dtp_run ||--|{ dtp_run_attempt : attempts
+dtp_node ||--o{ dtp_run_attempt : executed
+dtp_flow_instance ||--o{ dtp_run : groups
+dtp_flow_instance ||--o{ dtp_join_instance : scopes
+dtp_join_instance ||--o{ dtp_join_arrival : collects
+dtp_window_occurrence ||--o| dtp_run : collector run
+dtp_run ||--o{ dtp_work_package : creates
+dtp_window_occurrence ||--o{ dtp_work_package : contains
+@enduml

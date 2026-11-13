@@ -1,0 +1,32 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 13
+skinparam roundCorner 8
+skinparam ArrowColor #444444
+skinparam BorderColor #555555
+hide empty description
+skinparam StateBackgroundColor #eef3fb
+skinparam StateBorderColor #4a6fa5
+skinparam NoteBackgroundColor #fffbe6
+skinparam NoteBorderColor #b28704
+left to right direction
+state retry <<choice>>
+[*] --> QUEUED : track and route to a job inbox
+QUEUED --> IN_PROGRESS : picked by the owning run
+IN_PROGRESS --> QUEUED : routeTo or routeBack, other inbox
+IN_PROGRESS --> COMPLETED : complete
+IN_PROGRESS --> DISCARDED : discard
+IN_PROGRESS --> retry : fail
+retry --> QUEUED : retries left, next_attempt_at set
+retry --> WAITING_FOR_DECISION : retries exhausted
+IN_PROGRESS --> QUEUED : defer, same inbox, no retry counted
+IN_PROGRESS --> FORKED : fork, one branch per branch job
+FORKED --> QUEUED : last branch finished, queued at the join job
+IN_PROGRESS --> WAITING_FOR_DECISION : escalate, requestApproval or loop limit exceeded
+WAITING_FOR_DECISION --> QUEUED : decided, re-queued in the requesting job's inbox
+WAITING_FOR_DECISION --> DISCARDED : decision DISCARD
+COMPLETED --> [*]
+DISCARDED --> [*]
+@enduml

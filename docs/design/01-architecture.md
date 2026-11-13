@@ -7,69 +7,15 @@
 Every deployment of the application embeds the engine. There is no separate server: the nodes coordinate solely
 through the shared database (G2).
 
-```mermaid
-flowchart LR
-    DEV["CDI developer<br/>implements job handlers"]
-    OPS["Operator<br/>roles dtp-operator, dtp-admin"]
-    BIZ["Business user<br/>role dtp-business"]
+![1.1 System Context](diagrams/01-01.svg)
 
-    subgraph CLUSTER["Application cluster - n deployments, possibly two colors (red/green)"]
-        N1["Node A<br/>application + dtp engine"]
-        N2["Node B<br/>application + dtp engine"]
-        N3["Node C<br/>application + dtp engine"]
-    end
-
-    DB[("Shared database<br/>business tables + dtp_* tables")]
-    EXT["External systems<br/>e.g. receivers of XML packages"]
-    MON["Monitoring<br/>OTel collector, health probes"]
-
-    DEV -. "deploys handlers + Flyway scripts" .-> CLUSTER
-    OPS -- "REST: definitions, runs, items, nodes" --> CLUSTER
-    BIZ -- "REST: decision requests" --> CLUSTER
-    N1 <--> DB
-    N2 <--> DB
-    N3 <--> DB
-    CLUSTER -- "work packages, optional ack" --> EXT
-    CLUSTER -- "MP Telemetry, MP Health" --> MON
-```
+<sub>PlantUML source: [diagrams/01-01.puml](diagrams/01-01.puml)</sub>
 
 ## 1.2 Hexagonal Architecture
 
-```mermaid
-flowchart TB
-    subgraph INBOUND["Inbound adapters (driving)"]
-        BOOT["dtp-cdi / dtp-quarkus<br/>bootstrap, handler discovery,<br/>Build Compatible Extension"]
-        REST["dtp-adapter-rest<br/>Jakarta REST, MP OpenAPI, MP JWT"]
-        LOOPS["dtp-adapter-scheduler<br/>node loops: planner, claimer,<br/>lease keeper, reaper, window coordinator"]
-    end
+![1.2 Hexagonal Architecture](diagrams/01-02.svg)
 
-    subgraph CORE["Core - framework-free"]
-        subgraph APP["dtp-application"]
-            IN_PORTS["Inbound ports = use cases"]
-            OUT_PORTS["Outbound ports"]
-        end
-        DOMAIN["dtp-domain<br/>aggregates, value objects,<br/>policies, domain events"]
-    end
-
-    subgraph OUTBOUND["Outbound adapters (driven)"]
-        JPA["dtp-adapter-persistence-jpa<br/>repositories, entities"]
-        JDBC["dtp-adapter-coordination-jdbc<br/>leases, claiming, fencing,<br/>SqlDialect: PostgreSQL, H2"]
-        FLY["dtp-adapter-schema-flyway<br/>migrations per dialect"]
-        OBS["dtp-adapter-observability<br/>MP Health, MP Telemetry"]
-        INV["dtp-cdi HandlerInvoker<br/>CDI bean lookup + invocation"]
-    end
-
-    BOOT --> IN_PORTS
-    REST --> IN_PORTS
-    LOOPS --> IN_PORTS
-    IN_PORTS --> DOMAIN
-    IN_PORTS --> OUT_PORTS
-    JPA -. implements .-> OUT_PORTS
-    JDBC -. implements .-> OUT_PORTS
-    OBS -. implements .-> OUT_PORTS
-    INV -. implements .-> OUT_PORTS
-    FLY -. "schema for" .-> JPA
-```
+<sub>PlantUML source: [diagrams/01-02.puml](diagrams/01-02.puml)</sub>
 
 ### 1.2.1 Ports
 
@@ -106,45 +52,9 @@ flowchart TB
 
 ## 1.3 Maven Modules
 
-```mermaid
-flowchart BT
-    API["dtp-api"]
-    SPI["dtp-spi"]
-    DOM["dtp-domain"]
-    APPL["dtp-application"]
-    PJPA["dtp-adapter-persistence-jpa"]
-    CJDBC["dtp-adapter-coordination-jdbc"]
-    FLYW["dtp-adapter-schema-flyway"]
-    RST["dtp-adapter-rest"]
-    SCHD["dtp-adapter-scheduler"]
-    OBSV["dtp-adapter-observability"]
-    CDIM["dtp-cdi"]
-    QRT["dtp-quarkus runtime"]
-    QDP["dtp-quarkus deployment"]
-    ARCH["dtp-architecture-tests"]
-    EX["dtp-examples"]
-    BOM["dtp-bom"]
+![1.3 Maven Modules](diagrams/01-03.svg)
 
-    APPL --> DOM
-    APPL --> SPI
-    PJPA --> APPL
-    CJDBC --> APPL
-    RST --> APPL
-    SCHD --> APPL
-    OBSV --> APPL
-    CDIM --> PJPA
-    CDIM --> CJDBC
-    CDIM --> FLYW
-    CDIM --> RST
-    CDIM --> SCHD
-    CDIM --> OBSV
-    QRT --> CDIM
-    QDP --> QRT
-    EX --> API
-    CDIM --> API
-    TST["dtp-test"] --> CDIM
-    ARCH -. "tests all" .-> CDIM
-```
+<sub>PlantUML source: [diagrams/01-03.puml](diagrams/01-03.puml)</sub>
 
 - `dtp-domain` depends **only on the JDK**. `dtp-api` depends only on the JDK and the CDI API (annotations).
 - `dtp-application` does **not** depend on `dtp-api`. Handler-facing types are mapped in `dtp-cdi`, so the domain stays
@@ -158,40 +68,9 @@ Each node runs the same components. The **housekeeping** components are only act
 leader of the role `housekeeping` (DD-3). The `LeaderElector` starts and stops them through
 `onElected`/`onRevoked` callbacks.
 
-```mermaid
-flowchart LR
-    subgraph NODE["Node - dtp engine"]
-        direction TB
-        REG["NodeRegistrar<br/>register, heartbeat, drain, deregister"]
-        LE["LeaderElector<br/>acquire or renew role housekeeping,<br/>jittered, local safety deadline"]
+![1.4 Node Runtime](diagrams/01-04.svg)
 
-        subgraph HK["Housekeeping - active only while leader (DD-3)"]
-            PLAN["RunPlanner<br/>cron + calendar, ASAP, inbox,<br/>slots, fallbacks"]
-            REAP["LeaseReaper<br/>expired leases, takeover policy"]
-            WIN["WindowCoordinator<br/>quiesce, open, close"]
-        end
-
-        CLAIM["RunClaimer<br/>adaptive polling, capabilities,<br/>max concurrent runs"]
-        EXEC["RunExecutor<br/>virtual threads, JobContext,<br/>units of work"]
-        KEEP["LeaseKeeper<br/>renew, detect loss,<br/>stop signals"]
-    end
-
-    DB[("dtp_* tables")]
-    H["Job handlers<br/>CDI beans"]
-
-    REG <--> DB
-    LE <-->|"dtp_leader: acquire, renew, resign"| DB
-    LE -- "onElected / onRevoked" --> HK
-    PLAN -- "insert PENDING runs (run_key unique)" --> DB
-    REAP -- "release / re-queue / escalate" --> DB
-    WIN -- "occurrence state, stop requests" --> DB
-    CLAIM -- "claim: SKIP LOCKED + lease update" --> DB
-    CLAIM -- "claimed run" --> EXEC
-    EXEC -- "execute(ctx)" --> H
-    EXEC -- "fenced units of work, finish" --> DB
-    KEEP -- "renew leases, read stop flags" --> DB
-    KEEP -- "stop signal" --> EXEC
-```
+<sub>PlantUML source: [diagrams/01-04.puml](diagrams/01-04.puml)</sub>
 
 Configuration (MP Config, typed via `@ConfigProperties(prefix = "dtp")`), with defaults:
 

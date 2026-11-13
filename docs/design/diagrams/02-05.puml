@@ -1,0 +1,84 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 13
+skinparam roundCorner 8
+skinparam ArrowColor #444444
+skinparam BorderColor #555555
+left to right direction
+hide empty members
+skinparam ClassBackgroundColor #eef3fb
+skinparam ClassBorderColor #4a6fa5
+skinparam PackageBackgroundColor transparent
+skinparam StereotypeCBackgroundColor #ffffff
+class DecisionRequest <<AggregateRoot>> {
+  DecisionRequestId id
+  DecisionKind kind
+  Subject subject
+  JobId job
+  RunId run
+  String reason
+  Json context
+  List<OptionDescriptor> options
+  int requiredApprovals
+  String responsibleGroup
+  List<Vote> votes
+  RequestState state
+  Instant createdAt
+  Instant fallbackDueAt
+  RunId fallbackRun
+  Decision decision
+  +decide(String option, UserId user, String comment) : DecisionMade
+  +vote(VoteType vote, UserId user, String comment) : Optional<DecisionMade>
+  +fallbackTriggered(RunId run)
+}
+class Vote <<ValueObject>> {
+  VoteType type
+  UserId user
+  Instant votedAt
+  String comment
+}
+enum DecisionKind {
+  CHOICE
+  APPROVAL
+}
+enum VoteType {
+  APPROVE
+  REJECT
+}
+class Subject <<ValueObject>> {
+  SubjectType type
+  String id
+}
+class OptionDescriptor <<ValueObject>> {
+  String name
+  String label
+  boolean builtIn
+}
+class Decision <<ValueObject>> {
+  String option
+  UserId decidedBy
+  Instant decidedAt
+  String comment
+}
+enum SubjectType {
+  RUN
+  WORK_PACKAGE
+  ITEM
+  WINDOW_OCCURRENCE
+}
+enum RequestState {
+  OPEN
+  DECIDED
+}
+
+DecisionRequest *-- Subject
+DecisionRequest *-- "2..*" OptionDescriptor
+DecisionRequest *-- "0..1" Decision
+DecisionRequest *-- "0..*" Vote
+DecisionRequest ..> DecisionKind
+Vote ..> VoteType
+Subject ..> SubjectType
+DecisionRequest ..> RequestState
+@enduml

@@ -1,0 +1,42 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 13
+skinparam roundCorner 8
+skinparam ArrowColor #444444
+skinparam BorderColor #555555
+skinparam sequenceMessageAlign left
+skinparam ParticipantPadding 10
+skinparam BoxPadding 10
+skinparam NoteBackgroundColor #fffbe6
+skinparam NoteBorderColor #b28704
+skinparam ParticipantBackgroundColor #eef3fb
+skinparam ParticipantBorderColor #4a6fa5
+skinparam SequenceGroupBodyBackgroundColor transparent
+autonumber
+participant "Node A - LeaderElector" as A
+participant "Node B - LeaderElector" as B
+participant "Database" as DB
+participant "Housekeeping of the leader" as HK
+
+note over A, B : both start, each waits a random initial delay
+A -> DB : UPDATE dtp_leader SET holder A, term + 1 WHERE vacant or lease expired
+DB --> A : 1 row, term 7
+A -> HK : onElected(term 7), start planner, reaper, window coordinator
+B -> DB : same conditional UPDATE, slightly later
+DB --> B : 0 rows, follower
+loop every renew-interval with jitter
+A -> DB : renew WHERE holder A AND term 7
+DB --> A : 1 row, local deadline = now + lease - safety margin
+B -> DB : try acquire
+DB --> B : 0 rows
+end
+note over A : A hangs or loses the DB connection
+A -> A : local deadline passed without renew
+A -> HK : onRevoked(term 7), stop housekeeping
+B -> DB : try acquire after lease_until passed
+DB --> B : 1 row, term 8
+B -> HK : onElected(term 8) on node B
+note over A, B : even if A kept acting briefly, every housekeeping action\nis idempotent or conditional, so no duplicate effects
+@enduml

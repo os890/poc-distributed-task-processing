@@ -1,0 +1,165 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 13
+skinparam roundCorner 8
+skinparam ArrowColor #444444
+skinparam BorderColor #555555
+hide empty members
+skinparam ClassBackgroundColor #eef3fb
+skinparam ClassBorderColor #4a6fa5
+skinparam PackageBackgroundColor transparent
+skinparam StereotypeCBackgroundColor #ffffff
+interface ProcessStep {
+}
+interface ItemProcessor<E, ID> {
+  +process(TrackedItem<E, ID> item)
+}
+annotation ItemProcessing {
+  int batchSize
+  int parallelism
+  boolean includeDeferred
+}
+interface JobHandler<P, R extends ResultStatus> {
+  +execute(JobContext<P> ctx) : JobResult<R>
+}
+interface JobContext<P> {
+  +parameters() : P
+  {abstract} +job() : JobInfo
+  {abstract} +run() : RunInfoView
+  {abstract} +flowInstance() : Optional<FlowInstanceView>
+  +window() : Optional<WindowOccurrenceView>
+  +runInfo() : RunInfo
+  +shouldContinue() : boolean
+  +items() : Items
+  +inbox(ItemType<E, ID> type) : Inbox<E, ID>
+  +packages() : WorkPackages
+  {abstract} +requestDecision(String reason, Class<O> options) : DecisionHandle
+}
+class JobResult<R extends ResultStatus> <<final>> {
+  {static} +success() : JobResult
+  {static} +of(R status) : JobResult<R>
+  +status() : R
+}
+interface ResultStatus {
+  +name() : String
+}
+interface DecisionOption {
+  +name() : String
+  +label() : String
+}
+enum DefaultOutcome {
+  SUCCESS
+}
+class NoParams <<record>> {
+}
+interface RunInfo {
+  +put(RunInfoKey<T> key, T value)
+  +get(RunInfoKey<T> key) : Optional<T>
+  +increment(RunInfoKey<Long> key, long delta)
+}
+class RunInfoKey<T> <<final>> {
+  {static} +of(String name, Class<T> type) : RunInfoKey<T>
+}
+class ItemType<E, ID> <<record>> {
+  String name
+  Class<E> entityType
+  Class<ID> idType
+  {static} +of(String name, Class<E> type, Class<ID> idType) : ItemType<E, ID>
+}
+class ItemRef<E, ID> <<record>> {
+  ItemType<E, ID> type
+  ID id
+  Long version
+  {static} +of(ItemType<E, ID> type, ID id) : ItemRef<E, ID>
+  {static} +of(ItemType<E, ID> type, ID id, long version) : ItemRef<E, ID>
+}
+interface ItemLane {
+  +name() : String
+  +priority() : int
+  +weight() : int
+}
+interface Responsibility {
+  +group() : String
+}
+interface Fork {
+  +branches() : List<Class>
+  +joinAt() : Class<ProcessStep>
+}
+annotation ForkTo <<qualifier>> {
+  Class<ProcessStep>[] value
+  Class<ProcessStep> joinAt
+}
+interface Items {
+  +track(ItemRef<E, ID> ref, String businessKey) : TrackedItem<E, ID>
+  +track(ItemRef<E, ID> ref, String businessKey, ItemLane lane) : TrackedItem<E, ID>
+}
+interface Inbox<E, ID> {
+  +forEachBatch(int size, Consumer<List> batch)
+  +forEachBatchInParallel(int size, int parallelism, Consumer<List> batch)
+  +includingDeferred() : Inbox<E, ID>
+  +forEach(Consumer<TrackedItem> item)
+}
+interface TrackedItem<E, ID> {
+  +ref() : ItemRef<E, ID>
+  +businessKey() : String
+  +lane() : String
+  +arrivalReason() : Optional<String>
+  +routeTo(Class<ProcessStep> job)
+  +routeTo(Class<ProcessStep> job, String reason)
+  +routeBack(Class<ProcessStep> job, String reason)
+  +defer(Duration delay, String reason)
+  +complete()
+  +fail(String reason)
+  +escalate(String reason)
+  +requestApproval(Approval approval, String reason)
+  +requestDecision(String reason, Class<O> options)
+  +requestDecision(String reason, Class<O> options, Responsibility team)
+  +fork(Fork fork)
+  +finishBranch(S status, String reason)
+  +branchResults(Class~<S> statusType) : BranchResults~<S>
+  +approval() : Optional<ApprovalResult>
+  +decision(Class<O> options) : Optional<O>
+  +discard(String reason)
+}
+interface WorkPackages {
+  {abstract} +createFrom(Stream<ItemRef> refs, int packageSize) : int
+  +createFromInbox(ItemType<E, ID> type, Function<TrackedItem> groupKey, int maxSize) : int
+  +forEachPending(Consumer<WorkPackage> pkg)
+}
+interface WorkPackage {
+  +sequence() : long
+  +groupKey() : String
+  +items() : List<TrackedItem>
+  +info() : RunInfo
+  +done()
+  +sent()
+  +fail(String reason)
+  {abstract} +requestDecision(String reason, Class<O> options) : DecisionHandle
+}
+
+ItemProcessor --|> ProcessStep
+JobHandler --|> ProcessStep
+ItemProcessor ..> ItemProcessing : optional
+Fork ..> ForkTo : injected with
+JobHandler ..> JobContext
+JobHandler ..> JobResult
+JobResult ..> ResultStatus
+DefaultOutcome ..|> ResultStatus
+JobContext --> RunInfo
+JobContext --> Items
+JobContext --> Inbox
+JobContext --> WorkPackages
+RunInfo ..> RunInfoKey
+Items ..> ItemRef
+Items ..> ItemLane
+ItemRef --> ItemType
+TrackedItem ..> Fork
+TrackedItem ..> Responsibility
+Inbox ..> TrackedItem
+TrackedItem --> ItemRef
+WorkPackages ..> WorkPackage
+WorkPackage ..> TrackedItem
+JobContext ..> DecisionOption
+@enduml

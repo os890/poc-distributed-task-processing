@@ -21,62 +21,9 @@ the customer to check that the quantity was intended (e.g. 1000 instead of 100).
 
 Solid arrows are **item routing** (one order). Dotted arrows are **run-level triggers** between jobs.
 
-```mermaid
----
-config:
-  layout: elk
----
-flowchart TB
-    IN(["Order arrives via REST<br/>tracked in lane VIP or STANDARD"]) --> VAL["OrderValidation<br/>basic checks"]
-    VAL -- "invalid" --> NOT["OrderRejection"]
+![8.1 Process Overview](diagrams/08-01.svg)
 
-    subgraph PAR["Parallel checks: fork/join on item level"]
-        CC["CreditCheck"]
-        CF["PlausibilityCheck<br/>4 batches in parallel"]
-        CD["AddressCheck"]
-        EV["ScreeningEvaluation<br/>join"]
-        REV{{"Decision request<br/>ACCEPT or REJECT<br/>team customer-care"}}
-        CC -- "PASSED / FAILED" --> EV
-        CF -- "PASSED / REVIEW / FAILED" --> EV
-        CD -- "PASSED / FAILED" --> EV
-        EV -- "any REVIEW" --> REV
-        REV -- "decided, back to the join inbox" --> EV
-    end
-
-    VAL -- "fork" --> CC
-    VAL -- "fork" --> CF
-    VAL -- "fork" --> CD
-    EV -- "any FAILED or rejected" --> NOT
-    EV -- "all PASSED or accepted" --> AV["AvailabilityCheck"]
-    AV -- "in stock" --> RES["StockReservation"]
-    RES -- "stock taken meanwhile: routeBack" --> AV
-    RES --> SHIP["OrderShipment<br/>slot business days 06-20"]
-    SHIP -- "complete" --> DONE(("COMPLETED"))
-    NOT -- "discard with reason" --> DISC(("DISCARDED"))
-
-    subgraph SUP["Sub-flow: order from supplier"]
-        CSR["Procurement"]
-        APR{{"Approval request, quorum 2<br/>purchasing team of the category"}}
-        FWD["SupplierExport<br/>collector of window daily-supplier-export<br/>business days 18.00"]
-        AW["DeliveryMonitoring<br/>defers until delivered"]
-        RSD["GoodsReceipt<br/>external trigger"]
-        ESC{{"Decision request<br/>REMIND_SUPPLIER or REJECT_ORDER"}}
-        CSR -- "quantity above threshold" --> APR
-        APR -- "approved or rejected,<br/>back to the same inbox" --> CSR
-        CSR -- "small or approved" --> FWD
-        FWD -- "in today's package" --> AW
-        AW -- "not delivered yet: defer" --> AW
-        AW -- "overdue" --> ESC
-        ESC -- "decided" --> AW
-        RSD -. "on SUCCESS triggers" .-> AW
-    end
-
-    AV -- "not in stock" --> CSR
-    CSR -- "rejected" --> NOT
-    FWD -- "XML package per supplier" --> SUPPLIER[/"Supplier"/]
-    SUPPLIER -. "delivery note via REST" .-> RSD
-    AW -- "delivered: routeBack" --> AV
-```
+<sub>PlantUML source: [diagrams/08-01.puml](diagrams/08-01.puml)</sub>
 
 ## 8.2 Job Definitions
 
@@ -106,29 +53,9 @@ The three check jobs have **their own leases**, so they can run on different nod
 row in `dtp_item_branch`. The **item row lock** serializes concurrent branch completions, so exactly one of them
 queues the item at the join step.
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant V as Node A - OrderValidation
-    participant DB as Database
-    participant CC as Node B - CreditCheck
-    participant CF as Node C - PlausibilityCheck
-    participant CD as Node A - AddressCheck
-    participant EV as Node B - ScreeningEvaluation
+![8.3 Parallel Checks (fork/join on item level, DD-22)](diagrams/08-02.svg)
 
-    V->>DB: item.fork(...): item FORKED, open_branches = 3, insert 3 branch rows, event FORKED
-    par branches run in parallel on different nodes
-        CC->>DB: finishBranch(PASSED): lock item row, branch FINISHED, open_branches = 2
-    and
-        CF->>DB: finishBranch(REVIEW, plausibility 0.3): lock item row, open_branches = 1
-    and
-        CD->>DB: finishBranch(PASSED): lock item row, open_branches = 0
-        CD->>DB: last branch: item QUEUED in the ScreeningEvaluation inbox, event JOINED
-    end
-    EV->>DB: read inbox, item.branchResults(CheckResult.class)
-    EV->>DB: anyMatch(REVIEW): requestDecision(..., Department.CUSTOMER_CARE)
-    Note over EV,DB: only users with JWT group customer-care can decide
-```
+<sub>PlantUML source: [diagrams/08-02.puml](diagrams/08-02.puml)</sub>
 
 A branch can only finish, fail (retry policy of the branch step) or escalate. It can't be routed elsewhere. The item
 itself stays `FORKED` until the join. Its journey shows the branches with their results and the node that processed them.
@@ -143,76 +70,21 @@ Two different kinds of grouping:
 | Set by | `items.track(ref, key, lane)` once, kept for the whole journey | `Approval.quorum(2).assignedTo(team)`, `requestDecision(reason, options, team)` per request |
 | Effect | Every inbox serves lanes **by priority**, and **weights** (VIP 3 : standard 1) prevent starvation. Metrics and the journey per lane | Only members of the team (MP JWT `groups`) see the request and can vote or decide. Notifications go to the team |
 
-```mermaid
-flowchart LR
-    subgraph INBOX["Inbox of any job, e.g. AvailabilityCheck"]
-        direction TB
-        VQ["VIP lane<br/>priority 100, weight 3"]
-        SQ["STANDARD lane<br/>priority 0, weight 1"]
-    end
-    VQ -- "3 batches" --> RUN["Owning run<br/>forEachBatch"]
-    SQ -- "then 1 batch" --> RUN
-    RUN -- "if one lane is empty,<br/>the other gets every batch" --> RUN
-```
+![8.4 Lanes and Responsible Teams (DD-23, DD-24)](diagrams/08-03.svg)
+
+<sub>PlantUML source: [diagrams/08-03.puml](diagrams/08-03.puml)</sub>
 
 ## 8.5 Large Order, Not in Stock – End to End
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant C as Customer system
-    participant APP as OrderResource (app)
-    participant E as dtp engine (any node)
-    participant A1 as Alice (purchasing-electronics)
-    participant A2 as Bob (purchasing-electronics)
-    participant S as Supplier ACME
+![8.5 Large Order, Not in Stock – End to End](diagrams/08-04.svg)
 
-    C->>APP: POST /orders, product P-123 (electronics), quantity 1000
-    APP->>E: items.track(order, number, STANDARD).routeTo(OrderValidation), same transaction as the insert
-    E->>E: OrderValidation ok, fork into the three checks
-    E->>E: all branches PASSED, ScreeningEvaluation routes to AvailabilityCheck
-    E->>E: AvailabilityCheck, not in stock, routeTo Procurement
-    E->>E: 1000 above threshold 500, requestApproval(quorum 2) assigned to purchasing-electronics
-    Note over E: only order 4711 waits, all other orders continue
-    A1->>E: GET /dtp/decision-requests?state=OPEN (filtered by Alice's groups)
-    A1->>C: phone call, is 1000 intended?
-    A1->>E: POST vote APPROVE, comment confirmed by customer
-    Note over E: 1 of 2 approvals, request stays OPEN
-    A2->>E: POST vote APPROVE
-    Note over E: quorum reached, request DECIDED, item back in the Procurement inbox
-    E->>E: Procurement sees the approval, routeTo SupplierExport
-    Note over E: business day 18.00, window daily-supplier-export
-    E->>E: quiesce Procurement, cut-off, collector run
-    E->>S: package ACME, XML with order 4711
-    E->>E: routeTo DeliveryMonitoring, defer 1 day
-    Note over C,S: two business days later
-    S->>E: POST delivery note DN-9917
-    E->>E: GoodsReceipt, transition triggers DeliveryMonitoring
-    E->>E: delivered, routeBack AvailabilityCheck
-    E->>E: AvailabilityCheck in stock, StockReservation, OrderShipment, complete
-```
+<sub>PlantUML source: [diagrams/08-04.puml](diagrams/08-04.puml)</sub>
 
 ## 8.6 Approval Request with Quorum
 
-```mermaid
-stateDiagram-v2
-    direction LR
-    [*] --> OPEN : item.requestApproval(quorum N, team)
-    OPEN --> OPEN : APPROVE by a new team member, approvals below N
-    OPEN --> DECIDED : APPROVE by a new team member, approvals reach N
-    OPEN --> DECIDED : REJECT by any team member
-    DECIDED --> [*]
-    note right of OPEN
-        each user votes at most once,
-        users outside the team are refused,
-        every vote is audited
-    end note
-    note right of DECIDED
-        outcome APPROVED or REJECTED,
-        item is re-queued in the inbox of the
-        requesting job, which routes it
-    end note
-```
+![8.6 Approval Request with Quorum](diagrams/08-05.svg)
+
+<sub>PlantUML source: [diagrams/08-05.puml](diagrams/08-05.puml)</sub>
 
 ## 8.7 Journey of Order 4711
 

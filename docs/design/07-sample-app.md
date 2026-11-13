@@ -8,41 +8,9 @@ things**: a dependency, a handler bean and a job definition.
 
 ## 7.1 What the Application Provides
 
-```mermaid
----
-config:
-  layout: elk
----
-flowchart LR
-    subgraph APP["trade-app: written by the developer"]
-        direction TB
-        CFG["application.properties<br/>optional, all dtp.* have defaults"]
-        DEF["db/dtp-definitions/V1__jobs.sql<br/>job definitions + transitions"]
-        HND["Job handlers, CDI beans<br/>L1: TempFileCleanup<br/>L2: TradeImport, TradeValidation, TradeEnrichment"]
-        ENT["Trade entity, JPA<br/>ItemType constant, L2 only"]
-    end
+![7.1 What the Application Provides](diagrams/07-01.svg)
 
-    subgraph DTP["dtp framework: added via pom.xml dependency dtp-quarkus or dtp-cdi"]
-        direction TB
-        MIG["Migration<br/>1. dtp schema 2. app definitions"]
-        EXT["CDI Build Compatible Extension<br/>discovers JobHandler beans"]
-        ENG["Engine<br/>planner, claimer, executor, leases"]
-        RST["REST, MP Health,<br/>MP Telemetry, MP OpenAPI"]
-    end
-
-    DB[("Database<br/>trade tables + dtp_* tables")]
-
-    DEF -- "applied after dtp schema" --> MIG
-    HND -- "discovered as capabilities" --> EXT
-    CFG -. "MP Config" .-> ENG
-    EXT --> ENG
-    RST --- ENG
-    ENG == "invokes execute(ctx) on exactly one node" ==> HND
-    HND -- "same transaction as item routing" --> ENT
-    MIG --> DB
-    ENG <--> DB
-    ENT --> DB
-```
+<sub>PlantUML source: [diagrams/07-01.puml](diagrams/07-01.puml)</sub>
 
 > This diagram uses the ELK layout for readability. Renderers without ELK support fall back to the default layout.
 
@@ -59,79 +27,9 @@ problem: definitions need the `dtp_*` tables. It also keeps definitions SQL-base
 
 ## 7.2 Sample Classes and the API They Use
 
-```mermaid
-classDiagram
-    direction LR
-    namespace dtp_api {
-        class JobHandler~P~ {
-            <<interface>>
-            +execute(JobContext~P~ ctx) JobResult
-        }
-        class ItemProcessor~E~ {
-            <<interface>>
-            +process(TrackedItem~E~ item)
-        }
-        class JobContext~P~ {
-            <<interface>>
-        }
-        class ResultStatus {
-            <<interface>>
-        }
-        class ItemType~E~ {
-            <<record>>
-        }
-    }
-    namespace trade_app {
-        class TempFileCleanup {
-            <<ApplicationScoped>>
-            -TempStorage storage
-            +execute(JobContext~NoParams~ ctx) JobResult
-        }
-        class TradeImport {
-            <<ApplicationScoped>>
-            +IMPORTED$ RunInfoKey~Long~
-            -TradeFeed feed
-            +execute(JobContext~ImportParams~ ctx) JobResult
-        }
-        class TradeValidation {
-            <<ApplicationScoped>>
-            -EntityManager em
-            +process(TrackedItem~Trade~ item)
-        }
-        class TradeEnrichment {
-            <<ApplicationScoped>>
-            -MarketData marketData
-            +process(TrackedItem~Trade~ item)
-        }
-        class ImportParams {
-            <<record>>
-            LocalDate businessDate
-        }
-        class ImportOutcome {
-            <<enumeration>>
-            SUCCESS
-            NO_DATA
-        }
-        class Trade {
-            <<Entity>>
-            UUID id
-            long version
-            String isin
-        }
-    }
-    TempFileCleanup ..|> JobHandler
-    TradeImport ..|> JobHandler
-    TradeValidation ..|> ItemProcessor
-    TradeEnrichment ..|> ItemProcessor
-    ImportOutcome ..|> ResultStatus
-    TradeImport ..> ImportParams : P
-    TradeImport ..> ImportOutcome : R
-    Trade ..> ItemType : declares ITEM
-    TradeImport ..> Trade : tracks
-    TradeValidation ..> Trade : reads, routes
-    TradeEnrichment ..> Trade : updates, completes
-    JobHandler ..> JobContext
-```
+![7.2 Sample Classes and the API They Use](diagrams/07-02.svg)
+
+<sub>PlantUML source: [diagrams/07-02.puml](diagrams/07-02.puml)</sub>
 
 `TempFileCleanup` and `TradeImport` are `JobHandler`s (no items, or typed parameters and their own tracking).
 `TradeValidation` and `TradeEnrichment` are `ItemProcessor<Trade, UUID>`s: the common case of handling inbox items
@@ -143,55 +41,15 @@ statuses referenced by transitions.
 
 Job transitions (run level) and item routing (item level) are two different layers:
 
-```mermaid
-flowchart LR
-    subgraph RUNS["Job transitions - run level"]
-        direction LR
-        IMP["TradeImport<br/>cron 22:00, business days"] -- "on SUCCESS" --> VAL["TradeValidation"]
-        VAL -- "on SUCCESS or<br/>COMPLETED_WITH_ISSUES" --> ENR["TradeEnrichment"]
-    end
-    subgraph ITEMS["Item routing - item level, one Trade"]
-        direction LR
-        T0(("Trade")) -- "track + routeTo" --> I1["inbox TradeValidation"]
-        I1 -- "valid: routeTo" --> I2["inbox TradeEnrichment"]
-        I1 -- "missing ISIN: routeBack" --> I0["inbox TradeImport"]
-        I0 -- "re-imported: routeTo" --> I1
-        I2 -- "complete" --> DONE(("COMPLETED"))
-        I1 -- "visits > maxItemVisits" --> DEC["WAITING_FOR_DECISION"]
-    end
-```
+![7.3 Sample Flow (level 2)](diagrams/07-03.svg)
+
+<sub>PlantUML source: [diagrams/07-03.puml](diagrams/07-03.puml)</sub>
 
 ## 7.4 Startup: from Deployment to the First Run
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant RT as Runtime (Quarkus or MP)
-    participant EXT as dtp Build Compatible Extension
-    participant ENG as dtp Engine
-    participant FW as Flyway (dtp)
-    participant DB as Database
-    participant H as TempFileCleanup
+![7.4 Startup: from Deployment to the First Run](diagrams/07-04.svg)
 
-    RT->>EXT: discovery and registration phase
-    EXT->>EXT: collect beans of type JobHandler, read P and R
-    Note over EXT: on Quarkus this happens at build time
-    EXT->>ENG: capabilities = handler FQCNs
-    RT->>ENG: application startup event
-    ENG->>FW: migrate dtp schema, history dtp_schema_history
-    FW->>DB: dtp_* tables
-    ENG->>FW: migrate app definitions from db/dtp-definitions
-    FW->>DB: insert dtp_job, dtp_job_revision, dtp_transition
-    ENG->>DB: register node with namespace, color, capabilities
-    ENG->>DB: validate enabled definitions of the namespace
-    Note over ENG,DB: unknown handler class or P/R mismatch is reported<br/>in logs and MP Health, other colors are ignored
-    ENG->>ENG: start leader elector and claimer after a random initial delay
-    Note over ENG,DB: 03:00 cron due. The leader plans a PENDING run, any node claims it
-    ENG->>DB: claim run, job lease acquired
-    ENG->>H: execute(ctx)
-    H-->>ENG: JobResult.success()
-    ENG->>DB: fenced finish, outcome SUCCEEDED
-```
+<sub>PlantUML source: [diagrams/07-04.puml](diagrams/07-04.puml)</sub>
 
 ## 7.5 The Code
 

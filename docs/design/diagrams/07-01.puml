@@ -1,0 +1,43 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 13
+skinparam roundCorner 8
+skinparam ArrowColor #444444
+skinparam BorderColor #555555
+left to right direction
+skinparam RectangleBackgroundColor #eef3fb
+skinparam RectangleBorderColor #4a6fa5
+skinparam UsecaseBackgroundColor #eef3fb
+skinparam UsecaseBorderColor #4a6fa5
+skinparam DatabaseBackgroundColor #f3eefb
+skinparam DatabaseBorderColor #6a4aa5
+skinparam HexagonBackgroundColor #fff3c4
+skinparam HexagonBorderColor #b28704
+skinparam ActorBorderColor #4a6fa5
+rectangle "trade-app: written by the developer" as APP #fbfbfb;line:999999 {
+  rectangle "application.properties\noptional, all dtp.* have defaults" as CFG
+  rectangle "db/dtp-definitions/V1__jobs.sql\njob definitions + transitions" as DEF
+  rectangle "Job handlers, CDI beans\nL1: TempFileCleanup\nL2: TradeImport, TradeValidation, TradeEnrichment" as HND
+  rectangle "Trade entity, JPA\nItemType constant, L2 only" as ENT
+}
+rectangle "dtp framework: added via pom.xml dependency dtp-quarkus or dtp-cdi" as DTP #fbfbfb;line:999999 {
+  rectangle "Migration\n1. dtp schema 2. app definitions" as MIG
+  rectangle "CDI Build Compatible Extension\ndiscovers JobHandler beans" as EXT
+  rectangle "Engine\nplanner, claimer, executor, leases" as ENG
+  rectangle "REST, MP Health,\nMP Telemetry, MP OpenAPI" as RST
+}
+database "Database\ntrade tables + dtp_* tables" as DB
+
+DEF --> MIG : applied after dtp schema
+HND --> EXT : discovered as capabilities
+CFG ..> ENG : MP Config
+EXT --> ENG
+RST -- ENG
+ENG -[bold]-> HND : invokes execute(ctx) on exactly one node
+HND --> ENT : same transaction as item routing
+MIG --> DB
+ENG <--> DB
+ENT --> DB
+@enduml

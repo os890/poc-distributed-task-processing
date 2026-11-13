@@ -1,0 +1,40 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 13
+skinparam roundCorner 8
+skinparam ArrowColor #444444
+skinparam BorderColor #555555
+hide empty description
+skinparam StateBackgroundColor #eef3fb
+skinparam StateBorderColor #4a6fa5
+skinparam NoteBackgroundColor #fffbe6
+skinparam NoteBorderColor #b28704
+left to right direction
+[*] --> PENDING : planned or triggered
+[*] --> FINISHED : concurrency SKIP, outcome SKIPPED
+PENDING --> RUNNING : claimed, job lease acquired
+PENDING --> FINISHED : cancelled before start, outcome CANCELLED
+RUNNING --> STOPPING : stop requested
+RUNNING --> FINISHED : handler returned or failed
+STOPPING --> FINISHED : current unit of work done
+RUNNING --> PENDING : lease expired + RERUN
+STOPPING --> PENDING : lease expired + RERUN
+RUNNING --> WAITING_FOR_DECISION : lease expired + ABANDON
+STOPPING --> WAITING_FOR_DECISION : lease expired + ABANDON
+WAITING_FOR_DECISION --> PENDING : decision RETRY
+WAITING_FOR_DECISION --> FINISHED : decision FAIL or SKIP
+FINISHED --> [*]
+note right of STOPPING
+  StopReason is one of
+  CANCEL, SLOT_END, LIMIT_REACHED,
+  WINDOW, DRAIN, LEASE_LOST.
+  Running work is never interrupted.
+end note
+note right of FINISHED
+  Outcome is one of
+  SUCCEEDED, COMPLETED_WITH_ISSUES,
+  DEFERRED, FAILED, CANCELLED, SKIPPED
+end note
+@enduml

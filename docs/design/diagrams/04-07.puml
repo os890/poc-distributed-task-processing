@@ -1,0 +1,26 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 13
+skinparam roundCorner 8
+skinparam ArrowColor #444444
+skinparam BorderColor #555555
+hide empty description
+skinparam StateBackgroundColor #eef3fb
+skinparam StateBorderColor #4a6fa5
+skinparam NoteBackgroundColor #fffbe6
+skinparam NoteBorderColor #b28704
+left to right direction
+[*] --> SCHEDULED : planned from the window schedule and calendar
+SCHEDULED --> QUIESCING : start time reached, paused jobs get stop reason WINDOW
+QUIESCING --> OPEN : all paused jobs idle, cut-off recorded, collector run planned
+QUIESCING --> WAITING_FOR_DECISION : quiesce timeout
+WAITING_FOR_DECISION --> QUIESCING : KEEP_WAITING
+WAITING_FOR_DECISION --> OPEN : FORCE_OPEN
+WAITING_FOR_DECISION --> SKIPPED : SKIP_OCCURRENCE
+OPEN --> CLOSED : collector run finished
+OPEN --> WAITING_FOR_DECISION : collector run failed
+CLOSED --> [*]
+SKIPPED --> [*]
+@enduml

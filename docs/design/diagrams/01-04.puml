@@ -1,0 +1,46 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 13
+skinparam roundCorner 8
+skinparam ArrowColor #444444
+skinparam BorderColor #555555
+left to right direction
+skinparam RectangleBackgroundColor #eef3fb
+skinparam RectangleBorderColor #4a6fa5
+skinparam UsecaseBackgroundColor #eef3fb
+skinparam UsecaseBorderColor #4a6fa5
+skinparam DatabaseBackgroundColor #f3eefb
+skinparam DatabaseBorderColor #6a4aa5
+skinparam HexagonBackgroundColor #fff3c4
+skinparam HexagonBorderColor #b28704
+skinparam ActorBorderColor #4a6fa5
+rectangle "Node - dtp engine" as NODE #fbfbfb;line:999999 {
+  rectangle "NodeRegistrar\nregister, heartbeat, drain, deregister" as REG
+  rectangle "LeaderElector\nacquire or renew role housekeeping,\njittered, local safety deadline" as LE
+  rectangle "Housekeeping - active only while leader (DD-3)" as HK #fbfbfb;line:999999 {
+    rectangle "RunPlanner\ncron + calendar, ASAP, inbox,\nslots, fallbacks" as PLAN
+    rectangle "LeaseReaper\nexpired leases, takeover policy" as REAP
+    rectangle "WindowCoordinator\nquiesce, open, close" as WIN
+  }
+  rectangle "RunClaimer\nadaptive polling, capabilities,\nmax concurrent runs" as CLAIM
+  rectangle "RunExecutor\nvirtual threads, JobContext,\nunits of work" as EXEC
+  rectangle "LeaseKeeper\nrenew, detect loss,\nstop signals" as KEEP
+}
+database "dtp_* tables" as DB
+rectangle "Job handlers\nCDI beans" as H
+
+REG <--> DB
+LE <--> DB : dtp_leader: acquire, renew, resign
+LE --> HK : onElected / onRevoked
+PLAN --> DB : insert PENDING runs (run_key unique)
+REAP --> DB : release / re-queue / escalate
+WIN --> DB : occurrence state, stop requests
+CLAIM --> DB : claim: SKIP LOCKED + lease update
+CLAIM --> EXEC : claimed run
+EXEC --> H : execute(ctx)
+EXEC --> DB : fenced units of work, finish
+KEEP --> DB : renew leases, read stop flags
+KEEP --> EXEC : stop signal
+@enduml

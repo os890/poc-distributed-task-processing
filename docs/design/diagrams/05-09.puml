@@ -1,0 +1,37 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 13
+skinparam roundCorner 8
+skinparam ArrowColor #444444
+skinparam BorderColor #555555
+skinparam sequenceMessageAlign left
+skinparam ParticipantPadding 10
+skinparam BoxPadding 10
+skinparam NoteBackgroundColor #fffbe6
+skinparam NoteBorderColor #b28704
+skinparam ParticipantBackgroundColor #eef3fb
+skinparam ParticipantBorderColor #4a6fa5
+skinparam SequenceGroupBodyBackgroundColor transparent
+autonumber
+participant "RunExecutor" as EX
+participant "Database" as DB
+participant "RunPlanner (leader)" as PL
+participant "Fallback handler" as FB
+participant "Business user" as BIZ
+participant "REST API (dtp-business)" as API
+
+EX -> DB : package 17 failed, attempts 3 of 3
+EX -> DB : package 17 WAITING_FOR_DECISION, INSERT decision request with options
+EX -> DB : continue with other packages, run ends COMPLETED_WITH_ISSUES
+note over DB : request stays OPEN, it never expires
+PL -> DB : open requests with fallback_due_at passed and no fallback run?
+PL -> DB : INSERT fallback run, run_key fallback + request id
+FB -> FB : execute with typed DecisionRequestContext, e.g. send a reminder
+BIZ -> API : GET open decision requests
+BIZ -> API : POST decide RESEND_PACKAGE with comment
+API -> DB : request DECIDED, decided_by and decided_at audited
+API -> DB : package 17 PENDING, attempts reset, back in the requesting step's inbox
+note over DB : outside the slot the package waits for the next slot, D39
+@enduml

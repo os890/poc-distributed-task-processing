@@ -1,0 +1,113 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 13
+skinparam roundCorner 8
+skinparam ArrowColor #444444
+skinparam BorderColor #555555
+hide circle
+skinparam linetype ortho
+skinparam ClassBackgroundColor #eef3fb
+skinparam ClassBorderColor #4a6fa5
+skinparam ClassAttributeFontSize 12
+entity dtp_job {
+  <b>id : ID</b> <<PK>>
+  namespace : varchar <<UK>> <color:#666666><i>unique with name</i></color>
+  name : varchar <<UK>>
+  current_revision : int
+  enabled : bool
+  created_at : timestamp
+  updated_at : timestamp
+}
+entity dtp_job_revision {
+  <b>job_id : ID</b> <<PK, FK>>
+  <b>revision : int</b> <<PK>>
+  handler_class : varchar <color:#666666><i>FQCN of the JobHandler bean</i></color>
+  trigger_asap : bool
+  cron_expression : varchar
+  cron_zone : varchar
+  cron_calendar_id : ID <<FK>>
+  calendar_shift : varchar <color:#666666><i>SKIP, NEXT, PREVIOUS</i></color>
+  misfire_policy : varchar
+  trigger_external : bool
+  inbox_min_items : int <color:#666666><i>null means no inbox trigger</i></color>
+  inbox_debounce : varchar <color:#666666><i>ISO-8601 duration, DD-21</i></color>
+  concurrency_policy : varchar <color:#666666><i>SKIP, QUEUE_ONE, QUEUE_ALL</i></color>
+  takeover_policy : varchar <color:#666666><i>RERUN, ABANDON</i></color>
+  retry_scope : varchar <color:#666666><i>ITEM, PACKAGE</i></color>
+  retry_max : int
+  retry_backoff : varchar <color:#666666><i>ISO-8601</i></color>
+  max_item_visits : int
+  time_limit : varchar <color:#666666><i>ISO-8601</i></color>
+  item_limit : bigint
+  lease_duration : varchar <color:#666666><i>ISO-8601</i></color>
+  ack_required : bool
+  fallback_job_id : ID <<FK>>
+  fallback_delay : varchar <color:#666666><i>ISO-8601</i></color>
+  expected_max_queue_age : varchar <color:#666666><i>ISO-8601, jam detection, 09</i></color>
+  technical_failure_threshold : int <color:#666666><i>per 5 min, 09</i></color>
+  technical_responsible_group : varchar <color:#666666><i>default dtp-operator, DD-29</i></color>
+  default_parameters : json
+  changed_by : varchar
+  changed_at : timestamp
+}
+entity dtp_transition {
+  <b>id : ID</b> <<PK>>
+  source_job_id : ID <<FK>>
+  source_revision : int <<FK>> <color:#666666><i>part of the revision, DD-10</i></color>
+  on_outcome : varchar <color:#666666><i>exactly one of the two on_ columns</i></color>
+  on_result_status : varchar
+  target_job_id : ID <<FK>>
+}
+entity dtp_join_member {
+  <b>target_job_id : ID</b> <<PK, FK>>
+  <b>target_revision : int</b> <<PK, FK>>
+  <b>member_job_id : ID</b> <<PK, FK>>
+  accepted_outcomes : varchar <color:#666666><i>e.g. SUCCEEDED,COMPLETED_WITH_ISSUES</i></color>
+}
+entity dtp_job_slot {
+  <b>id : ID</b> <<PK>>
+  job_id : ID <<FK>>
+  revision : int <<FK>>
+  calendar_id : ID <<FK>>
+  from_time : time
+  to_time : time
+}
+entity dtp_calendar {
+  <b>id : ID</b> <<PK>>
+  namespace : varchar <<UK>>
+  name : varchar <<UK>>
+  zone : varchar
+  business_weekdays : varchar <color:#666666><i>e.g. MON-FRI</i></color>
+}
+entity dtp_calendar_exception {
+  <b>calendar_id : ID</b> <<PK, FK>>
+  <b>day : date</b> <<PK>>
+  business_day : bool <color:#666666><i>false means holiday</i></color>
+  description : varchar
+}
+entity dtp_window {
+  <b>id : ID</b> <<PK>>
+  namespace : varchar <<UK>>
+  name : varchar <<UK>>
+  schedule_cron : varchar
+  calendar_id : ID <<FK>>
+  collector_job_id : ID <<FK>>
+  quiesce_timeout : varchar <color:#666666><i>ISO-8601</i></color>
+  enabled : bool
+}
+entity dtp_window_paused_job {
+  <b>window_id : ID</b> <<PK, FK>>
+  <b>job_id : ID</b> <<PK, FK>>
+}
+
+dtp_job ||--|{ dtp_job_revision : has revisions
+dtp_job_revision ||--o{ dtp_transition : source of
+dtp_job_revision ||--o{ dtp_join_member : join target of
+dtp_job_revision ||--o{ dtp_job_slot : may process in
+dtp_calendar ||--o{ dtp_calendar_exception : has
+dtp_calendar ||--o{ dtp_job_slot : used by
+dtp_window ||--o{ dtp_window_paused_job : pauses
+dtp_job ||--o{ dtp_window : collects for
+@enduml

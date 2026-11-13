@@ -1,0 +1,73 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 13
+skinparam roundCorner 8
+skinparam ArrowColor #444444
+skinparam BorderColor #555555
+left to right direction
+hide empty members
+skinparam ClassBackgroundColor #eef3fb
+skinparam ClassBorderColor #4a6fa5
+skinparam PackageBackgroundColor transparent
+skinparam StereotypeCBackgroundColor #ffffff
+package "dtp-api" {
+interface JobHandler<P> {
+  +execute(JobContext<P> ctx) : JobResult
+}
+interface ItemProcessor<E> {
+  +process(TrackedItem<E> item)
+}
+interface JobContext<P> {
+}
+interface ResultStatus {
+}
+class ItemType<E> <<record>> {
+}
+}
+package "trade-app" {
+class TempFileCleanup <<ApplicationScoped>> {
+  -TempStorage storage
+  +execute(JobContext<NoParams> ctx) : JobResult
+}
+class TradeImport <<ApplicationScoped>> {
+  {static} +IMPORTED : RunInfoKey<Long>
+  -TradeFeed feed
+  +execute(JobContext<ImportParams> ctx) : JobResult
+}
+class TradeValidation <<ApplicationScoped>> {
+  -EntityManager em
+  +process(TrackedItem<Trade> item)
+}
+class TradeEnrichment <<ApplicationScoped>> {
+  -MarketData marketData
+  +process(TrackedItem<Trade> item)
+}
+class ImportParams <<record>> {
+  LocalDate businessDate
+}
+enum ImportOutcome {
+  SUCCESS
+  NO_DATA
+}
+class Trade <<Entity>> {
+  UUID id
+  long version
+  String isin
+}
+}
+
+TempFileCleanup ..|> JobHandler
+TradeImport ..|> JobHandler
+TradeValidation ..|> ItemProcessor
+TradeEnrichment ..|> ItemProcessor
+ImportOutcome ..|> ResultStatus
+TradeImport ..> ImportParams : P
+TradeImport ..> ImportOutcome : R
+Trade ..> ItemType : declares ITEM
+TradeImport ..> Trade : tracks
+TradeValidation ..> Trade : reads, routes
+TradeEnrichment ..> Trade : updates, completes
+JobHandler ..> JobContext
+@enduml

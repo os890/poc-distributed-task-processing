@@ -1,0 +1,28 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 13
+skinparam roundCorner 8
+skinparam ArrowColor #444444
+skinparam BorderColor #555555
+left to right direction
+skinparam RectangleBackgroundColor #eef3fb
+skinparam RectangleBorderColor #4a6fa5
+skinparam UsecaseBackgroundColor #eef3fb
+skinparam UsecaseBorderColor #4a6fa5
+skinparam DatabaseBackgroundColor #f3eefb
+skinparam DatabaseBorderColor #6a4aa5
+skinparam HexagonBackgroundColor #fff3c4
+skinparam HexagonBorderColor #b28704
+skinparam ActorBorderColor #4a6fa5
+rectangle "Inbox of any job, e.g. AvailabilityCheck" as INBOX #fbfbfb;line:999999 {
+  rectangle "VIP lane\npriority 100, weight 3" as VQ
+  rectangle "STANDARD lane\npriority 0, weight 1" as SQ
+}
+rectangle "Owning run\nforEachBatch" as RUN
+
+VQ --> RUN : 3 batches
+SQ --> RUN : then 1 batch
+RUN --> RUN : if one lane is empty,\nthe other gets every batch
+@enduml

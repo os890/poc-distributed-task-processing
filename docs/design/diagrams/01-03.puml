@@ -1,0 +1,55 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 13
+skinparam roundCorner 8
+skinparam ArrowColor #444444
+skinparam BorderColor #555555
+skinparam RectangleBackgroundColor #eef3fb
+skinparam RectangleBorderColor #4a6fa5
+skinparam UsecaseBackgroundColor #eef3fb
+skinparam UsecaseBorderColor #4a6fa5
+skinparam DatabaseBackgroundColor #f3eefb
+skinparam DatabaseBorderColor #6a4aa5
+skinparam HexagonBackgroundColor #fff3c4
+skinparam HexagonBorderColor #b28704
+skinparam ActorBorderColor #4a6fa5
+rectangle "dtp-api" as API
+rectangle "dtp-spi" as SPI
+rectangle "dtp-domain" as DOM
+rectangle "dtp-application" as APPL
+rectangle "dtp-adapter-persistence-jpa" as PJPA
+rectangle "dtp-adapter-coordination-jdbc" as CJDBC
+rectangle "dtp-adapter-schema-flyway" as FLYW
+rectangle "dtp-adapter-rest" as RST
+rectangle "dtp-adapter-scheduler" as SCHD
+rectangle "dtp-adapter-observability" as OBSV
+rectangle "dtp-cdi" as CDIM
+rectangle "dtp-quarkus runtime" as QRT
+rectangle "dtp-quarkus deployment" as QDP
+rectangle "dtp-architecture-tests" as ARCH
+rectangle "dtp-examples" as EX
+rectangle "dtp-bom" as BOM
+rectangle "dtp-test" as TST
+
+DOM <-- APPL
+SPI <-- APPL
+APPL <-- PJPA
+APPL <-- CJDBC
+APPL <-- RST
+APPL <-- SCHD
+APPL <-- OBSV
+PJPA <-- CDIM
+CJDBC <-- CDIM
+FLYW <-- CDIM
+RST <-- CDIM
+SCHD <-- CDIM
+OBSV <-- CDIM
+CDIM <-- QRT
+QRT <-- QDP
+API <-- EX
+API <-- CDIM
+CDIM <-- TST
+CDIM <.. ARCH : tests all
+@enduml

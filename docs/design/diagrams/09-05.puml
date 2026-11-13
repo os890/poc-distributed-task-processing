@@ -1,0 +1,33 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 13
+skinparam roundCorner 8
+skinparam ArrowColor #444444
+skinparam ActivityBackgroundColor #eef3fb
+skinparam ActivityBorderColor #4a6fa5
+skinparam ActivityDiamondBackgroundColor #fff3c4
+skinparam ActivityDiamondBorderColor #b28704
+start
+:Batch of items in one fenced transaction;
+if (process(item) threw\nan exception?) then (no)
+  :COMMIT;
+  stop
+else (yes)
+endif
+:ROLLBACK the whole batch;
+:Process the items of this batch one by one,\neach in its own transaction;
+if (Which item fails?) then (the others)
+  :committed normally;
+  stop
+else (the poison item)
+  :technical failure: exception class,\nstack hash, message in the journal;
+  if (Retries left?) then (yes)
+    :QUEUED with next_attempt_at;
+  else (no)
+    :Decision request assigned to operations\n(technical responsible group, default dtp-operator);
+  endif
+endif
+stop
+@enduml

@@ -1,0 +1,112 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 13
+skinparam roundCorner 8
+skinparam ArrowColor #444444
+skinparam BorderColor #555555
+hide circle
+skinparam linetype ortho
+skinparam ClassBackgroundColor #eef3fb
+skinparam ClassBorderColor #4a6fa5
+skinparam ClassAttributeFontSize 12
+entity dtp_item {
+  <b>id : ID</b> <<PK>>
+  namespace : varchar <<UK>>
+  item_type : varchar <<UK>> <color:#666666><i>ItemType name, DD-7 and DD-20</i></color>
+  ref_id : varchar <<UK>> <color:#666666><i>encoded by IdCodec</i></color>
+  ref_version : bigint <<UK>> <color:#666666><i>0 = unversioned, NOT NULL so the unique key works, DQ-3</i></color>
+  business_key : varchar
+  lane : varchar <color:#666666><i>ItemLane name, DD-23</i></color>
+  lane_priority : int
+  lane_weight : int
+  current_job_id : ID <color:#666666><i>inbox</i></color>
+  inbox_seq : bigint <color:#666666><i>from DB sequence, set on every routing</i></color>
+  state : varchar <color:#666666><i>QUEUED IN_PROGRESS FORKED WAITING_FOR_DECISION COMPLETED DISCARDED</i></color>
+  open_branches : int <color:#666666><i>FORKED only</i></color>
+  work_package_id : ID <<FK>>
+  attempts : int
+  next_attempt_at : timestamp
+  created_at : timestamp
+  updated_at : timestamp
+}
+entity dtp_item_visit {
+  <b>item_id : ID</b> <<PK, FK>>
+  <b>job_id : ID</b> <<PK>>
+  visits : int
+}
+entity dtp_item_branch {
+  <b>item_id : ID</b> <<PK, FK>>
+  <b>branch_job_id : ID</b> <<PK>> <color:#666666><i>inbox of the branch job</i></color>
+  join_job_id : ID
+  inbox_seq : bigint
+  state : varchar <color:#666666><i>QUEUED IN_PROGRESS FINISHED WAITING_FOR_DECISION</i></color>
+  status : varchar <color:#666666><i>typed branch result, by name</i></color>
+  reason : varchar
+  attempts : int
+  next_attempt_at : timestamp
+  finished_by_node_id : ID
+  finished_at : timestamp
+}
+entity dtp_item_event {
+  <b>id : ID</b> <<PK>>
+  namespace : varchar
+  item_id : ID <<FK>>
+  event_type : varchar
+  from_job_id : ID
+  to_job_id : ID
+  run_id : ID
+  run_attempt : int <color:#666666><i>shows work redone after a takeover</i></color>
+  work_package_id : ID
+  flow_instance_id : ID
+  node_id : ID
+  reason : varchar
+  failure_kind : varchar <color:#666666><i>BUSINESS TECHNICAL, DD-29</i></color>
+  error_type : varchar <color:#666666><i>exception class</i></color>
+  error_hash : varchar <color:#666666><i>hash of the top stack frames</i></color>
+  wait_ms : bigint <color:#666666><i>departures: time in the inbox</i></color>
+  trace_id : varchar
+  data : json
+  occurred_at : timestamp <color:#666666><i>partition key</i></color>
+}
+entity dtp_decision_vote {
+  <b>request_id : ID</b> <<PK, FK>>
+  <b>voter : varchar</b> <<PK>> <color:#666666><i>one vote per user</i></color>
+  vote : varchar <color:#666666><i>APPROVE REJECT</i></color>
+  comment : varchar
+  voted_at : timestamp
+}
+entity dtp_decision_request {
+  <b>id : ID</b> <<PK>>
+  namespace : varchar
+  kind : varchar <color:#666666><i>CHOICE APPROVAL</i></color>
+  required_approvals : int <color:#666666><i>APPROVAL only</i></color>
+  responsible_group : varchar <color:#666666><i>JWT group of the responsible team, DD-24</i></color>
+  requested_by_job_id : ID <color:#666666><i>decision result is re-queued here, DD-19</i></color>
+  subject_type : varchar <color:#666666><i>RUN WORK_PACKAGE ITEM WINDOW_OCCURRENCE</i></color>
+  subject_id : ID
+  job_id : ID
+  run_id : ID
+  reason : varchar
+  context : json
+  options : json <color:#666666><i>name, label, builtIn</i></color>
+  state : varchar <color:#666666><i>OPEN DECIDED</i></color>
+  chosen_option : varchar
+  decided_by : varchar
+  comment : varchar
+  created_at : timestamp
+  decided_at : timestamp
+  fallback_due_at : timestamp
+  fallback_run_id : ID
+}
+
+dtp_item ||--|{ dtp_item_event : journey
+dtp_item ||--o{ dtp_item_visit : visit counters
+dtp_item ||--o{ dtp_item_branch : parallel branches, DD-22
+dtp_work_package ||--o{ dtp_item : contains
+dtp_decision_request }o--o| dtp_item : subject
+dtp_decision_request }o--o| dtp_work_package : subject
+dtp_decision_request }o--o| dtp_run : subject or context
+dtp_decision_request ||--o{ dtp_decision_vote : votes (APPROVAL)
+@enduml

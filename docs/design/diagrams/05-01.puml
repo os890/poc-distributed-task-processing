@@ -1,0 +1,54 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 13
+skinparam roundCorner 8
+skinparam ArrowColor #444444
+skinparam ActivityBackgroundColor #eef3fb
+skinparam ActivityBorderColor #4a6fa5
+skinparam ActivityDiamondBackgroundColor #fff3c4
+skinparam ActivityDiamondBorderColor #b28704
+start
+:Trigger occurrence\ncron slot, ASAP, inbox, external,\ntransition, join, decision, fallback;
+if (Job enabled?) then (no)
+  :ignore, no run row;
+  stop
+else (yes)
+endif
+if (Cron trigger on a\nnon-business day?) then (yes)
+  if (Calendar shift) then (SKIP)
+    :ignore, no run row;
+    stop
+  else (NEXT or PREVIOUS)
+    :compute shifted instant;
+  endif
+else (no)
+endif
+if (Job paused by an active\nwindow occurrence?) then (yes)
+  :planned as usual, but only claimed\nafter the occurrence is closed;
+else (no)
+endif
+if (Active or pending run\nof this job exists?) then (no)
+else (yes)
+  switch (Concurrency policy)
+  case (SKIP)
+    :INSERT run FINISHED / SKIPPED\nfor transparency;
+    stop
+  case (QUEUE_ONE)
+    if (PENDING run\nalready queued?) then (yes)
+      :coalesce: record trigger\nin the pending run's info;
+      stop
+    else (no)
+    endif
+  case (QUEUE_ALL)
+  endswitch
+endif
+:INSERT run PENDING\nON CONFLICT run_key DO NOTHING;
+if (Job has processing slots?) then (yes)
+  :not_before = next slot start\nslot_end = end of that slot;
+else (no)
+endif
+:ready to be claimed;
+stop
+@enduml

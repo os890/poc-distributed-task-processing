@@ -1,0 +1,62 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 13
+skinparam roundCorner 8
+skinparam ArrowColor #444444
+skinparam BorderColor #555555
+left to right direction
+hide empty members
+skinparam ClassBackgroundColor #eef3fb
+skinparam ClassBorderColor #4a6fa5
+skinparam PackageBackgroundColor transparent
+skinparam StereotypeCBackgroundColor #ffffff
+interface LeaseManager {
+  +claim(NodeContext node, int max) : List<ClaimedRun>
+  +renew(ClaimedRun run) : boolean
+  +release(ClaimedRun run)
+  +checkFence(ClaimedRun run) : boolean
+  +expireStale() : List<ExpiredLease>
+}
+interface SqlDialect {
+  +claimQuery() : String
+  +lockForShare(String table) : String
+  +insertIgnore(String table, String key) : String
+  +supportsSkipLocked() : boolean
+}
+interface IdGenerator {
+  +next() : Object
+  +idType() : Class
+}
+interface IdCodec<I> {
+  +encode(I id) : String
+  +decode(String value) : I
+  +type() : Class~<I>
+}
+interface ParameterCodec {
+  +read(String json, Class<P> type) : P
+  +write(Object params) : String
+}
+interface HandlerInvoker {
+  +capabilities() : Set<String>
+  +invoke(String handlerClass, ContextImpl ctx) : Outcome
+}
+interface LeaderElection {
+  +join(String role, LeadershipListener listener) : Leadership
+}
+interface Leadership {
+  +isLeader() : boolean
+  +term() : long
+  +resign()
+}
+interface LeadershipListener {
+  +onElected(long term)
+  +onRevoked(long term)
+}
+
+LeaseManager ..> SqlDialect : JDBC default
+LeaderElection ..> SqlDialect : JDBC default
+LeaderElection ..> Leadership
+LeaderElection ..> LeadershipListener
+@enduml

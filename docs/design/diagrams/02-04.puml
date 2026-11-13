@@ -1,0 +1,130 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 13
+skinparam roundCorner 8
+skinparam ArrowColor #444444
+skinparam BorderColor #555555
+left to right direction
+hide empty members
+skinparam ClassBackgroundColor #eef3fb
+skinparam ClassBorderColor #4a6fa5
+skinparam PackageBackgroundColor transparent
+skinparam StereotypeCBackgroundColor #ffffff
+class TrackedItem <<AggregateRoot>> {
+  ItemId id
+  ItemKey key
+  BusinessKey businessKey
+  JobId currentJob
+  Lane lane
+  ItemState state
+  int openBranches
+  PackageId workPackage
+  int attempts
+  Instant nextAttemptAt
+  VisitCounter visits
+  +routeTo(JobId target, RoutingContext ctx) : ItemEvent
+  +routeBack(JobId target, String reason, RoutingContext ctx) : ItemEvent
+  +assignTo(PackageId pkg) : ItemEvent
+  +fork(List<JobId> branches, JobId joinAt) : ItemEvent
+  +finishBranch(JobId branch, String status, String reason) : ItemEvent
+  +fail(String reason, RetryPolicy policy) : ItemEvent
+  +defer(Duration delay, String reason) : ItemEvent
+  +escalate(String reason) : ItemEvent
+  +awaitDecision(DecisionRequestId id) : ItemEvent
+  +requeueAfterDecision(Decision decision) : ItemEvent
+  +complete(RoutingContext ctx) : ItemEvent
+  +discard(String reason) : ItemEvent
+}
+class ItemKey <<ValueObject>> {
+  String itemType
+  String refId
+  Long refVersion
+}
+class Lane <<ValueObject>> {
+  String name
+  int priority
+  int weight
+}
+class ItemBranch <<Entity>> {
+  JobId branchJob
+  JobId joinJob
+  BranchState state
+  String status
+  String reason
+  NodeId finishedBy
+}
+class VisitCounter <<ValueObject>> {
+  +visitsOf(JobId job) : int
+  +increment(JobId job) : VisitCounter
+  +exceeds(JobId job, int max) : boolean
+}
+class RoutingContext <<ValueObject>> {
+  RunId run
+  FencingToken token
+  NodeId node
+  FlowInstanceId flowInstance
+  PackageId workPackage
+}
+class ItemEvent <<Entity>> {
+  ItemEventId id
+  ItemId item
+  ItemEventType type
+  JobId fromJob
+  JobId toJob
+  RunId run
+  int runAttempt
+  PackageId workPackage
+  FlowInstanceId flowInstance
+  NodeId node
+  Instant occurredAt
+  String reason
+  FailureKind failureKind
+  String errorType
+  String errorHash
+  Long waitMs
+  String traceId
+  Json data
+}
+enum ItemState {
+  QUEUED
+  IN_PROGRESS
+  FORKED
+  WAITING_FOR_DECISION
+  COMPLETED
+  DISCARDED
+}
+enum ItemEventType {
+  TRACKED
+  ROUTED
+  ROUTED_BACK
+  STARTED
+  FORKED
+  BRANCH_FINISHED
+  JOINED
+  PACKAGED
+  SENT
+  ACKNOWLEDGED
+  REJECTED
+  FAILED
+  RETRY_SCHEDULED
+  REPROCESSED
+  DEFERRED
+  LOOP_LIMIT_EXCEEDED
+  ESCALATED
+  VOTED
+  DECIDED
+  COMPLETED
+  DISCARDED
+}
+
+TrackedItem *-- ItemKey
+TrackedItem *-- Lane
+TrackedItem *-- VisitCounter
+TrackedItem "1" *-- "0..*" ItemBranch : parallel branches
+TrackedItem "1" --> "1..*" ItemEvent : journey (append-only)
+TrackedItem ..> RoutingContext
+TrackedItem ..> ItemState
+ItemEvent ..> ItemEventType
+@enduml

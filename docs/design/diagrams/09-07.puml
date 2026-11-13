@@ -1,0 +1,38 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 13
+skinparam roundCorner 8
+skinparam ArrowColor #444444
+skinparam BorderColor #555555
+left to right direction
+skinparam RectangleBackgroundColor #eef3fb
+skinparam RectangleBorderColor #4a6fa5
+skinparam UsecaseBackgroundColor #eef3fb
+skinparam UsecaseBorderColor #4a6fa5
+skinparam DatabaseBackgroundColor #f3eefb
+skinparam DatabaseBorderColor #6a4aa5
+skinparam HexagonBackgroundColor #fff3c4
+skinparam HexagonBorderColor #b28704
+skinparam ActorBorderColor #4a6fa5
+rectangle "Every node" as NODES #fbfbfb;line:999999 {
+  rectangle "Processing path\nunits of work, leases, claims" as HOT
+  rectangle "Per-node metrics\ncounters, histograms" as M1
+  rectangle "Traces\nspan per unit of work" as T1
+}
+rectangle "Projector leader only" as LEADER #fbfbfb;line:999999 {
+  database "Read model views" as VIEWS
+  rectangle "Cluster gauges\ndtp.cluster.*" as M2
+}
+rectangle "OpenTelemetry collector" as COL
+rectangle "Metrics and tracing backend\ne.g. Prometheus, Grafana, Tempo" as BACK
+
+HOT --> M1
+HOT --> T1
+VIEWS --> M2
+M1 --> COL
+T1 --> COL
+M2 --> COL
+COL --> BACK
+@enduml

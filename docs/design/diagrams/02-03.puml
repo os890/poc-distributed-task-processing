@@ -1,0 +1,152 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 13
+skinparam roundCorner 8
+skinparam ArrowColor #444444
+skinparam BorderColor #555555
+left to right direction
+hide empty members
+skinparam ClassBackgroundColor #eef3fb
+skinparam ClassBorderColor #4a6fa5
+skinparam PackageBackgroundColor transparent
+skinparam StereotypeCBackgroundColor #ffffff
+class Run <<AggregateRoot>> {
+  RunId id
+  JobId job
+  Revision revision
+  RunKey runKey
+  TriggerInfo trigger
+  FlowInstanceId flowInstance
+  OccurrenceId windowOccurrence
+  RunState state
+  StopReason stopReason
+  RunOutcome outcome
+  String resultStatus
+  int attempt
+  NodeId owner
+  FencingToken fencingToken
+  RunInfo info
+  ErrorInfo error
+  +claim(NodeId node, FencingToken token)
+  +requestStop(StopReason reason)
+  +waitForDecision(DecisionRequestId id)
+  +finish(RunOutcome outcome, String result)
+  +requeue(String reason)
+  +skip(String reason)
+}
+class RunAttempt <<Entity>> {
+  int number
+  NodeId node
+  FencingToken token
+  Instant startedAt
+  Instant endedAt
+  String endReason
+}
+class JobLease <<AggregateRoot>> {
+  JobId job
+  RunId run
+  NodeId owner
+  Instant leaseUntil
+  FencingToken fencingToken
+  +acquire(RunId run, NodeId node, Duration d) : FencingToken
+  +renew(FencingToken token, Duration d)
+  +release(FencingToken token)
+  +expire() : FencingToken
+}
+class Node <<AggregateRoot>> {
+  NodeId id
+  String color
+  String appVersion
+  String host
+  NodeState state
+  Instant heartbeatAt
+  Set<HandlerRef> capabilities
+  +heartbeat()
+  +drain()
+  +markDead()
+}
+class FlowInstance <<AggregateRoot>> {
+  FlowInstanceId id
+  String flowName
+  BusinessKey businessKey
+  FlowState state
+  RunInfo info
+  +complete()
+}
+class WorkPackage <<AggregateRoot>> {
+  PackageId id
+  JobId job
+  RunId createdBy
+  long sequence
+  PackageState state
+  int attempts
+  int itemCount
+  OccurrenceId windowOccurrence
+  Instant nextAttemptAt
+  RunInfo info
+  +start(RunId run)
+  +markSent()
+  +acknowledge()
+  +reject(String reason)
+  +complete()
+  +fail(String reason, RetryPolicy policy)
+  +discard(String reason)
+}
+class WindowOccurrence <<AggregateRoot>> {
+  OccurrenceId id
+  WindowId window
+  long sequence
+  Instant scheduledAt
+  OccurrenceState state
+  Instant from
+  Instant cutOff
+  RunId collectorRun
+  +startQuiescing()
+  +open(Instant cutOff)
+  +close()
+  +waitForDecision(DecisionRequestId id)
+}
+class JoinInstance <<AggregateRoot>> {
+  JobId target
+  FlowInstanceId flowInstance
+  Set<JobId> arrived
+  boolean fired
+  +arrive(JobId job, RunOutcome outcome, JoinSpec spec) : boolean
+}
+enum RunState {
+  PENDING
+  RUNNING
+  STOPPING
+  WAITING_FOR_DECISION
+  FINISHED
+}
+enum RunOutcome {
+  SUCCEEDED
+  COMPLETED_WITH_ISSUES
+  DEFERRED
+  FAILED
+  CANCELLED
+  SKIPPED
+}
+enum StopReason {
+  CANCEL
+  SLOT_END
+  LIMIT_REACHED
+  WINDOW
+  DRAIN
+  LEASE_LOST
+}
+
+Run "1" *-- "1..*" RunAttempt
+Run ..> JobLease : executes under
+JobLease ..> Node : owner
+Run ..> FlowInstance : optional
+Run ..> WindowOccurrence : optional
+WorkPackage ..> Run : created by
+JoinInstance ..> FlowInstance
+Run ..> RunState
+Run ..> RunOutcome
+Run ..> StopReason
+@enduml

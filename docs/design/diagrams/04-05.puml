@@ -1,0 +1,29 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 13
+skinparam roundCorner 8
+skinparam ArrowColor #444444
+skinparam BorderColor #555555
+hide empty description
+skinparam StateBackgroundColor #eef3fb
+skinparam StateBorderColor #4a6fa5
+skinparam NoteBackgroundColor #fffbe6
+skinparam NoteBorderColor #b28704
+left to right direction
+state retry <<choice>>
+[*] --> PENDING : created by a run, items assigned
+PENDING --> IN_PROGRESS : started, never inside a closed slot
+IN_PROGRESS --> DONE : processed, no ack required
+IN_PROGRESS --> SENT : forwarded, ack required
+SENT --> DONE : acknowledged
+SENT --> retry : rejected
+IN_PROGRESS --> retry : failed
+retry --> PENDING : retries left, next_attempt_at set
+retry --> WAITING_FOR_DECISION : retries exhausted
+WAITING_FOR_DECISION --> PENDING : decision RETRY or custom
+WAITING_FOR_DECISION --> DISCARDED : decision DISCARD
+DONE --> [*]
+DISCARDED --> [*]
+@enduml

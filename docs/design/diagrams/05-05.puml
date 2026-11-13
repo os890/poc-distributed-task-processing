@@ -1,0 +1,41 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 13
+skinparam roundCorner 8
+skinparam ArrowColor #444444
+skinparam BorderColor #555555
+skinparam sequenceMessageAlign left
+skinparam ParticipantPadding 10
+skinparam BoxPadding 10
+skinparam NoteBackgroundColor #fffbe6
+skinparam NoteBorderColor #b28704
+skinparam ParticipantBackgroundColor #eef3fb
+skinparam ParticipantBorderColor #4a6fa5
+skinparam SequenceGroupBodyBackgroundColor transparent
+autonumber
+participant "Node A (owner, token 42)" as A
+participant "Database" as DB
+participant "Node B - LeaseReaper (leader)" as R
+participant "Node C - RunClaimer" as C
+
+A -> DB : unit of work committed with token 42
+note over A : GC pause, network partition or SIGSTOP. No renewals.
+R -> DB : UPDATE dtp_job_lease SET run NULL, token + 1 WHERE lease_until passed
+DB --> R : job J1, run R1, token is now 43
+alt takeover policy RERUN
+R -> DB : R1 back to PENDING, attempt ended with LEASE_EXPIRED
+else takeover policy ABANDON
+R -> DB : R1 to WAITING_FOR_DECISION, INSERT decision request RUN
+end
+C -> DB : claim R1, lease acquire sets token 44
+C -> DB : process only PENDING packages and QUEUED items
+note over A : Node A wakes up and continues its batch
+A -> DB : business work and routing, then fence check UPDATE lease WHERE token 42
+DB --> A : 0 rows, the token is 44 now
+A -> DB : ROLLBACK, items stay in their last committed state
+A -> A : LEASE_LOST, stop handler softly, no further writes
+A -> DB : lease renew WHERE token 42
+DB --> A : 0 rows, confirms lease lost
+@enduml

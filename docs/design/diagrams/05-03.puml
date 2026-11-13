@@ -1,0 +1,37 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 13
+skinparam roundCorner 8
+skinparam ArrowColor #444444
+skinparam BorderColor #555555
+skinparam sequenceMessageAlign left
+skinparam ParticipantPadding 10
+skinparam BoxPadding 10
+skinparam NoteBackgroundColor #fffbe6
+skinparam NoteBorderColor #b28704
+skinparam ParticipantBackgroundColor #eef3fb
+skinparam ParticipantBorderColor #4a6fa5
+skinparam SequenceGroupBodyBackgroundColor transparent
+autonumber
+participant "Node A - RunClaimer" as A
+participant "Node B - RunClaimer" as B
+participant "Database" as DB
+
+A -> DB : read candidates without locks, shuffled with A's random source
+B -> DB : read candidates without locks, shuffled with B's random source
+note over A, B : shuffling makes it unlikely that both try J1 first
+A -> DB : BEGIN, UPDATE dtp_job_lease J1 WHERE run IS NULL
+B -> DB : BEGIN, UPDATE dtp_job_lease J1 WHERE run IS NULL
+note over B, DB : B's update waits for the row lock held by A
+DB --> A : 1 row, token 42
+A -> DB : start R1, COMMIT
+DB --> B : lock released, WHERE re-evaluated, 0 rows
+B -> DB : ROLLBACK
+B -> DB : BEGIN, try next candidate J3
+alt conflict exception instead, e.g. lock timeout on H2
+B -> DB : ROLLBACK
+B -> B : count dtp.claim.conflicts, backoff with full jitter
+end
+@enduml

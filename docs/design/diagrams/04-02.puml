@@ -1,0 +1,26 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 13
+skinparam roundCorner 8
+skinparam ArrowColor #444444
+skinparam ActivityBackgroundColor #eef3fb
+skinparam ActivityBorderColor #4a6fa5
+skinparam ActivityDiamondBackgroundColor #fff3c4
+skinparam ActivityDiamondBorderColor #b28704
+start
+:Run ends;
+if (Handler threw\nan exception?) then (yes)
+  :FAILED;
+elseif (Stop reason\nCANCEL?) then (yes)
+  :CANCELLED;
+elseif (Remaining work?\npending packages or items,\nstop reason SLOT_END,\nLIMIT_REACHED or WINDOW) then (yes)
+  :DEFERRED;
+elseif (Items or packages of this run\nwaiting for a decision\nor discarded?) then (yes)
+  :COMPLETED_WITH_ISSUES;
+else (no)
+  :SUCCEEDED;
+endif
+stop
+@enduml

@@ -1,0 +1,25 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 13
+skinparam roundCorner 8
+skinparam ArrowColor #444444
+skinparam BorderColor #555555
+hide empty description
+skinparam StateBackgroundColor #eef3fb
+skinparam StateBorderColor #4a6fa5
+skinparam NoteBackgroundColor #fffbe6
+skinparam NoteBorderColor #b28704
+left to right direction
+[*] --> OK
+OK --> CONGESTED : jam score above threshold for 2 cycles
+CONGESTED --> OK : jam score below threshold for 2 cycles
+OK --> FAILING : technical failures above threshold in 5 min
+CONGESTED --> FAILING : technical failures above threshold in 5 min
+FAILING --> OK : below threshold for 5 min
+note right of FAILING
+  fires TechnicalFailureSpike with
+  the top error types of the step
+end note
+@enduml

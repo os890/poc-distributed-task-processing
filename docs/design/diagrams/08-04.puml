@@ -1,0 +1,48 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 13
+skinparam roundCorner 8
+skinparam ArrowColor #444444
+skinparam BorderColor #555555
+skinparam sequenceMessageAlign left
+skinparam ParticipantPadding 10
+skinparam BoxPadding 10
+skinparam NoteBackgroundColor #fffbe6
+skinparam NoteBorderColor #b28704
+skinparam ParticipantBackgroundColor #eef3fb
+skinparam ParticipantBorderColor #4a6fa5
+skinparam SequenceGroupBodyBackgroundColor transparent
+autonumber
+participant "Customer system" as C
+participant "OrderResource (app)" as APP
+participant "dtp engine (any node)" as E
+participant "Alice (purchasing-electronics)" as A1
+participant "Bob (purchasing-electronics)" as A2
+participant "Supplier ACME" as S
+
+C -> APP : POST /orders, product P-123 (electronics), quantity 1000
+APP -> E : items.track(order, number, STANDARD).routeTo(OrderValidation), same transaction as the insert
+E -> E : OrderValidation ok, fork into the three checks
+E -> E : all branches PASSED, ScreeningEvaluation routes to AvailabilityCheck
+E -> E : AvailabilityCheck, not in stock, routeTo Procurement
+E -> E : 1000 above threshold 500, requestApproval(quorum 2) assigned to purchasing-electronics
+note over E : only order 4711 waits, all other orders continue
+A1 -> E : GET /dtp/decision-requests?state=OPEN (filtered by Alice's groups)
+A1 -> C : phone call, is 1000 intended?
+A1 -> E : POST vote APPROVE, comment confirmed by customer
+note over E : 1 of 2 approvals, request stays OPEN
+A2 -> E : POST vote APPROVE
+note over E : quorum reached, request DECIDED, item back in the Procurement inbox
+E -> E : Procurement sees the approval, routeTo SupplierExport
+note over E : business day 18.00, window daily-supplier-export
+E -> E : quiesce Procurement, cut-off, collector run
+E -> S : package ACME, XML with order 4711
+E -> E : routeTo DeliveryMonitoring, defer 1 day
+note over C, S : two business days later
+S -> E : POST delivery note DN-9917
+E -> E : GoodsReceipt, transition triggers DeliveryMonitoring
+E -> E : delivered, routeBack AvailabilityCheck
+E -> E : AvailabilityCheck in stock, StockReservation, OrderShipment, complete
+@enduml

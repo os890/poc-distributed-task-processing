@@ -1,0 +1,138 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 13
+skinparam roundCorner 8
+skinparam ArrowColor #444444
+skinparam BorderColor #555555
+left to right direction
+hide empty members
+skinparam ClassBackgroundColor #eef3fb
+skinparam ClassBorderColor #4a6fa5
+skinparam PackageBackgroundColor transparent
+skinparam StereotypeCBackgroundColor #ffffff
+class Job <<AggregateRoot>> {
+  JobId id
+  Namespace namespace
+  JobName name
+  HandlerRef handler
+  Revision revision
+  boolean enabled
+  TriggerSpec trigger
+  ConcurrencyPolicy concurrency
+  TakeoverPolicy takeover
+  RetryPolicy retry
+  ExecutionLimits limits
+  int maxItemVisits
+  boolean acknowledgementRequired
+  DecisionFallback decisionFallback
+  Duration leaseDuration
+  Parameters defaultParameters
+  +revise(JobChange change) : Revision
+  +enable()
+  +disable()
+  +isDueAt(Instant dbTime, BusinessCalendar cal) : boolean
+}
+class TriggerSpec <<ValueObject>> {
+  boolean asap
+  CronSpec cron
+  boolean external
+  InboxTrigger inbox
+}
+class CronSpec <<ValueObject>> {
+  String expression
+  ZoneId zone
+  CalendarId calendar
+  CalendarShift shift
+  MisfirePolicy misfire
+}
+class InboxTrigger <<ValueObject>> {
+  int minItems
+  Duration debounce
+  Duration maxWait
+}
+class RetryPolicy <<ValueObject>> {
+  RetryScope scope
+  int maxRetries
+  Duration backoff
+}
+class ExecutionLimits <<ValueObject>> {
+  Duration timeLimit
+  Long itemLimit
+  List<ProcessingSlot> slots
+}
+class ProcessingSlot <<ValueObject>> {
+  CalendarId calendar
+  LocalTime from
+  LocalTime to
+}
+class DecisionFallback <<ValueObject>> {
+  JobId fallbackJob
+  Duration delay
+}
+class Transition <<Entity>> {
+  TransitionCondition condition
+  JobId target
+}
+class TransitionCondition <<ValueObject>> {
+  RunOutcome outcome
+  String resultStatus
+  +matches(RunOutcome o, String result) : boolean
+}
+class JoinSpec <<Entity>> {
+  List<JoinMember> members
+}
+class JoinMember <<ValueObject>> {
+  JobId job
+  Set<RunOutcome> acceptedOutcomes
+}
+class BusinessCalendar <<AggregateRoot>> {
+  CalendarId id
+  String name
+  ZoneId zone
+  Set<DayOfWeek> businessWeekdays
+  Set<CalendarException> exceptions
+  +isBusinessDay(LocalDate day) : boolean
+  +shift(LocalDate day, CalendarShift shift) : LocalDate
+}
+class CollectionWindow <<AggregateRoot>> {
+  WindowId id
+  String name
+  CronSpec schedule
+  JobId collector
+  Set<JobId> pausedJobs
+  Duration quiesceTimeout
+  boolean enabled
+}
+enum ConcurrencyPolicy {
+  SKIP
+  QUEUE_ONE
+  QUEUE_ALL
+}
+enum TakeoverPolicy {
+  RERUN
+  ABANDON
+}
+enum RetryScope {
+  ITEM
+  PACKAGE
+}
+
+Job *-- TriggerSpec
+TriggerSpec *-- CronSpec
+TriggerSpec *-- InboxTrigger
+Job *-- RetryPolicy
+Job *-- ExecutionLimits
+ExecutionLimits *-- "0..*" ProcessingSlot
+Job *-- "0..1" DecisionFallback
+Job "1" *-- "0..*" Transition : outgoing
+Transition *-- TransitionCondition
+Job "1" *-- "0..1" JoinSpec : incoming join
+JoinSpec *-- "2..*" JoinMember
+Job ..> ConcurrencyPolicy
+Job ..> TakeoverPolicy
+RetryPolicy ..> RetryScope
+CronSpec ..> BusinessCalendar : references
+CollectionWindow ..> Job : collector, paused
+@enduml

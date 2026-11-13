@@ -1,0 +1,39 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 13
+skinparam roundCorner 8
+skinparam ArrowColor #444444
+skinparam BorderColor #555555
+left to right direction
+skinparam RectangleBackgroundColor #eef3fb
+skinparam RectangleBorderColor #4a6fa5
+skinparam UsecaseBackgroundColor #eef3fb
+skinparam UsecaseBorderColor #4a6fa5
+skinparam DatabaseBackgroundColor #f3eefb
+skinparam DatabaseBorderColor #6a4aa5
+skinparam HexagonBackgroundColor #fff3c4
+skinparam HexagonBorderColor #b28704
+skinparam ActorBorderColor #4a6fa5
+rectangle "Shared kernel" as SK #fbfbfb;line:999999 {
+  rectangle "Namespace, ids, IdCodec" as K1
+  rectangle "ItemKey = item type + ref id + version" as K2
+  rectangle "DbTime, Duration, BusinessKey" as K3
+}
+rectangle "<b>Definition</b>\nJob, Transition, JoinSpec,\nBusinessCalendar, ProcessingSlot,\nCollectionWindow" as DEF
+rectangle "<b>Execution</b>\nRun, JobLease, Node,\nFlowInstance, WorkPackage,\nWindowOccurrence, JoinInstance" as EXE
+rectangle "<b>Tracking</b>\nTrackedItem, ItemEvent journey" as TRK
+rectangle "<b>Intervention</b>\nDecisionRequest, Decision" as INT
+
+DEF --> EXE : upstream: job revision snapshots,\nExecution conforms
+EXE --> TRK : routing happens in fenced units of work of a run
+EXE --> INT : RunAbandoned, QuiesceTimedOut,\nRetriesExhausted for packages
+TRK --> INT : RetriesExhausted, LoopLimitExceeded,\nItemEscalated
+INT --> EXE : DecisionMade: retry runs, re-queue packages\nDecisionFallbackDue: plan fallback runs
+INT --> TRK : DecisionMade on items
+SK -- DEF
+SK -- EXE
+SK -- TRK
+SK -- INT
+@enduml

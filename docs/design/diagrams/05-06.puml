@@ -1,0 +1,41 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 13
+skinparam roundCorner 8
+skinparam ArrowColor #444444
+skinparam BorderColor #555555
+skinparam sequenceMessageAlign left
+skinparam ParticipantPadding 10
+skinparam BoxPadding 10
+skinparam NoteBackgroundColor #fffbe6
+skinparam NoteBorderColor #b28704
+skinparam ParticipantBackgroundColor #eef3fb
+skinparam ParticipantBorderColor #4a6fa5
+skinparam SequenceGroupBodyBackgroundColor transparent
+autonumber
+participant "RunExecutor - run of job A" as EX
+participant "Database" as DB
+
+EX -> DB : BEGIN, UPDATE dtp_run SET FINISHED, outcome, result_status WHERE token matches
+EX -> DB : SELECT transitions of job A matching outcome or result status
+loop for each matching transition A to X
+EX -> DB : INSERT run X PENDING, run_key flow X + flow instance, ON CONFLICT DO NOTHING
+end
+opt job A is a member of the join of job C
+EX -> DB : INSERT dtp_join_instance C + flow ON CONFLICT DO NOTHING
+EX -> DB : SELECT dtp_join_instance C + flow FOR UPDATE
+note over EX, DB : serializes concurrent arrivals of A and B, DD-9
+EX -> DB : INSERT dtp_join_arrival A
+alt all members arrived with accepted outcomes
+EX -> DB : INSERT run C PENDING, run_key join C + flow
+EX -> DB : UPDATE dtp_join_instance fired
+else still waiting for B
+note over EX, DB : B's finish transaction will fire C
+end
+end
+EX -> DB : check flow instance completion
+EX -> DB : UPDATE dtp_job_lease SET run NULL WHERE token matches
+EX -> DB : COMMIT, then publish RunFinished and JoinFired after commit
+@enduml

@@ -8,51 +8,9 @@ Goal: a **heat map of the workflow** and a **live feed** that show at a glance w
 
 ## 9.1 Idea: CQRS with the Leader as Projector
 
-```mermaid
----
-config:
-  layout: elk
----
-flowchart LR
-    subgraph WRITE["Write side - all nodes"]
-        UOW["Units of work of the process steps<br/>fenced transactions"]
-        ITEM[("dtp_item<br/>current state")]
-        JOURNAL[("dtp_item_event<br/>journal = event stream")]
-        UOW --> ITEM
-        UOW --> JOURNAL
-    end
+![9.1 Idea: CQRS with the Leader as Projector](diagrams/09-01.svg)
 
-    subgraph PROJ["Projection - leader of role projection (DD-30)"]
-        P["MonitoringProjector<br/>every 10 s"]
-    end
-
-    subgraph READ["Read side - read-only views"]
-        V1[("dtp_view_step_status<br/>one row per step")]
-        V2[("dtp_view_step_minute<br/>per step and minute")]
-        V3[("dtp_view_edge_minute<br/>per route and minute")]
-        V4[("dtp_view_failure_minute<br/>per step, error type and minute")]
-    end
-
-    subgraph CLIENTS["Clients - read on demand, any node"]
-        REST["REST snapshot<br/>GET /dtp/monitor/heatmap"]
-        SSE["Live feed<br/>Server-Sent Events"]
-        OTEL["MP Telemetry<br/>cluster-wide gauges"]
-        EVT["CDI events<br/>StepCongested, TechnicalFailureSpike"]
-    end
-
-    JOURNAL --> P
-    ITEM --> P
-    P --> V1
-    P --> V2
-    P --> V3
-    P --> V4
-    V1 --> REST
-    V2 --> REST
-    V3 --> REST
-    V1 --> SSE
-    V1 --> OTEL
-    P -. "on alert state change, after commit" .-> EVT
-```
+<sub>PlantUML source: [diagrams/09-01.puml](diagrams/09-01.puml)</sub>
 
 - **Write side**: unchanged. Every unit of work already writes the item's current state and an append-only journal
   entry (DD-8). The journal **is** the event stream, so there are no extra writes on the processing path.
@@ -66,35 +24,9 @@ flowchart LR
 
 ## 9.2 Projection Cycle
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant P as MonitoringProjector (leader of role projection)
-    participant DB as Database
-    participant N as Any node - live feed endpoint
-    participant C as Clients (dashboard)
+![9.2 Projection Cycle](diagrams/09-02.svg)
 
-    loop every projection interval (default 10 s)
-        P->>DB: BEGIN, read journal entries of the recompute horizon (last 2 x lease duration)
-        P->>DB: aggregate per step, route, failure type and minute, UPSERT minute buckets
-        Note over P,DB: buckets older than the horizon are final. Recent ones are recomputed,<br/>so entries that committed late are still counted
-        P->>DB: per step: queue depth per lane, age of the oldest item, waiting and deferred items
-        P->>DB: per step: status reason from leases, slots, windows, nodes and decisions
-        P->>DB: jam score, alert state, UPSERT dtp_view_step_status
-        P->>DB: increment projection version, COMMIT
-        P->>P: alert state changed? fire StepCongested or TechnicalFailureSpike after commit
-    end
-    loop every 2 s on every node with connected clients
-        N->>DB: read projection version (one tiny row)
-        alt version changed
-            N->>DB: read changed rows of dtp_view_step_status
-            N-->>C: SSE event heatmap-update
-        end
-    end
-    C->>N: GET /dtp/monitor/heatmap?range=15m (snapshot on demand)
-    N->>DB: read views only
-    N-->>C: steps, edges, failures with load and jam score
-```
+<sub>PlantUML source: [diagrams/09-02.puml](diagrams/09-02.puml)</sub>
 
 **Why the recompute horizon is enough.** A journal entry is written with DB time inside its unit of work and becomes
 visible when that unit commits. A unit of work that runs longer than its lease can't commit, because the fence check
@@ -103,71 +35,9 @@ durations in every cycle therefore counts every entry exactly once, and no check
 
 ## 9.3 Read Model Tables
 
-```mermaid
-erDiagram
-    DTP_VIEW_STEP_STATUS ||--o{ DTP_VIEW_STEP_MINUTE : "history"
-    DTP_VIEW_STEP_STATUS ||--o{ DTP_VIEW_FAILURE_MINUTE : "errors"
-    DTP_VIEW_STEP_STATUS ||--o{ DTP_VIEW_EDGE_MINUTE : "outgoing routes"
+![9.3 Read Model Tables](diagrams/09-03.svg)
 
-    DTP_VIEW_STEP_STATUS {
-        varchar namespace PK
-        ID job_id PK
-        varchar step_name "e.g. credit-check"
-        varchar status_reason "PROCESSING IDLE SLOT_CLOSED PAUSED_BY_WINDOW NO_CAPABLE_NODE DISABLED"
-        int queued "per lane in queued_by_lane"
-        json queued_by_lane
-        bigint oldest_queued_ms "age of the oldest queued item"
-        int waiting_for_decision
-        int deferred
-        int forked
-        ID active_run_id
-        ID active_node_id
-        int jam_score "0 to 100"
-        varchar alert_state "OK CONGESTED FAILING"
-        timestamp alert_since
-        bigint projection_version
-        timestamp updated_at
-    }
-    DTP_VIEW_STEP_MINUTE {
-        varchar namespace PK
-        ID job_id PK
-        timestamp minute PK
-        int arrived
-        int departed
-        int routed_back
-        int completed
-        int escalated
-        int failed_business
-        int failed_technical
-        bigint max_wait_ms
-        bigint sum_wait_ms
-    }
-    DTP_VIEW_EDGE_MINUTE {
-        varchar namespace PK
-        ID from_job_id PK
-        ID to_job_id PK
-        timestamp minute PK
-        int items
-        bool back_route
-    }
-    DTP_VIEW_FAILURE_MINUTE {
-        varchar namespace PK
-        ID job_id PK
-        varchar error_type PK "exception class"
-        varchar error_hash PK "hash of the top stack frames"
-        timestamp minute PK
-        int occurrences
-        varchar sample_message
-        ID sample_item_id
-    }
-    DTP_PROJECTION_STATE {
-        varchar namespace PK
-        varchar projection PK "monitoring"
-        bigint version "incremented every cycle"
-        timestamp projected_until
-        bigint term "leader term of the last cycle"
-    }
-```
+<sub>PlantUML source: [diagrams/09-03.puml](diagrams/09-03.puml)</sub>
 
 - The views are **derived data**. They can be rebuilt from the journal at any time, and they have their own retention
   (default: minute buckets for 48 h, then hourly rollups). The journal itself keeps everything (D26).
@@ -198,20 +68,9 @@ processing can be jammed:
 **Alert states** are stored, so every transition fires exactly one CDI event, even across a change of the projector
 leader:
 
-```mermaid
-stateDiagram-v2
-    direction LR
-    [*] --> OK
-    OK --> CONGESTED : jam score above threshold for 2 cycles
-    CONGESTED --> OK : jam score below threshold for 2 cycles
-    OK --> FAILING : technical failures above threshold in 5 min
-    CONGESTED --> FAILING : technical failures above threshold in 5 min
-    FAILING --> OK : below threshold for 5 min
-    note right of FAILING
-        fires TechnicalFailureSpike with
-        the top error types of the step
-    end note
-```
+![9.4 Jams vs. Expected Backlog](diagrams/09-04.svg)
+
+<sub>PlantUML source: [diagrams/09-04.puml](diagrams/09-04.puml)</sub>
 
 As with decision requests, the framework never notifies people itself. The application observes `StepCongested`
 and `TechnicalFailureSpike` and decides whom to inform. Jams don't change MP Health: a jam is no reason to restart
@@ -222,19 +81,9 @@ healthy pods.
 The heat map needs to separate expected business outcomes from unexpected technical errors. This also defines what
 happens when an `ItemProcessor` throws:
 
-```mermaid
-flowchart TD
-    B(["Batch of items in one fenced transaction"]) --> X{"process(item) threw<br/>an exception?"}
-    X -- no --> C["COMMIT"]
-    X -- yes --> RB["ROLLBACK the whole batch"]
-    RB --> ONE["Process the items of this batch one by one,<br/>each in its own transaction"]
-    ONE --> F{"Which item fails?"}
-    F -- "the others" --> OK2["committed normally"]
-    F -- "the poison item" --> TECH["technical failure: exception class,<br/>stack hash, message in the journal"]
-    TECH --> R{"Retries left?"}
-    R -- yes --> Q["QUEUED with next_attempt_at"]
-    R -- no --> OPS["Decision request assigned to operations<br/>(technical responsible group, default dtp-operator)"]
-```
+![9.5 Business vs. Technical Failures (DD-29)](diagrams/09-05.svg)
+
+<sub>PlantUML source: [diagrams/09-05.puml](diagrams/09-05.puml)</sub>
 
 | | Business failure | Technical failure |
 |---|---|---|
@@ -251,34 +100,9 @@ One bad item therefore never blocks its batch, and the other items continue.
 Illustration with the steps of [08](08-sample-order-flow.md): node color = jam score or status, edge width = items per
 minute.
 
-```mermaid
-flowchart LR
-    VAL["OrderValidation<br/>12 queued, 0.4 s"]:::ok
-    CC["CreditCheck<br/>8 queued"]:::ok
-    PC["PlausibilityCheck<br/>1,840 queued, oldest 14 min<br/>CONGESTED"]:::jam
-    AC["AddressCheck<br/>5 queued"]:::ok
-    SE["ScreeningEvaluation<br/>waiting for branches"]:::ok
-    AV["AvailabilityCheck<br/>3 queued"]:::ok
-    PR["Procurement<br/>PAUSED_BY_WINDOW"]:::idle
-    EX["SupplierExport<br/>27 technical failures in 5 min<br/>FAILING: SocketTimeoutException"]:::fail
-    SH["OrderShipment<br/>SLOT_CLOSED, 410 queued"]:::idle
+![9.6 What the Heat Map Shows (sample order flow)](diagrams/09-06.svg)
 
-    VAL ==> CC
-    VAL ==> PC
-    VAL ==> AC
-    CC --> SE
-    PC --> SE
-    AC --> SE
-    SE ==> AV
-    AV --> PR
-    PR --> EX
-    AV ==> SH
-
-    classDef ok fill:#d8f0dc,stroke:#2e7d32,color:#1b1b1b
-    classDef jam fill:#ffe2b8,stroke:#e65100,color:#1b1b1b
-    classDef fail fill:#f8d0d0,stroke:#c62828,color:#1b1b1b
-    classDef idle fill:#e4e4e4,stroke:#757575,color:#1b1b1b
-```
+<sub>PlantUML source: [diagrams/09-06.puml](diagrams/09-06.puml)</sub>
 
 Reading it: `PlausibilityCheck` is the bottleneck of the order screening (scoring is slower than the inflow).
 `SupplierExport` fails technically (timeouts of the supplier gateway). `OrderShipment` has a large queue, but that's
@@ -302,31 +126,9 @@ The read model gives the **cluster-wide picture**, with a delay of one projectio
 **real-time signal** for dashboards and alerting in standard tools (OpenTelemetry collector, Prometheus, Grafana, …),
 including percentiles that SQL views can't provide. Both are fed from the same events, so they tell the same story.
 
-```mermaid
----
-config:
-  layout: elk
----
-flowchart LR
-    subgraph NODES["Every node"]
-        HOT["Processing path<br/>units of work, leases, claims"]
-        M1["Per-node metrics<br/>counters, histograms"]
-        T1["Traces<br/>span per unit of work"]
-        HOT --> M1
-        HOT --> T1
-    end
-    subgraph LEADER["Projector leader only"]
-        VIEWS[("Read model views")]
-        M2["Cluster gauges<br/>dtp.cluster.*"]
-        VIEWS --> M2
-    end
-    COL["OpenTelemetry collector"]
-    BACK["Metrics and tracing backend<br/>e.g. Prometheus, Grafana, Tempo"]
-    M1 --> COL
-    T1 --> COL
-    M2 --> COL
-    COL --> BACK
-```
+![9.8 Telemetry Metrics and Traces (MP Telemetry, DD-33)](diagrams/09-07.svg)
+
+<sub>PlantUML source: [diagrams/09-07.puml](diagrams/09-07.puml)</sub>
 
 ### Per-node metrics (emitted on the processing path, in memory, no DB access)
 
@@ -385,49 +187,12 @@ graph and returns it as a diagram. It needs no projection and adds nothing to th
 
 ### Example: order O-4711 (the journey of [08 §8.7](08-sample-order-flow.md))
 
-This is what `GET /dtp/items/order/O-4711/journey/diagram` returns (rendered here). Edge labels are the numbers of the
+This is what `GET /dtp/items/order/O-4711/journey/diagram` returns as Mermaid source (rendered here, on this branch redrawn with PlantUML). Edge labels are the numbers of the
 journal entries, so the diagram and the journey table refer to each other:
 
-```mermaid
-flowchart LR
-    START(["tracked via POST /orders<br/>Fri 10:00:02, lane STANDARD"])
-    VAL["OrderValidation<br/>node A"]
-    CC["CreditCheck<br/>PASSED, node B"]
-    PC["PlausibilityCheck<br/>PASSED 0.92, node C"]
-    AC["AddressCheck<br/>PASSED, node A"]
-    SE["ScreeningEvaluation<br/>node B"]
-    AV["AvailabilityCheck<br/>2 visits"]
-    PR["Procurement<br/>2 visits"]
-    D88{{"Approval D-88, quorum 2<br/>alice APPROVE 11:42<br/>bob APPROVE 14:05"}}
-    EX["SupplierExport<br/>package ACME-312-1, Fri 18:00"]
-    DM["DeliveryMonitoring<br/>deferred once"]
-    SR["StockReservation"]
-    SH["OrderShipment<br/>shipment SH-5521"]
-    DONE(("COMPLETED<br/>Tue 09:30"))
+![Example: order O-4711 (the journey of 08 §8.7(08-sample-order-flow.md))](diagrams/09-08.svg)
 
-    START -- "1" --> VAL
-    VAL -- "2 fork" --> CC
-    VAL -- "2 fork" --> PC
-    VAL -- "2 fork" --> AC
-    CC -- "3" --> SE
-    AC -- "4" --> SE
-    PC -- "5 join" --> SE
-    SE -- "6" --> AV
-    AV -- "7 not in stock" --> PR
-    PR -- "8 approval" --> D88
-    D88 -- "10 approved" --> PR
-    PR -- "11" --> EX
-    EX -- "13" --> DM
-    DM -. "15 back-route: delivered with DN-9917" .-> AV
-    AV -- "16" --> SR
-    SR -- "17" --> SH
-    SH -- "18" --> DONE
-
-    classDef done fill:#d8f0dc,stroke:#2e7d32,color:#1b1b1b
-    classDef decision fill:#fff3c4,stroke:#b28704,color:#1b1b1b
-    class DONE done
-    class D88 decision
-```
+<sub>PlantUML source: [diagrams/09-08.puml](diagrams/09-08.puml)</sub>
 
 An item that isn't finished ends at its current step instead, highlighted and annotated with the status reason from
 the monitoring read model, e.g. *"waiting since 14:12: SLOT_CLOSED, next slot Mon 06:00"* or *"WAITING_FOR_DECISION
@@ -458,27 +223,9 @@ Every attempt that leaves a trace in the journal is shown:
 
 Example: the plausibility scoring service timed out twice for order O-4802, and the third attempt passed:
 
-```mermaid
-flowchart LR
-    VAL["OrderValidation"]
-    CC["CreditCheck<br/>PASSED"]
-    PC["PlausibilityCheck<br/>PASSED on attempt 3"]
-    AC["AddressCheck<br/>PASSED"]
-    SE["ScreeningEvaluation"]
-    AV["AvailabilityCheck"]
+![Retries in the journey](diagrams/09-09.svg)
 
-    VAL -- "2 fork" --> CC
-    VAL -- "2 fork" --> PC
-    VAL -- "2 fork" --> AC
-    PC -. "4, 6 retry 2×<br/>technical: SocketTimeoutException" .-> PC
-    CC -- "3" --> SE
-    AC -- "5" --> SE
-    PC -- "8 join" --> SE
-    SE -- "9" --> AV
-
-    classDef retried fill:#ffe2b8,stroke:#e65100,color:#1b1b1b
-    class PC retried
-```
+<sub>PlantUML source: [diagrams/09-09.puml](diagrams/09-09.puml)</sub>
 
 The rule behind it: the journal only contains what was **committed**. Attempts whose transaction was rolled back can't
 write anything. So the engine records afterwards what it knows: `REPROCESSED` when it re-runs the items of a

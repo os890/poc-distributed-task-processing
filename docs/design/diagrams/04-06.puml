@@ -1,0 +1,26 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 13
+skinparam roundCorner 8
+skinparam ArrowColor #444444
+skinparam BorderColor #555555
+hide empty description
+skinparam StateBackgroundColor #eef3fb
+skinparam StateBorderColor #4a6fa5
+skinparam NoteBackgroundColor #fffbe6
+skinparam NoteBorderColor #b28704
+left to right direction
+[*] --> OPEN : retries exhausted, loop limit, escalate, requestApproval, ABANDON, quiesce timeout
+OPEN --> OPEN : fallback due, fallback run planned once
+OPEN --> OPEN : APPROVAL - APPROVE vote below quorum
+OPEN --> DECIDED : CHOICE - business user picks an option
+OPEN --> DECIDED : APPROVAL - quorum of distinct APPROVE votes or one REJECT
+DECIDED --> [*]
+note right of OPEN
+  Never expires, D38.
+  Only the subject waits,
+  everything else continues.
+end note
+@enduml

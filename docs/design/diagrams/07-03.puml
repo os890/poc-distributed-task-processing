@@ -1,0 +1,41 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 13
+skinparam roundCorner 8
+skinparam ArrowColor #444444
+skinparam BorderColor #555555
+left to right direction
+skinparam RectangleBackgroundColor #eef3fb
+skinparam RectangleBorderColor #4a6fa5
+skinparam UsecaseBackgroundColor #eef3fb
+skinparam UsecaseBorderColor #4a6fa5
+skinparam DatabaseBackgroundColor #f3eefb
+skinparam DatabaseBorderColor #6a4aa5
+skinparam HexagonBackgroundColor #fff3c4
+skinparam HexagonBorderColor #b28704
+skinparam ActorBorderColor #4a6fa5
+rectangle "Job transitions - run level" as RUNS #fbfbfb;line:999999 {
+  rectangle "TradeImport\ncron 22:00, business days" as IMP
+  rectangle "TradeValidation" as VAL
+  rectangle "TradeEnrichment" as ENR
+}
+rectangle "Item routing - item level, one Trade" as ITEMS #fbfbfb;line:999999 {
+  usecase "Trade" as T0
+  rectangle "inbox TradeValidation" as I1
+  rectangle "inbox TradeEnrichment" as I2
+  rectangle "inbox TradeImport" as I0
+  usecase "COMPLETED" as DONE
+  rectangle "WAITING_FOR_DECISION" as DEC
+}
+
+IMP --> VAL : on SUCCESS
+VAL --> ENR : on SUCCESS or\nCOMPLETED_WITH_ISSUES
+T0 --> I1 : track + routeTo
+I1 --> I2 : valid: routeTo
+I1 --> I0 : missing ISIN: routeBack
+I0 --> I1 : re-imported: routeTo
+I2 --> DONE : complete
+I1 --> DEC : visits > maxItemVisits
+@enduml

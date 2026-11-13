@@ -1,0 +1,48 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 13
+skinparam roundCorner 8
+skinparam ArrowColor #444444
+skinparam BorderColor #555555
+skinparam RectangleBackgroundColor #eef3fb
+skinparam RectangleBorderColor #4a6fa5
+skinparam UsecaseBackgroundColor #eef3fb
+skinparam UsecaseBorderColor #4a6fa5
+skinparam DatabaseBackgroundColor #f3eefb
+skinparam DatabaseBorderColor #6a4aa5
+skinparam HexagonBackgroundColor #fff3c4
+skinparam HexagonBorderColor #b28704
+skinparam ActorBorderColor #4a6fa5
+rectangle "Inbound adapters (driving)" as INBOUND #fbfbfb;line:999999 {
+  rectangle "dtp-cdi / dtp-quarkus\nbootstrap, handler discovery,\nBuild Compatible Extension" as BOOT
+  rectangle "dtp-adapter-rest\nJakarta REST, MP OpenAPI, MP JWT" as REST
+  rectangle "dtp-adapter-scheduler\nnode loops: planner, claimer,\nlease keeper, reaper, window coordinator" as LOOPS
+}
+rectangle "Core - framework-free" as CORE #fbfbfb;line:999999 {
+  rectangle "dtp-application" as APP #fbfbfb;line:999999 {
+    rectangle "Inbound ports = use cases" as IN_PORTS
+    rectangle "Outbound ports" as OUT_PORTS
+  }
+  rectangle "dtp-domain\naggregates, value objects,\npolicies, domain events" as DOMAIN
+}
+rectangle "Outbound adapters (driven)" as OUTBOUND #fbfbfb;line:999999 {
+  rectangle "dtp-adapter-persistence-jpa\nrepositories, entities" as JPA
+  rectangle "dtp-adapter-coordination-jdbc\nleases, claiming, fencing,\nSqlDialect: PostgreSQL, H2" as JDBC
+  rectangle "dtp-adapter-schema-flyway\nmigrations per dialect" as FLY
+  rectangle "dtp-adapter-observability\nMP Health, MP Telemetry" as OBS
+  rectangle "dtp-cdi HandlerInvoker\nCDI bean lookup + invocation" as INV
+}
+
+BOOT --> IN_PORTS
+REST --> IN_PORTS
+LOOPS --> IN_PORTS
+IN_PORTS --> DOMAIN
+IN_PORTS --> OUT_PORTS
+JPA ..> OUT_PORTS : implements
+JDBC ..> OUT_PORTS : implements
+OBS ..> OUT_PORTS : implements
+INV ..> OUT_PORTS : implements
+FLY ..> JPA : schema for
+@enduml

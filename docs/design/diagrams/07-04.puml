@@ -1,0 +1,43 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 13
+skinparam roundCorner 8
+skinparam ArrowColor #444444
+skinparam BorderColor #555555
+skinparam sequenceMessageAlign left
+skinparam ParticipantPadding 10
+skinparam BoxPadding 10
+skinparam NoteBackgroundColor #fffbe6
+skinparam NoteBorderColor #b28704
+skinparam ParticipantBackgroundColor #eef3fb
+skinparam ParticipantBorderColor #4a6fa5
+skinparam SequenceGroupBodyBackgroundColor transparent
+autonumber
+participant "Runtime (Quarkus or MP)" as RT
+participant "dtp Build Compatible Extension" as EXT
+participant "dtp Engine" as ENG
+participant "Flyway (dtp)" as FW
+participant "Database" as DB
+participant "TempFileCleanup" as H
+
+RT -> EXT : discovery and registration phase
+EXT -> EXT : collect beans of type JobHandler, read P and R
+note over EXT : on Quarkus this happens at build time
+EXT -> ENG : capabilities = handler FQCNs
+RT -> ENG : application startup event
+ENG -> FW : migrate dtp schema, history dtp_schema_history
+FW -> DB : dtp_* tables
+ENG -> FW : migrate app definitions from db/dtp-definitions
+FW -> DB : insert dtp_job, dtp_job_revision, dtp_transition
+ENG -> DB : register node with namespace, color, capabilities
+ENG -> DB : validate enabled definitions of the namespace
+note over ENG, DB : unknown handler class or P/R mismatch is reported\nin logs and MP Health, other colors are ignored
+ENG -> ENG : start leader elector and claimer after a random initial delay
+note over ENG, DB : 03:00 cron due. The leader plans a PENDING run, any node claims it
+ENG -> DB : claim run, job lease acquired
+ENG -> H : execute(ctx)
+H --> ENG : JobResult.success()
+ENG -> DB : fenced finish, outcome SUCCEEDED
+@enduml

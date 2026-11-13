@@ -1,0 +1,23 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 13
+skinparam roundCorner 8
+skinparam ArrowColor #444444
+skinparam BorderColor #555555
+hide empty description
+skinparam StateBackgroundColor #eef3fb
+skinparam StateBorderColor #4a6fa5
+skinparam NoteBackgroundColor #fffbe6
+skinparam NoteBorderColor #b28704
+left to right direction
+[*] --> ACTIVE : registered on startup
+ACTIVE --> ACTIVE : heartbeat
+ACTIVE --> DRAINING : shutdown signal or REST drain
+DRAINING --> LEFT : own runs finished or released
+ACTIVE --> DEAD : heartbeat older than dead-after, set by reaper
+DRAINING --> DEAD : heartbeat older than dead-after
+LEFT --> [*]
+DEAD --> [*]
+@enduml

@@ -1,0 +1,33 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 13
+skinparam roundCorner 8
+skinparam ArrowColor #444444
+skinparam BorderColor #555555
+skinparam sequenceMessageAlign left
+skinparam ParticipantPadding 10
+skinparam BoxPadding 10
+skinparam NoteBackgroundColor #fffbe6
+skinparam NoteBorderColor #b28704
+skinparam ParticipantBackgroundColor #eef3fb
+skinparam ParticipantBorderColor #4a6fa5
+skinparam SequenceGroupBodyBackgroundColor transparent
+autonumber
+participant "Red nodes (v1, active)" as G
+participant "Database" as DB
+participant "Green nodes (v2, new)" as BL
+participant "Operator or pipeline" as OPS
+
+note over DB : expand-only Flyway migration already applied, both versions compatible
+BL -> DB : register, color green, capabilities of v2
+BL -> DB : no claiming, green is not the active color yet
+OPS -> DB : activation switch, active_color = green
+G -> DB : read active_color, stop claiming new runs
+G -> G : finish own runs (handling of the old color is defined later, mission Q-1)
+BL -> DB : claim new runs whose handler class is in the v2 capabilities
+G -> DB : drain, finish, release leases, state LEFT
+note over G, BL : if red is killed hard, its leases expire and green takes over via the reaper
+note over DB : contract migration only after red has left
+@enduml

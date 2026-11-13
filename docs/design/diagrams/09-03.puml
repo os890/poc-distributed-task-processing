@@ -1,0 +1,76 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 13
+skinparam roundCorner 8
+skinparam ArrowColor #444444
+skinparam BorderColor #555555
+hide circle
+skinparam linetype ortho
+skinparam ClassBackgroundColor #eef3fb
+skinparam ClassBorderColor #4a6fa5
+skinparam ClassAttributeFontSize 12
+entity dtp_view_step_status {
+  <b>namespace : varchar</b> <<PK>>
+  <b>job_id : ID</b> <<PK>>
+  step_name : varchar <color:#666666><i>e.g. credit-check</i></color>
+  status_reason : varchar <color:#666666><i>PROCESSING IDLE SLOT_CLOSED PAUSED_BY_WINDOW NO_CAPABLE_NODE DISABLED</i></color>
+  queued : int <color:#666666><i>per lane in queued_by_lane</i></color>
+  queued_by_lane : json
+  oldest_queued_ms : bigint <color:#666666><i>age of the oldest queued item</i></color>
+  waiting_for_decision : int
+  deferred : int
+  forked : int
+  active_run_id : ID
+  active_node_id : ID
+  jam_score : int <color:#666666><i>0 to 100</i></color>
+  alert_state : varchar <color:#666666><i>OK CONGESTED FAILING</i></color>
+  alert_since : timestamp
+  projection_version : bigint
+  updated_at : timestamp
+}
+entity dtp_view_step_minute {
+  <b>namespace : varchar</b> <<PK>>
+  <b>job_id : ID</b> <<PK>>
+  <b>minute : timestamp</b> <<PK>>
+  arrived : int
+  departed : int
+  routed_back : int
+  completed : int
+  escalated : int
+  failed_business : int
+  failed_technical : int
+  max_wait_ms : bigint
+  sum_wait_ms : bigint
+}
+entity dtp_view_edge_minute {
+  <b>namespace : varchar</b> <<PK>>
+  <b>from_job_id : ID</b> <<PK>>
+  <b>to_job_id : ID</b> <<PK>>
+  <b>minute : timestamp</b> <<PK>>
+  items : int
+  back_route : bool
+}
+entity dtp_view_failure_minute {
+  <b>namespace : varchar</b> <<PK>>
+  <b>job_id : ID</b> <<PK>>
+  <b>error_type : varchar</b> <<PK>> <color:#666666><i>exception class</i></color>
+  <b>error_hash : varchar</b> <<PK>> <color:#666666><i>hash of the top stack frames</i></color>
+  <b>minute : timestamp</b> <<PK>>
+  occurrences : int
+  sample_message : varchar
+  sample_item_id : ID
+}
+entity dtp_projection_state {
+  <b>namespace : varchar</b> <<PK>>
+  <b>projection : varchar</b> <<PK>> <color:#666666><i>monitoring</i></color>
+  version : bigint <color:#666666><i>incremented every cycle</i></color>
+  projected_until : timestamp
+  term : bigint <color:#666666><i>leader term of the last cycle</i></color>
+}
+
+dtp_view_step_status ||--o{ dtp_view_step_minute : history
+dtp_view_step_status ||--o{ dtp_view_failure_minute : errors
+dtp_view_step_status ||--o{ dtp_view_edge_minute : outgoing routes
+@enduml

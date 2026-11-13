@@ -1,0 +1,73 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 13
+skinparam roundCorner 8
+skinparam ArrowColor #444444
+skinparam BorderColor #555555
+skinparam RectangleBackgroundColor #eef3fb
+skinparam RectangleBorderColor #4a6fa5
+skinparam UsecaseBackgroundColor #eef3fb
+skinparam UsecaseBorderColor #4a6fa5
+skinparam DatabaseBackgroundColor #f3eefb
+skinparam DatabaseBorderColor #6a4aa5
+skinparam HexagonBackgroundColor #fff3c4
+skinparam HexagonBorderColor #b28704
+skinparam ActorBorderColor #4a6fa5
+usecase "Order arrives via REST\ntracked in lane VIP or STANDARD" as IN
+rectangle "OrderValidation\nbasic checks" as VAL
+rectangle "OrderRejection" as NOT
+rectangle "Parallel checks: fork/join on item level" as PAR #fbfbfb;line:999999 {
+  rectangle "CreditCheck" as CC
+  rectangle "PlausibilityCheck\n4 batches in parallel" as CF
+  rectangle "AddressCheck" as CD
+  rectangle "ScreeningEvaluation\njoin" as EV
+  hexagon "Decision request\nACCEPT or REJECT\nteam customer-care" as REV
+}
+rectangle "AvailabilityCheck" as AV
+rectangle "StockReservation" as RES
+rectangle "OrderShipment\nslot business days 06-20" as SHIP
+usecase "COMPLETED" as DONE
+usecase "DISCARDED" as DISC
+rectangle "Sub-flow: order from supplier" as SUP #fbfbfb;line:999999 {
+  rectangle "Procurement" as CSR
+  hexagon "Approval request, quorum 2\npurchasing team of the category" as APR
+  rectangle "SupplierExport\ncollector of window daily-supplier-export\nbusiness days 18.00" as FWD
+  rectangle "DeliveryMonitoring\ndefers until delivered" as AW
+  rectangle "GoodsReceipt\nexternal trigger" as RSD
+  hexagon "Decision request\nREMIND_SUPPLIER or REJECT_ORDER" as ESC
+}
+actor "Supplier" as SUPPLIER
+
+IN --> VAL
+VAL --> NOT : invalid
+CC --> EV : PASSED / FAILED
+CF --> EV : PASSED / REVIEW / FAILED
+CD --> EV : PASSED / FAILED
+EV --> REV : any REVIEW
+REV --> EV : decided, back to the join inbox
+VAL --> CC : fork
+VAL --> CF : fork
+VAL --> CD : fork
+EV --> NOT : any FAILED or rejected
+EV --> AV : all PASSED or accepted
+AV --> RES : in stock
+RES --> AV : stock taken meanwhile: routeBack
+RES --> SHIP
+SHIP --> DONE : complete
+NOT --> DISC : discard with reason
+CSR --> APR : quantity above threshold
+APR --> CSR : approved or rejected,\nback to the same inbox
+CSR --> FWD : small or approved
+FWD --> AW : in today's package
+AW --> AW : not delivered yet: defer
+AW --> ESC : overdue
+ESC --> AW : decided
+RSD ..> AW : on SUCCESS triggers
+AV --> CSR : not in stock
+CSR --> NOT : rejected
+FWD --> SUPPLIER : XML package per supplier
+SUPPLIER ..> RSD : delivery note via REST
+AW --> AV : delivered: routeBack
+@enduml
