@@ -22,6 +22,7 @@ import java.util.Optional;
 import org.os890.dtp.api.ItemRef;
 import org.os890.dtp.api.ItemType;
 import org.os890.dtp.api.ProcessStep;
+import org.os890.dtp.api.Signal;
 import org.os890.dtp.api.TrackedItem;
 import org.os890.dtp.core.domain.FailureKind;
 import org.os890.dtp.core.domain.JobDefinition;
@@ -89,6 +90,17 @@ public class TrackedItemImpl<E, ID> implements TrackedItem<E, ID> {
     }
 
     @Override
+    public void signal(Signal signal) {
+        signal(signal, null);
+    }
+
+    @Override
+    public void signal(Signal signal, String reason) {
+        markHandled();
+        routing.signal(row, signal, reason, run);
+    }
+
+    @Override
     public void routeTo(Class<? extends ProcessStep> job) {
         routeTo(job, null);
     }
@@ -141,7 +153,8 @@ public class TrackedItemImpl<E, ID> implements TrackedItem<E, ID> {
         return ctx.catalog().byId(row.currentJobId());
     }
 
-    private void markHandled() {
+    /** Marks the item as routed, only one routing operation is allowed. */
+    void markHandled() {
         if (handled) {
             throw new IllegalStateException(this + " was routed already");
         }

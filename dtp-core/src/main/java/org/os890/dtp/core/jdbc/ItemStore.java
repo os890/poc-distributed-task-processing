@@ -32,7 +32,7 @@ import org.os890.dtp.core.domain.ItemState;
 public class ItemStore {
 
     private static final String COLUMNS = "id, namespace, item_type, ref_id, ref_version, business_key, lane,"
-            + " current_job_id, inbox_seq, state, arrival_reason, attempts";
+            + " current_job_id, inbox_seq, state, arrival_reason, attempts, flow_version_id";
 
     private final SqlDialect dialect;
 
@@ -55,10 +55,22 @@ public class ItemStore {
      * @param state         the state
      * @param arrivalReason reason of the last routing
      * @param attempts      failed attempts in the current inbox
+     * @param flowVersionId the flow version the item is pinned to, or {@code null}
      */
     public record ItemRow(UUID id, String namespace, String itemType, String refId, long refVersion,
                           String businessKey, String lane, UUID currentJobId, Long inboxSeq, ItemState state,
-                          String arrivalReason, int attempts) {
+                          String arrivalReason, int attempts, UUID flowVersionId) {
+
+        /**
+         * Same item, pinned to a flow version.
+         *
+         * @param versionId the flow version
+         * @return a copy
+         */
+        public ItemRow pinnedTo(UUID versionId) {
+            return new ItemRow(id, namespace, itemType, refId, refVersion, businessKey, lane, currentJobId, inboxSeq,
+                    state, arrivalReason, attempts, versionId);
+        }
     }
 
     /**
@@ -222,6 +234,33 @@ public class ItemStore {
     }
 
     /**
+     * Pins an item to a flow version: its signals are resolved with the routes of that version.
+     *
+     * @param c         the connection
+     * @param itemId    the item
+     * @param versionId the flow version
+     * @param now       the DB time
+     * @throws SQLException on DB errors
+     */
+    public void pin(Connection c, UUID itemId, UUID versionId, Instant now) throws SQLException {
+        Sql.update(c, "UPDATE dtp_item SET flow_version_id = ?, updated_at = ? WHERE id = ?", versionId, now, itemId);
+    }
+
+    /**
+     * Locks queued items pinned to a flow version (items in a running batch are skipped).
+     *
+     * @param c         the connection
+     * @param versionId the flow version
+     * @param limit     maximum number of items
+     * @return the locked items
+     * @throws SQLException on DB errors
+     */
+    public List<ItemRow> lockQueuedOfVersion(Connection c, UUID versionId, int limit) throws SQLException {
+        return Sql.query(c, "SELECT " + COLUMNS + " FROM dtp_item WHERE flow_version_id = ? AND state = 'QUEUED'"
+                + " ORDER BY inbox_seq LIMIT ? FOR UPDATE SKIP LOCKED", ItemStore::map, versionId, limit);
+    }
+
+    /**
      * Counts a visit of an item in a job's inbox. The caller holds the lock of the item row.
      *
      * @param c      the connection
@@ -281,6 +320,7 @@ public class ItemStore {
         return new ItemRow(Sql.uuid(rs, "id"), rs.getString("namespace"), rs.getString("item_type"),
                 rs.getString("ref_id"), rs.getLong("ref_version"), rs.getString("business_key"),
                 rs.getString("lane"), Sql.uuid(rs, "current_job_id"), inboxSeq,
-                ItemState.valueOf(rs.getString("state")), rs.getString("arrival_reason"), rs.getInt("attempts"));
+                ItemState.valueOf(rs.getString("state")), rs.getString("arrival_reason"), rs.getInt("attempts"),
+                Sql.uuid(rs, "flow_version_id"));
     }
 }

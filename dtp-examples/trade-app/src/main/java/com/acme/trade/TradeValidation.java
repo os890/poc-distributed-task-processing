@@ -36,9 +36,9 @@ public class TradeValidation implements ItemProcessor<Trade, UUID> {
         Trade trade = em.find(Trade.class, item.ref().id());
 
         if (trade.getIsin() != null) {
-            item.routeTo(TradeEnrichment.class);
+            item.signal(ValidationSignal.VALID);
         } else {
-            item.routeBack(TradeImport.class, "missing ISIN");
+            item.signal(ValidationSignal.MISSING_ISIN, "missing ISIN");
         }
     }
 }

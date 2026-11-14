@@ -32,6 +32,8 @@ public class RunContext {
     private final JobDefinition job;
     private final StepInfo step;
     private final RunInfoImpl runInfo;
+    private static final ThreadLocal<RunContext> CURRENT = new ThreadLocal<>();
+
     private final ThreadLocal<Instant> unitNow = new ThreadLocal<>();
 
     private volatile StopReason stopReason;
@@ -111,12 +113,19 @@ public class RunContext {
     public <T> T unitOfWork(boolean requiresNew, Transactions.Work<T> work) {
         Transactions.Work<T> fenced = () -> {
             Instant outer = unitNow.get();
+            RunContext outerRun = CURRENT.get();
             unitNow.set(engine.now());
+            CURRENT.set(this);
             try {
                 T result = work.run();
                 fence();
                 return result;
             } finally {
+                if (outerRun == null) {
+                    CURRENT.remove();
+                } else {
+                    CURRENT.set(outerRun);
+                }
                 if (outer == null) {
                     unitNow.remove();
                 } else {
@@ -125,6 +134,16 @@ public class RunContext {
             }
         };
         return requiresNew ? engine.tx().requiresNew(fenced) : engine.tx().required(fenced);
+    }
+
+    /**
+     * The run whose unit of work is executed by the current thread, e.g. for beans that call {@code Items} or fire
+     * flow events within a handler.
+     *
+     * @return the run, or {@code null} outside of runs
+     */
+    public static RunContext current() {
+        return CURRENT.get();
     }
 
     /** The DB time of the current unit of work (read once per unit), or the current DB time. */

@@ -15,6 +15,8 @@
  */
 package org.os890.dtp.cdi;
 
+import java.util.UUID;
+
 import javax.sql.DataSource;
 
 import jakarta.enterprise.inject.Produces;
@@ -29,7 +31,8 @@ public class TestDataSource {
     @Singleton
     DataSource dataSource() {
         JdbcDataSource h2 = new JdbcDataSource();
-        h2.setURL("jdbc:h2:mem:dtp-cdi;DB_CLOSE_DELAY=-1;LOCK_TIMEOUT=5000");
+        // one DB per container
+        h2.setURL("jdbc:h2:mem:dtp-cdi-" + UUID.randomUUID() + ";DB_CLOSE_DELAY=-1;LOCK_TIMEOUT=5000");
         return h2;
     }
 }

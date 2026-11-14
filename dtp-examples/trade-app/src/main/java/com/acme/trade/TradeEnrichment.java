@@ -40,6 +40,6 @@ public class TradeEnrichment implements ItemProcessor<Trade, UUID> {
     public void process(TrackedItem<Trade, UUID> item) {
         Trade trade = em.find(Trade.class, item.ref().id());
         marketData.enrich(trade);              // same transaction as the routing
-        item.complete();
+        item.signal(EnrichmentSignal.ENRICHED);
     }
 }

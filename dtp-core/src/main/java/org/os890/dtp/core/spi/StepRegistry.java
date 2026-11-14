@@ -15,8 +15,10 @@
  */
 package org.os890.dtp.core.spi;
 
+import java.util.Map;
 import java.util.Set;
 
+import org.os890.dtp.api.FlowDefinition;
 import org.os890.dtp.api.ProcessStep;
 
 /**
@@ -39,4 +41,13 @@ public interface StepRegistry {
      * @return the instance
      */
     ProcessStep instance(Class<? extends ProcessStep> stepClass);
+
+    /**
+     * The flows defined in Java on this node, registered as flow versions at startup.
+     *
+     * @return the definitions by class (the bean class, not a proxy class)
+     */
+    default Map<Class<? extends FlowDefinition>, FlowDefinition> flowDefinitions() {
+        return Map.of();
+    }
 }

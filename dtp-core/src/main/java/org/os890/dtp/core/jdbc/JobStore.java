@@ -85,6 +85,29 @@ public class JobStore {
     }
 
     /**
+     * A job generated for a step of a flow (DD-15 still applies to entry points: their triggers come from SQL).
+     *
+     * @param c             the connection
+     * @param namespace     the namespace
+     * @param name          the job name
+     * @param handlerClass  the step class
+     * @param inboxMinItems inbox trigger, or {@code null}
+     * @param changedBy     who generated it
+     * @param now           the DB time
+     * @return the job id
+     * @throws SQLException on DB errors
+     */
+    public UUID insertGenerated(Connection c, String namespace, String name, String handlerClass,
+                                Integer inboxMinItems, String changedBy, java.time.Instant now) throws SQLException {
+        UUID id = UUID.randomUUID();
+        Sql.update(c, "INSERT INTO dtp_job (id, namespace, name, current_revision, enabled, created_at, updated_at)"
+                + " VALUES (?, ?, ?, 1, TRUE, ?, ?)", id, namespace, name, now, now);
+        Sql.update(c, "INSERT INTO dtp_job_revision (job_id, revision, handler_class, inbox_min_items, changed_by,"
+                + " changed_at) VALUES (?, 1, ?, ?, ?, ?)", id, handlerClass, inboxMinItems, changedBy, now);
+        return id;
+    }
+
+    /**
      * Creation time of a job.
      *
      * @param c     the connection

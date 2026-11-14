@@ -19,6 +19,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 
+import org.os890.dtp.api.FlowDefinition;
 import org.os890.dtp.api.ProcessStep;
 import org.os890.dtp.core.spi.StepRegistry;
 
@@ -26,11 +27,30 @@ import org.os890.dtp.core.spi.StepRegistry;
 public class MapStepRegistry implements StepRegistry {
 
     private final Map<Class<? extends ProcessStep>, ProcessStep> steps = new LinkedHashMap<>();
+    private final Map<Class<? extends FlowDefinition>, FlowDefinition> flows = new LinkedHashMap<>();
 
     public MapStepRegistry(ProcessStep... instances) {
         for (ProcessStep step : instances) {
             steps.put(step.getClass(), step);
         }
+    }
+
+    /**
+     * Adds flow definitions.
+     *
+     * @param definitions the definitions
+     * @return this registry
+     */
+    public MapStepRegistry flows(FlowDefinition... definitions) {
+        for (FlowDefinition definition : definitions) {
+            flows.put(definition.getClass(), definition);
+        }
+        return this;
+    }
+
+    @Override
+    public Map<Class<? extends FlowDefinition>, FlowDefinition> flowDefinitions() {
+        return flows;
     }
 
     @Override

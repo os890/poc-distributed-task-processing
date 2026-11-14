@@ -18,6 +18,7 @@ package org.os890.dtp.core.jdbc;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 /** Cluster membership ({@code dtp_node}). */
@@ -79,5 +80,18 @@ public class NodeStore {
     public int markDead(Connection c, String namespace, Instant cutOff) throws SQLException {
         return Sql.update(c, "UPDATE dtp_node SET state = 'DEAD' WHERE namespace = ? AND state IN ('ACTIVE',"
                 + " 'DRAINING') AND heartbeat_at < ?", namespace, cutOff);
+    }
+
+    /**
+     * The capabilities (JSON arrays of step classes) of the active nodes of a namespace.
+     *
+     * @param c         the connection
+     * @param namespace the namespace
+     * @return one JSON array per node
+     * @throws SQLException on DB errors
+     */
+    public List<String> activeCapabilities(Connection c, String namespace) throws SQLException {
+        return Sql.query(c, "SELECT capabilities FROM dtp_node WHERE namespace = ? AND state = 'ACTIVE'",
+                rs -> rs.getString("capabilities"), namespace);
     }
 }

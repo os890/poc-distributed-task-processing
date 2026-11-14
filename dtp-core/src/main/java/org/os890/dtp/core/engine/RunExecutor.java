@@ -33,6 +33,7 @@ import org.os890.dtp.api.RunOutcome;
 import org.os890.dtp.api.StopReason;
 import org.os890.dtp.core.domain.JobDefinition;
 import org.os890.dtp.core.domain.LeaseLostException;
+import org.os890.dtp.core.domain.RouteModel;
 import org.os890.dtp.core.domain.TransitionDefinition;
 import org.os890.dtp.core.domain.TriggerType;
 import org.os890.dtp.core.jdbc.RunStore;
@@ -50,19 +51,22 @@ public class RunExecutor {
     private final RunPlanner planner;
     private final ItemRouting routing;
     private final Runnable onFinished;
+    private final FlowRouting flows;
     private final Map<UUID, RunContext> active = new ConcurrentHashMap<>();
     private final ExecutorService threads = Executors.newVirtualThreadPerTaskExecutor();
 
     private volatile boolean abandoned;
 
-    public RunExecutor(EngineContext ctx, RunPlanner planner, ItemRouting routing, Runnable onFinished) {
+    public RunExecutor(EngineContext ctx, RunPlanner planner, ItemRouting routing, FlowRouting flows,
+                       Runnable onFinished) {
         this.ctx = ctx;
         this.planner = planner;
         this.routing = routing;
         this.onFinished = onFinished;
+        this.flows = flows;
     }
 
-    private record Result(RunOutcome outcome, String resultStatus, String error) {
+    private record Result(RunOutcome outcome, String resultType, String resultStatus, String error) {
     }
 
     /** Number of runs this node can still start. */
@@ -125,7 +129,8 @@ public class RunExecutor {
                 throw e;
             } catch (RuntimeException | Error e) {
                 LOG.log(System.Logger.Level.WARNING, "run " + runId + " of job " + run.job().name() + " failed", e);
-                result = new Result(RunOutcome.FAILED, null, ctx.json().write(Map.of("type", e.getClass().getName(),
+                result = new Result(RunOutcome.FAILED, null, null, ctx.json().write(Map.of("type",
+                        e.getClass().getName(),
                         "message", String.valueOf(e.getMessage()))));
             }
             finish(run, result);
@@ -146,7 +151,7 @@ public class RunExecutor {
         ProcessStep step = ctx.registry().instance(run.step().stepClass());
         if (step instanceof ItemProcessor<?, ?> processor) {
             boolean remaining = new ItemProcessorDriver(run, routing, processor).run();
-            return new Result(outcome(run, remaining), null, null);
+            return new Result(outcome(run, remaining), null, null, null);
         }
         JobHandler<Object, ?> handler = handler(step);
         run.onStop(() -> handler.onStop(run.stopReason()));
@@ -156,7 +161,8 @@ public class RunExecutor {
         if (result == null) {
             throw new IllegalStateException(handler.getClass().getName() + ".execute returned null");
         }
-        return new Result(outcome(run, run.stopReason() != null), result.status().name(), null);
+        return new Result(outcome(run, run.stopReason() != null), RouteModel.typeOf(result.status()),
+                result.status().name(), null);
     }
 
     @SuppressWarnings("unchecked")
@@ -201,6 +207,11 @@ public class RunExecutor {
                             "transition:" + claimed.runId() + ":" + target.id(), claimed.runId().toString(), null,
                             null), now);
                 }
+            }
+            boolean succeeded = result.outcome() == RunOutcome.SUCCEEDED
+                    || result.outcome() == RunOutcome.COMPLETED_WITH_ISSUES;
+            if (flows != null && succeeded && result.resultStatus() != null) {
+                flows.runSucceeded(c, run.job(), claimed.runId(), result.resultType(), result.resultStatus(), now);
             }
             // the release is the fence check of the finish (DD-12): the last statement before the commit
             if (!ctx.leases().release(c, claimed.jobId(), claimed.runId(), claimed.token())) {

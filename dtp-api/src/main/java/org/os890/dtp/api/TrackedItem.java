@@ -21,8 +21,9 @@ import java.util.Optional;
 /**
  * An item in a job's inbox. Every operation is recorded in the item's journey.
  *
- * <p>Exactly one of the routing operations ({@code routeTo}, {@code routeBack}, {@code defer}, {@code fail},
- * {@code complete}, {@code discard}) has to be called per hand-over.
+ * <p>Exactly one of the routing operations ({@code signal}, {@code routeTo}, {@code routeBack}, {@code defer},
+ * {@code fail}, {@code complete}, {@code discard}) has to be called per hand-over. {@code signal} lets the flow
+ * definition decide, the others route manually.
  *
  * <p>Slice 1 of the PoC: fork/join, approvals and decision requests are not implemented yet. An item that exceeds
  * its retries or its loop limit waits in state {@code WAITING_FOR_DECISION}.
@@ -53,7 +54,23 @@ public interface TrackedItem<E, ID> {
     int visits(Class<? extends ProcessStep> job);
 
     /**
-     * Routes the item into the inbox of the given job.
+     * Reports a signal: the flow definition in the DB decides where the item goes next (see {@link FlowDefinition}).
+     * The flow version is pinned per item, routes can be overruled by operators.
+     *
+     * @param signal the signal
+     */
+    void signal(Signal signal);
+
+    /**
+     * Reports a signal with a reason the next step can read.
+     *
+     * @param signal the signal
+     * @param reason the reason
+     */
+    void signal(Signal signal, String reason);
+
+    /**
+     * Manual routing: routes the item into the inbox of the given job, without a flow definition.
      *
      * @param job the process step class of the target job
      */

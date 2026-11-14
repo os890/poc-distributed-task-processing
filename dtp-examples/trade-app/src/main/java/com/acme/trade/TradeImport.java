@@ -42,7 +42,7 @@ public class TradeImport implements JobHandler<ImportParams, ImportOutcome> {
         // items routed back by TradeValidation are in this job's inbox, re-import them first
         ctx.inbox(Trade.ITEM).forEach(item -> {
             feed.reimport(item.ref().id());
-            item.routeTo(TradeValidation.class, "re-imported");
+            item.signal(ImportSignal.REIMPORTED, "re-imported");
             ctx.runInfo().increment(REIMPORTED, 1);
         });
 
@@ -50,7 +50,7 @@ public class TradeImport implements JobHandler<ImportParams, ImportOutcome> {
         for (Trade trade : trades) {
             ctx.items()
                     .track(ItemRef.of(Trade.ITEM, trade.getId(), trade.getVersion()), trade.getTradeNumber())
-                    .routeTo(TradeValidation.class);
+                    .signal(ImportSignal.IMPORTED);
         }
         ctx.runInfo().put(IMPORTED, (long) trades.size());
         return JobResult.of(trades.isEmpty() ? ImportOutcome.NO_DATA : ImportOutcome.SUCCESS);

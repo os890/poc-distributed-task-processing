@@ -15,6 +15,7 @@
  */
 package org.os890.dtp.cdi;
 
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Locale;
 import java.util.Optional;
@@ -52,6 +53,9 @@ public class DtpSettings {
         string(config, "dtp.max-concurrent-runs").map(Integer::valueOf).ifPresent(builder::maxConcurrentRuns);
         string(config, "dtp.schema.migrate").map(Boolean::valueOf).ifPresent(builder::migrateSchema);
         string(config, "dtp.random.seed").map(Long::valueOf).ifPresent(builder::randomSeed);
+        string(config, "dtp.flows.export").map(v -> DtpConfig.FlowExport.valueOf(v.trim().toUpperCase(Locale.ROOT)))
+                                          .ifPresent(builder::flowExport);
+        string(config, "dtp.flows.export-path").map(Path::of).ifPresent(builder::flowExportPath);
         return builder.build();
     }
 

@@ -18,12 +18,16 @@ package com.acme.trade;
 import static io.restassured.RestAssured.given;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
+import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.hasItem;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 
 import jakarta.inject.Inject;
 
@@ -68,6 +72,46 @@ class TradeFlowTest {
         given().when().get("/dtp/items").then().statusCode(200).body("state", hasItem("COMPLETED"));
         given().when().get("/dtp/nodes").then().statusCode(200).body("leader", equalTo(List.of(true)));
         given().when().get("/q/health/ready").then().statusCode(200).body("status", equalTo("UP"));
+    }
+
+    @Test
+    void flowsAreVisibleAndCanBeOverruled() throws Exception {
+        String version = given().when().get("/dtp/flows")
+                                .then().statusCode(200)
+                                .body("name", equalTo(List.of("trade-flow")))
+                                .extract().path("[0].activeVersion");
+        given().when().get("/dtp/flows/trade-flow/diagram")
+               .then().statusCode(200)
+               .body(containsString("-.->|MISSING_ISIN|"), containsString("-->|ENRICHED| done"));
+        given().when().get("/dtp/flows/validation")
+               .then().statusCode(200)
+               .body("message", hasItem("trade-validation is part of a loop but has no max_item_visits"));
+        assertThat(Files.readString(Path.of("target", "dtp-flows.md"))).contains("## trade-flow", "```mermaid");
+
+        given().contentType(ContentType.JSON).body(Map.of("version", version, "by", "ops", "reason", "test"))
+               .when().post("/dtp/flows/trade-flow/activations")
+               .then().statusCode(204);
+        given().contentType(ContentType.JSON).body(Map.of("version", "ffff", "by", "ops"))
+               .when().post("/dtp/flows/trade-flow/activations")
+               .then().statusCode(409);
+        given().when().get("/dtp/flows/trade-flow/activations")
+               .then().statusCode(200).body("activatedBy", hasItem("ops"));
+
+        String id = given().contentType(ContentType.JSON)
+                           .body(Map.of("fromJob", "trade-validation", "signal", "MISSING_ISIN", "kind", "DISCARD",
+                                   "by", "ops", "reason", "ISIN feed down"))
+                           .when().post("/dtp/flows/trade-flow/overrides")
+                           .then().statusCode(200).extract().path("id");
+        given().when().get("/dtp/flows/trade-flow/overrides")
+               .then().statusCode(200).body("reason", equalTo(List.of("ISIN feed down")));
+        given().when().get("/dtp/flows/trade-flow/diagram").then().body(containsString("MISSING_ISIN ⚠"));
+        given().when().delete("/dtp/flows/overrides/" + id).then().statusCode(204);
+        given().when().delete("/dtp/flows/overrides/" + id).then().statusCode(404);
+        given().when().get("/dtp/flows/unknown/diagram").then().statusCode(404);
+        given().contentType(ContentType.JSON).body(Map.of("from", version, "to", version, "by", "ops"))
+               .when().post("/dtp/flows/trade-flow/migrations")
+               .then().statusCode(200);
+        given().when().get("/dtp/flows/export").then().statusCode(200).body(containsString("# dtp flows"));
     }
 
     private int count(String state) {

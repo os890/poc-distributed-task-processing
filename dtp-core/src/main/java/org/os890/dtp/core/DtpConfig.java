@@ -15,6 +15,7 @@
  */
 package org.os890.dtp.core;
 
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Objects;
 
@@ -35,11 +36,14 @@ import java.util.Objects;
  * @param maxConcurrentRuns   maximum number of runs on this node
  * @param migrateSchema       run the Flyway migrations on start
  * @param randomSeed          seed of the jitter (DD-14), or {@code null} for a random one
+ * @param flowExport          export of the flows after the start
+ * @param flowExportPath      file of the export
  */
 public record DtpConfig(String namespace, String nodeName, Duration pollInterval, Duration housekeepingInterval,
                         Duration heartbeatInterval, Duration leaseDuration, Duration leaderLeaseDuration,
                         Duration deadAfter, Duration misfireGrace, Duration definitionRefresh, Duration drainTimeout,
-                        int maxConcurrentRuns, boolean migrateSchema, Long randomSeed) {
+                        int maxConcurrentRuns, boolean migrateSchema, Long randomSeed, FlowExport flowExport,
+                        Path flowExportPath) {
 
     public DtpConfig {
         Objects.requireNonNull(namespace, "namespace");
@@ -50,6 +54,14 @@ public record DtpConfig(String namespace, String nodeName, Duration pollInterval
         if (heartbeatInterval.multipliedBy(2).compareTo(leaseDuration) > 0) {
             throw new IllegalArgumentException("leaseDuration must be at least twice the heartbeatInterval");
         }
+    }
+
+    /** Export of the flows. */
+    public enum FlowExport {
+        /** No export. */
+        NONE,
+        /** Markdown with a Mermaid diagram per flow. */
+        MERMAID
     }
 
     /**
@@ -78,6 +90,8 @@ public record DtpConfig(String namespace, String nodeName, Duration pollInterval
         private int maxConcurrentRuns = 8;
         private boolean migrateSchema = true;
         private Long randomSeed;
+        private FlowExport flowExport = FlowExport.NONE;
+        private Path flowExportPath = Path.of("target", "dtp-flows.md");
 
         public Builder namespace(String value) {
             namespace = value;
@@ -149,10 +163,32 @@ public record DtpConfig(String namespace, String nodeName, Duration pollInterval
             return this;
         }
 
+        /**
+         * Export of the flows after the start (diagrams generated from the DB).
+         *
+         * @param value the format
+         * @return this builder
+         */
+        public Builder flowExport(FlowExport value) {
+            flowExport = Objects.requireNonNull(value, "flowExport");
+            return this;
+        }
+
+        /**
+         * File of the flow export.
+         *
+         * @param value the path
+         * @return this builder
+         */
+        public Builder flowExportPath(Path value) {
+            flowExportPath = Objects.requireNonNull(value, "flowExportPath");
+            return this;
+        }
+
         public DtpConfig build() {
             return new DtpConfig(namespace, nodeName, pollInterval, housekeepingInterval, heartbeatInterval,
                     leaseDuration, leaderLeaseDuration, deadAfter, misfireGrace, definitionRefresh, drainTimeout,
-                    maxConcurrentRuns, migrateSchema, randomSeed);
+                    maxConcurrentRuns, migrateSchema, randomSeed, flowExport, flowExportPath);
         }
 
         private static String defaultNodeName() {

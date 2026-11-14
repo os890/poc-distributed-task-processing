@@ -26,11 +26,14 @@ import java.util.concurrent.atomic.AtomicInteger;
 import javax.sql.DataSource;
 
 import org.h2.jdbcx.JdbcDataSource;
+import org.os890.dtp.api.FlowDefinition;
 import org.os890.dtp.api.ProcessStep;
 import org.os890.dtp.core.DtpConfig;
 import org.os890.dtp.core.DtpEngine;
 import org.os890.dtp.core.jdbc.JdbcTransactions;
+import org.os890.dtp.core.jdbc.SchemaMigrator;
 import org.os890.dtp.core.jdbc.Sql;
+import org.os890.dtp.core.jdbc.SqlDialect;
 import org.os890.dtp.core.query.DtpQueries;
 import org.os890.dtp.core.spi.Transactions;
 
@@ -95,15 +98,43 @@ public class TestCluster implements AutoCloseable {
      * @return the started engine
      */
     public DtpEngine start(DtpConfig config, ProcessStep... steps) {
+        return start(config, new MapStepRegistry(steps));
+    }
+
+    /**
+     * Starts a node with flow definitions.
+     *
+     * @param name  the node name
+     * @param flows the flow definitions
+     * @param steps the process steps
+     * @return the started node
+     */
+    public DtpEngine start(String name, List<FlowDefinition> flows, ProcessStep... steps) {
+        return start(config(name).build(), new MapStepRegistry(steps).flows(flows.toArray(FlowDefinition[]::new)));
+    }
+
+    /**
+     * Starts a node.
+     *
+     * @param config   the settings
+     * @param registry the steps and flows
+     * @return the started node
+     */
+    public DtpEngine start(DtpConfig config, MapStepRegistry registry) {
         DtpEngine engine = DtpEngine.builder()
                 .dataSource(dataSource)
                 .transactions(tx)
-                .steps(new MapStepRegistry(steps))
+                .steps(registry)
                 .config(config)
                 .build()
                 .start();
         nodes.add(engine);
         return engine;
+    }
+
+    /** Creates the schema without starting a node, e.g. to define jobs before the first node starts. */
+    public void migrate() {
+        SchemaMigrator.migrate(dataSource, tx.withConnection(SqlDialect::detect), getClass().getClassLoader());
     }
 
     public Transactions tx() {

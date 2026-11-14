@@ -24,9 +24,11 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.HexFormat;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
+import org.os890.dtp.api.Signal;
 import org.os890.dtp.core.domain.FailureKind;
 import org.os890.dtp.core.domain.ItemEventType;
 import org.os890.dtp.core.domain.ItemState;
@@ -45,8 +47,34 @@ public class ItemRouting {
 
     private final EngineContext ctx;
 
+    private FlowRouting flows;
+
     public ItemRouting(EngineContext ctx) {
         this.ctx = ctx;
+    }
+
+    /**
+     * Attaches the flow routing that resolves signals.
+     *
+     * @param flowRouting the flow routing
+     */
+    public void attach(FlowRouting flowRouting) {
+        this.flows = flowRouting;
+    }
+
+    /**
+     * Routes an item according to the flow definition.
+     *
+     * @param item   the item
+     * @param signal the signal
+     * @param reason the reason, or {@code null}
+     * @param run    the current run, or {@code null}
+     */
+    public void signal(ItemRow item, Signal signal, String reason, RunContext run) {
+        if (flows == null) {
+            throw new IllegalStateException("flows aren't enabled on this node");
+        }
+        flows.signal(item, Objects.requireNonNull(signal, "signal"), reason, run);
     }
 
     /**

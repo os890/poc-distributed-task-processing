@@ -30,12 +30,16 @@ import jakarta.transaction.TransactionManager;
 
 import org.eclipse.microprofile.config.Config;
 import org.eclipse.microprofile.config.ConfigProvider;
+import org.os890.dtp.api.FlowDefinition;
+import org.os890.dtp.api.FlowEvent;
 import org.os890.dtp.api.Items;
 import org.os890.dtp.api.JobEngine;
 import org.os890.dtp.api.ProcessStep;
 import org.os890.dtp.core.DtpEngine;
+import org.os890.dtp.core.engine.FlowAdmin;
 import org.os890.dtp.core.jdbc.JdbcTransactions;
 import org.os890.dtp.core.query.DtpQueries;
+import org.os890.dtp.core.query.FlowQueries;
 import org.os890.dtp.core.spi.Transactions;
 
 /**
@@ -49,6 +53,10 @@ public class DtpBootstrap {
     @Inject
     @Any
     Instance<ProcessStep> steps;
+
+    @Inject
+    @Any
+    Instance<FlowDefinition> flows;
 
     @Inject
     Instance<DataSource> dataSources;
@@ -70,6 +78,16 @@ public class DtpBootstrap {
     }
 
     /**
+     * Starts flows and routes items by signals fired as CDI events ({@code Event<FlowEvent>}). Synchronous: joins the
+     * caller's transaction or the unit of work of the current run.
+     *
+     * @param event the event
+     */
+    void onFlowEvent(@Observes FlowEvent event) {
+        engine().fire(event);
+    }
+
+    /**
      * The engine of this node, started on first access.
      *
      * @return the engine
@@ -83,7 +101,7 @@ public class DtpBootstrap {
             engine = DtpEngine.builder()
                     .dataSource(dataSource)
                     .transactions(tx)
-                    .steps(new CdiStepRegistry(steps))
+                    .steps(new CdiStepRegistry(steps, flows))
                     .config(DtpSettings.read(ConfigProvider.getConfig()))
                     .build()
                     .start();
@@ -113,5 +131,15 @@ public class DtpBootstrap {
     @Produces
     DtpQueries queries() {
         return engine().queries();
+    }
+
+    @Produces
+    FlowQueries flowQueries() {
+        return engine().flowQueries();
+    }
+
+    @Produces
+    FlowAdmin flowAdmin() {
+        return engine().flowAdmin();
     }
 }

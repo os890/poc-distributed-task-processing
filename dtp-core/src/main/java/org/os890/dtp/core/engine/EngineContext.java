@@ -22,6 +22,7 @@ import java.util.UUID;
 import org.os890.dtp.api.ProcessStep;
 import org.os890.dtp.core.DtpConfig;
 import org.os890.dtp.core.jdbc.DbClock;
+import org.os890.dtp.core.jdbc.FlowStore;
 import org.os890.dtp.core.jdbc.ItemStore;
 import org.os890.dtp.core.jdbc.JobStore;
 import org.os890.dtp.core.jdbc.LeaderStore;
@@ -46,6 +47,7 @@ import org.os890.dtp.core.spi.Transactions;
  * @param nodes    the node store
  * @param leaders  the leader store
  * @param items    the item store
+ * @param flows    the flow store
  * @param catalog  the job catalog
  * @param json     the JSON codec
  * @param registry the process steps of this node
@@ -53,7 +55,7 @@ import org.os890.dtp.core.spi.Transactions;
  */
 public record EngineContext(DtpConfig config, UUID nodeId, Transactions tx, SqlDialect dialect, DbClock clock,
                             JobStore jobs, LeaseStore leases, RunStore runs, NodeStore nodes, LeaderStore leaders,
-                            ItemStore items, JobCatalog catalog, JsonCodec json, StepRegistry registry,
+                            ItemStore items, FlowStore flows, JobCatalog catalog, JsonCodec json, StepRegistry registry,
                             Map<Class<? extends ProcessStep>, StepInfo> steps) {
 
     /** The namespace. */

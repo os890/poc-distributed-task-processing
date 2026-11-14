@@ -15,9 +15,13 @@
  */
 package org.os890.dtp.core;
 
+import java.io.IOException;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Random;
@@ -31,12 +35,19 @@ import java.util.stream.Collectors;
 
 import javax.sql.DataSource;
 
+import org.os890.dtp.api.FlowDefinition;
+import org.os890.dtp.api.FlowEvent;
 import org.os890.dtp.api.Items;
 import org.os890.dtp.api.JobEngine;
 import org.os890.dtp.api.ProcessStep;
 import org.os890.dtp.api.StopReason;
+import org.os890.dtp.api.TrackedItem;
+import org.os890.dtp.core.domain.FlowModel;
 import org.os890.dtp.core.engine.ClaimedRun;
 import org.os890.dtp.core.engine.EngineContext;
+import org.os890.dtp.core.engine.FlowAdmin;
+import org.os890.dtp.core.engine.FlowRegistrar;
+import org.os890.dtp.core.engine.FlowRouting;
 import org.os890.dtp.core.engine.Housekeeping;
 import org.os890.dtp.core.engine.ItemRouting;
 import org.os890.dtp.core.engine.ItemsImpl;
@@ -50,6 +61,7 @@ import org.os890.dtp.core.engine.RunExecutor;
 import org.os890.dtp.core.engine.RunPlanner;
 import org.os890.dtp.core.engine.StepInfo;
 import org.os890.dtp.core.jdbc.DbClock;
+import org.os890.dtp.core.jdbc.FlowStore;
 import org.os890.dtp.core.jdbc.ItemStore;
 import org.os890.dtp.core.jdbc.JdbcTransactions;
 import org.os890.dtp.core.jdbc.JobStore;
@@ -60,6 +72,7 @@ import org.os890.dtp.core.jdbc.RunStore;
 import org.os890.dtp.core.jdbc.SchemaMigrator;
 import org.os890.dtp.core.jdbc.SqlDialect;
 import org.os890.dtp.core.query.DtpQueries;
+import org.os890.dtp.core.query.FlowQueries;
 import org.os890.dtp.core.spi.StepRegistry;
 import org.os890.dtp.core.spi.Transactions;
 
@@ -92,6 +105,9 @@ public class DtpEngine {
     private JobEngine jobEngine;
     private Items items;
     private DtpQueries queries;
+    private FlowQueries flowQueries;
+    private FlowRouting flowRouting;
+    private FlowAdmin flowAdmin;
     private ScheduledExecutorService scheduler;
     private int idleRounds;
 
@@ -170,24 +186,40 @@ public class DtpEngine {
         JobStore jobStore = new JobStore();
         ctx = new EngineContext(config, nodeId, tx, dialect, new DbClock(dialect), jobStore, new LeaseStore(dialect),
                 new RunStore(dialect), new NodeStore(), new LeaderStore(dialect), new ItemStore(dialect),
+                new FlowStore(dialect),
                 new JobCatalog(tx, jobStore, config.namespace(), config.definitionRefresh().toNanos()),
                 new JsonCodec(), registry, Map.copyOf(steps));
         RunPlanner planner = new RunPlanner(ctx);
         ItemRouting routing = new ItemRouting(ctx);
+        List<FlowModel> flowModels = FlowRegistrar.compile(registry.flowDefinitions());
+        Map<Class<? extends FlowDefinition>, String> flowNames = new LinkedHashMap<>();
+        for (FlowModel model : flowModels) {
+            model.steps().stream().filter(step -> !steps.containsKey(step)).findFirst().ifPresent(step -> {
+                throw new IllegalStateException("flow " + model.name() + ": the step " + step.getName()
+                        + " isn't a process step of this node");
+            });
+            flowNames.put(model.definitionClass().asSubclass(FlowDefinition.class), model.name());
+        }
+        flowRouting = new FlowRouting(ctx, routing, planner, flowNames);
+        routing.attach(flowRouting);
+        flowAdmin = new FlowAdmin(ctx);
         Set<String> capabilities = steps.keySet().stream().map(Class::getName).collect(Collectors.toSet());
         leader = new LeaderElector(ctx);
         housekeeping = new Housekeeping(ctx, planner);
         claimer = new RunClaimer(ctx, capabilities, random);
-        executor = new RunExecutor(ctx, planner, routing, this::claimSoon);
+        executor = new RunExecutor(ctx, planner, routing, flowRouting, this::claimSoon);
         jobEngine = new JobEngineImpl(ctx, planner);
         items = new ItemsImpl(ctx, routing, null);
         queries = new DtpQueries(tx, config.namespace());
+        flowQueries = new FlowQueries(tx, config.namespace());
 
         tx.required(() -> tx.withConnection(c -> {
             ctx.nodes().register(c, nodeId, config.namespace(), config.nodeName(), hostName(),
                     ctx.json().write(capabilities.stream().sorted().toList()), ctx.clock().now(c));
             return null;
         }));
+        new FlowRegistrar(ctx).register(flowModels);
+        exportFlows();
         leader.init();
 
         scheduler = Executors.newScheduledThreadPool(2, Thread.ofPlatform().daemon()
@@ -257,6 +289,35 @@ public class DtpEngine {
     /** Read-only views. */
     public DtpQueries queries() {
         return requireStarted(queries);
+    }
+
+    /**
+     * Read model of the flows (versions, activations, overrides, diagrams, validation).
+     *
+     * @return the queries
+     */
+    public FlowQueries flowQueries() {
+        return requireStarted(flowQueries);
+    }
+
+    /**
+     * Operator actions on flows (activation, overrides, migration).
+     *
+     * @return the admin
+     */
+    public FlowAdmin flowAdmin() {
+        return requireStarted(flowAdmin);
+    }
+
+    /**
+     * Handles a flow event: starts a flow or routes an item by a signal. Joins the caller's transaction (or the
+     * unit of work of the current run).
+     *
+     * @param event the event
+     * @return the item
+     */
+    public TrackedItem<?, ?> fire(FlowEvent event) {
+        return requireStarted(flowRouting).handle(Objects.requireNonNull(event, "event"));
     }
 
     /** The id of this node. */
@@ -363,6 +424,22 @@ public class DtpEngine {
             return 0;
         } finally {
             claimLock.unlock();
+        }
+    }
+
+    private void exportFlows() {
+        if (config.flowExport() == DtpConfig.FlowExport.NONE) {
+            return;
+        }
+        Path path = config.flowExportPath();
+        try {
+            if (path.toAbsolutePath().getParent() != null) {
+                Files.createDirectories(path.toAbsolutePath().getParent());
+            }
+            Files.writeString(path, flowQueries.exportMarkdown());
+            LOG.log(System.Logger.Level.INFO, "dtp flows exported to {0}", path.toAbsolutePath());
+        } catch (IOException | RuntimeException e) {
+            LOG.log(System.Logger.Level.WARNING, "exporting the flows to " + path + " failed", e);
         }
     }
 

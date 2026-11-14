@@ -37,7 +37,7 @@ public class ItemsImpl implements Items {
      *
      * @param ctx     the engine
      * @param routing the item routing
-     * @param run     the current run, or {@code null} outside of runs
+     * @param run     the run, or {@code null} for the run of the current thread (if any)
      */
     public ItemsImpl(EngineContext ctx, ItemRouting routing, RunContext run) {
         this.ctx = ctx;
@@ -53,15 +53,20 @@ public class ItemsImpl implements Items {
     @Override
     public <E, ID> TrackedItem<E, ID> track(ItemRef<E, ID> ref, String businessKey, ItemLane lane) {
         Objects.requireNonNull(ref, "ref");
+        RunContext current = currentRun();
         ItemRow row = ctx.tx().required(() -> ctx.tx().withConnection(c -> {
             ItemRow inserted = new ItemRow(UUID.randomUUID(), ctx.namespace(), ref.type().name(),
                     IdCodec.encode(ref.id()), ref.optionalVersion().orElse(0L), businessKey,
-                    lane == null ? null : lane.name(), null, null, ItemState.QUEUED, null, 0);
+                    lane == null ? null : lane.name(), null, null, ItemState.QUEUED, null, 0, null);
             ctx.items().insert(c, inserted, lane == null ? 0 : lane.priority(),
-                    run != null ? run.now() : ctx.clock().now(c));
-            routing.tracked(inserted, run);
+                    current != null ? current.now() : ctx.clock().now(c));
+            routing.tracked(inserted, current);
             return inserted;
         }));
-        return new TrackedItemImpl<>(ctx, routing, row, ref.type(), run);
+        return new TrackedItemImpl<>(ctx, routing, row, ref.type(), current);
+    }
+
+    private RunContext currentRun() {
+        return run != null ? run : RunContext.current();
     }
 }

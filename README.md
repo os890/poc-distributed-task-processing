@@ -55,8 +55,8 @@
 
 ## First Implementation
 
-Branch `poc-impl` contains a first implementation (slice 1) with a runtime demo on three Quarkus nodes: see
-[IMPLEMENTATION.md](IMPLEMENTATION.md).
+Branch `poc-impl` contains a first implementation (slice 1) with a runtime demo on three Quarkus nodes, and flows
+with signals, versions and overrides (slice 2): see [IMPLEMENTATION.md](IMPLEMENTATION.md).
 
 ## License
 
