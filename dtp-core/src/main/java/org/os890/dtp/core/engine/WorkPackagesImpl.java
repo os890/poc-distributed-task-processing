@@ -33,6 +33,8 @@ import java.util.stream.Stream;
 
 import org.os890.dtp.api.ItemRef;
 import org.os890.dtp.api.ItemType;
+import org.os890.dtp.api.JobHandler;
+import org.os890.dtp.api.PackageCollector;
 import org.os890.dtp.api.RunInfo;
 import org.os890.dtp.api.TrackedItem;
 import org.os890.dtp.api.WorkPackage;
@@ -50,6 +52,7 @@ import org.os890.dtp.core.jdbc.ItemStore.InboxQuery;
 import org.os890.dtp.core.jdbc.ItemStore.ItemEvent;
 import org.os890.dtp.core.jdbc.ItemStore.ItemRow;
 import org.os890.dtp.core.jdbc.PackageStore;
+import org.os890.dtp.core.jdbc.PackageStore.Creator;
 import org.os890.dtp.core.jdbc.PackageStore.PackageRow;
 
 /**
@@ -57,6 +60,9 @@ import org.os890.dtp.core.jdbc.PackageStore.PackageRow;
  * processing a package are fenced units of work of the run; a package is processed in one transaction, so it is
  * never left in progress: a crash rolls it back to {@code PENDING} and the next run (after a takeover: the same run)
  * processes it again.
+ *
+ * <p>A collector can create packages for other jobs ({@link #forSteps(Function)}): the package belongs to the job
+ * that processes it ({@code job_id}), its items move to that job, and {@code created_by_job_id} keeps the collector.
  *
  * @param <E>  the entity type
  * @param <ID> the id type
@@ -73,13 +79,22 @@ public class WorkPackagesImpl<E, ID> implements WorkPackages<E, ID> {
     private final ItemType<E, ID> type;
     private final EngineContext ctx;
     private final PackageStore store;
+    /** The job handler of a group's packages, {@code null}: the current job. */
+    private final Function<String, Class<? extends JobHandler<?, ?>>> stepOfGroup;
+    private final Map<String, UUID> targets = new HashMap<>();
 
     public WorkPackagesImpl(RunContext run, ItemRouting routing, ItemType<E, ID> type) {
+        this(run, routing, type, null);
+    }
+
+    private WorkPackagesImpl(RunContext run, ItemRouting routing, ItemType<E, ID> type,
+                             Function<String, Class<? extends JobHandler<?, ?>>> stepOfGroup) {
         this.run = run;
         this.routing = routing;
         this.type = type;
         this.ctx = run.engine();
         this.store = new PackageStore(ctx.dialect());
+        this.stepOfGroup = stepOfGroup;
     }
 
     /** A package that is being filled. */
@@ -87,13 +102,42 @@ public class WorkPackagesImpl<E, ID> implements WorkPackages<E, ID> {
 
         private final UUID id;
         private final long seq;
+        private final UUID jobId;
         private int count;
         private int added;
 
-        Filling(UUID id, long seq) {
+        Filling(UUID id, long seq, UUID jobId) {
             this.id = id;
             this.seq = seq;
+            this.jobId = jobId;
         }
+    }
+
+    @Override
+    public PackageCollector<E, ID> forStep(Class<? extends JobHandler<?, ?>> step) {
+        Objects.requireNonNull(step, "step");
+        return forSteps(key -> step);
+    }
+
+    @Override
+    public PackageCollector<E, ID> forSteps(Function<String, Class<? extends JobHandler<?, ?>>> stepOfGroup) {
+        return new WorkPackagesImpl<>(run, routing, type, Objects.requireNonNull(stepOfGroup, "stepOfGroup"));
+    }
+
+    /** The job that processes the packages of a group. */
+    private UUID targetOf(String key) {
+        if (stepOfGroup == null) {
+            return jobId();
+        }
+        if (!targets.containsKey(key)) {
+            Class<?> step = Objects.requireNonNull(stepOfGroup.apply(key), "no job handler for the group " + key);
+            if (!JobHandler.class.isAssignableFrom(step)) {
+                // only a JobHandler has a JobContext to process packages with
+                throw new IllegalArgumentException("packages can only be created for a JobHandler: " + step.getName());
+            }
+            targets.put(key, ctx.catalog().byStep(step.asSubclass(JobHandler.class)).id());
+        }
+        return targets.get(key);
     }
 
     @Override
@@ -118,8 +162,9 @@ public class WorkPackagesImpl<E, ID> implements WorkPackages<E, ID> {
                     }
                     String key = groupKey.apply(new TrackedItemImpl<>(ctx, routing, entry, type, run));
                     Filling pkg = filling(c, filling, key, maxSize, created, now);
-                    ctx.items().assignToPackage(c, entry.item().id(), pkg.id, now);
-                    journal(c, entry.item().id(), ItemEventType.PACKAGED, describe(key, pkg.seq), now);
+                    ctx.items().assignToPackage(c, entry.item().id(), pkg.jobId, pkg.id, now);
+                    journal(c, entry.item().id(), ItemEventType.PACKAGED, handedTo(pkg), describe(key, pkg.seq),
+                            now);
                 }
                 flush(c, filling);
                 return true;
@@ -150,10 +195,10 @@ public class WorkPackagesImpl<E, ID> implements WorkPackages<E, ID> {
                     String key = groupKey.apply(ref);
                     Filling pkg = filling(c, filling, key, maxSize, created, now);
                     ItemRow item = new ItemRow(UUID.randomUUID(), ctx.namespace(), type.name(), refId, version,
-                            refId, null, jobId(), null, ItemState.PACKAGED, null, 0, null, null, 0);
-                    ctx.items().insertPackaged(c, item, jobId(), pkg.id, now);
-                    journal(c, item.id(), ItemEventType.TRACKED, null, now);
-                    journal(c, item.id(), ItemEventType.PACKAGED, describe(key, pkg.seq), now);
+                            refId, null, pkg.jobId, null, ItemState.PACKAGED, null, 0, null, null, 0);
+                    ctx.items().insertPackaged(c, item, pkg.jobId, pkg.id, now);
+                    journal(c, item.id(), ItemEventType.TRACKED, null, null, now);
+                    journal(c, item.id(), ItemEventType.PACKAGED, handedTo(pkg), describe(key, pkg.seq), now);
                 }
                 flush(c, filling);
                 return null;
@@ -164,6 +209,9 @@ public class WorkPackagesImpl<E, ID> implements WorkPackages<E, ID> {
 
     @Override
     public int forEachPending(Consumer<WorkPackage<E, ID>> processing) {
+        if (stepOfGroup != null) {
+            throw new IllegalStateException("packages created for another job are processed by that job");
+        }
         int handed = 0;
         while (run.shouldContinue()) {
             AtomicReference<PackageRow> current = new AtomicReference<>();
@@ -247,8 +295,10 @@ public class WorkPackagesImpl<E, ID> implements WorkPackages<E, ID> {
                 store.addItems(c, pkg.id, pkg.added);
             }
             UUID id = UUID.randomUUID();
-            store.insert(c, id, ctx.namespace(), jobId(), type.name(), key, run.claimed().runId(), now);
-            pkg = new Filling(id, store.load(c, id).seq());
+            UUID target = targetOf(key);
+            store.insert(c, id, ctx.namespace(), target, type.name(), key, new Creator(run.claimed().runId(),
+                    jobId()), now);
+            pkg = new Filling(id, store.load(c, id).seq(), target);
             filling.put(key, pkg);
             created[0]++;
         }
@@ -266,10 +316,15 @@ public class WorkPackagesImpl<E, ID> implements WorkPackages<E, ID> {
         }
     }
 
-    private void journal(Connection c, UUID itemId, ItemEventType eventType, String reason, Instant now)
-            throws SQLException {
-        ctx.items().append(c, new ItemEvent(itemId, ctx.namespace(), eventType, jobId(), null, run.claimed().runId(),
-                run.claimed().attempt(), ctx.nodeId(), reason, null, null, null), now);
+    private void journal(Connection c, UUID itemId, ItemEventType eventType, UUID toJobId, String reason,
+                         Instant now) throws SQLException {
+        ctx.items().append(c, new ItemEvent(itemId, ctx.namespace(), eventType, jobId(), toJobId,
+                run.claimed().runId(), run.claimed().attempt(), ctx.nodeId(), reason, null, null, null), now);
+    }
+
+    /** The job a package is handed over to, {@code null} if the current job processes it. */
+    private UUID handedTo(Filling pkg) {
+        return pkg.jobId.equals(jobId()) ? null : pkg.jobId;
     }
 
     private UUID jobId() {

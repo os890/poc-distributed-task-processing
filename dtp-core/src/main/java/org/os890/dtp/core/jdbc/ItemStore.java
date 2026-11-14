@@ -180,13 +180,15 @@ public class ItemStore {
      *
      * @param c         the connection
      * @param itemId    the item, locked by the caller
+     * @param jobId     the job of the package, the item moves to it
      * @param packageId the package
      * @param now       the DB time
      * @throws SQLException on DB errors
      */
-    public void assignToPackage(Connection c, UUID itemId, UUID packageId, Instant now) throws SQLException {
-        Sql.update(c, "UPDATE dtp_item SET state = 'PACKAGED', work_package_id = ?, updated_at = ? WHERE id = ?",
-                packageId, now, itemId);
+    public void assignToPackage(Connection c, UUID itemId, UUID jobId, UUID packageId, Instant now)
+            throws SQLException {
+        Sql.update(c, "UPDATE dtp_item SET state = 'PACKAGED', current_job_id = ?, work_package_id = ?, updated_at = ?"
+                + " WHERE id = ?", jobId, packageId, now, itemId);
     }
 
     /**

@@ -81,6 +81,7 @@ public class DtpQueries {
      *
      * @param id            the package
      * @param job           the job that processes it
+     * @param collector     the job that created it, another one than {@code job} after a handover
      * @param seq           its number
      * @param groupKey      the group key
      * @param itemType      the type of its items
@@ -95,9 +96,9 @@ public class DtpQueries {
      * @param createdAt     creation time
      * @param updatedAt     last change
      */
-    public record PackageView(UUID id, String job, long seq, String groupKey, String itemType, String state,
-                              int itemCount, int attempts, String lastError, Instant nextAttemptAt, UUID createdBy,
-                              UUID processedBy, String info, Instant createdAt, Instant updatedAt) {
+    public record PackageView(UUID id, String job, String collector, long seq, String groupKey, String itemType,
+                              String state, int itemCount, int attempts, String lastError, Instant nextAttemptAt,
+                              UUID createdBy, UUID processedBy, String info, Instant createdAt, Instant updatedAt) {
     }
 
     /**
@@ -169,11 +170,13 @@ public class DtpQueries {
      * @return the packages, newest first
      */
     public List<PackageView> packages(int limit) {
-        return tx.withConnection(c -> Sql.query(c, "SELECT p.id, j.name AS job, p.seq, p.group_key, p.item_type,"
-                + " p.state, p.item_count, p.attempts, p.last_error, p.next_attempt_at, p.created_by_run_id,"
-                + " p.processed_by_run_id, p.info, p.created_at, p.updated_at FROM dtp_work_package p"
-                + " JOIN dtp_job j ON j.id = p.job_id WHERE p.namespace = ? ORDER BY p.seq DESC LIMIT ?",
-                rs -> new PackageView(Sql.uuid(rs, "id"), rs.getString("job"), rs.getLong("seq"),
+        return tx.withConnection(c -> Sql.query(c, "SELECT p.id, j.name AS job, cj.name AS collector, p.seq,"
+                + " p.group_key, p.item_type, p.state, p.item_count, p.attempts, p.last_error, p.next_attempt_at,"
+                + " p.created_by_run_id, p.processed_by_run_id, p.info, p.created_at, p.updated_at"
+                + " FROM dtp_work_package p JOIN dtp_job j ON j.id = p.job_id"
+                + " JOIN dtp_job cj ON cj.id = p.created_by_job_id WHERE p.namespace = ? ORDER BY p.seq DESC LIMIT ?",
+                rs -> new PackageView(Sql.uuid(rs, "id"), rs.getString("job"), rs.getString("collector"),
+                        rs.getLong("seq"),
                         rs.getString("group_key"), rs.getString("item_type"), rs.getString("state"),
                         rs.getInt("item_count"), rs.getInt("attempts"), rs.getString("last_error"),
                         Sql.instant(rs, "next_attempt_at"), Sql.uuid(rs, "created_by_run_id"),

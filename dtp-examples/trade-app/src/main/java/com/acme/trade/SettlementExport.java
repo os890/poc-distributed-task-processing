@@ -15,9 +15,7 @@
  */
 package com.acme.trade;
 
-import java.time.Duration;
 import java.time.LocalDate;
-import java.util.List;
 import java.util.UUID;
 
 import jakarta.enterprise.context.ApplicationScoped;
@@ -34,13 +32,12 @@ import org.os890.dtp.api.JobHandler;
 import org.os890.dtp.api.JobResult;
 import org.os890.dtp.api.NoParams;
 import org.os890.dtp.api.RunInfoKey;
-import org.os890.dtp.api.WorkPackages;
 
 /**
- * Settlement export after the sign-off of an end of day (a collector with work packages, definition
- * {@code V5__settlement_export.sql}): one settlement instruction per released trade of the business date, one file per
- * custodian. Packages a custodian rejects are retried, then a person decides ({@code RETRY} or {@code DISCARD}).
- * Packages left over (item limit, slot end, crash) are sent by the next run of the job.
+ * Settlement export after the sign-off of an end of day (a collector, definitions {@code V5__settlement_export.sql}
+ * and {@code V6__settlement_sender.sql}): one settlement instruction per released trade of the business date, grouped
+ * into one file (work package) per custodian. The files are handed over to the {@link SettlementSender}, so the end
+ * of day completes once its files are created, and sending, retries and decisions are the sender's business.
  */
 @ApplicationScoped
 public class SettlementExport implements JobHandler<NoParams, DefaultOutcome> {
@@ -49,7 +46,6 @@ public class SettlementExport implements JobHandler<NoParams, DefaultOutcome> {
     public static final ItemType<Trade, UUID> INSTRUCTION = ItemType.of("settlement-instruction", Trade.class,
             UUID.class);
 
-    public static final RunInfoKey<String> FILE = RunInfoKey.of("file", String.class);
     public static final RunInfoKey<Long> FILES = RunInfoKey.of("files", Long.class);
 
     @Inject
@@ -61,30 +57,15 @@ public class SettlementExport implements JobHandler<NoParams, DefaultOutcome> {
     @ConfigProperty(name = "trade.settlement.package-size", defaultValue = "500")
     int packageSize;
 
-    @ConfigProperty(name = "trade.settlement.send-delay", defaultValue = "PT0S")
-    Duration sendDelay;
-
     @Override
     public JobResult<DefaultOutcome> execute(JobContext<NoParams> ctx) {
-        WorkPackages<Trade, UUID> packages = ctx.packages(INSTRUCTION);
         // within an end of day: the released trades of its business date (a trade is packaged once, also on a rerun)
         ctx.flowInstance().map(FlowInstance::businessKey).map(LocalDate::parse).ifPresent(date ->
-                packages.createFrom(em.createQuery("SELECT t.id FROM Trade t WHERE t.businessDate = :date"
-                        + " AND t.released = TRUE ORDER BY t.tradeNumber", UUID.class).setParameter("date", date)
-                        .getResultStream().map(id -> ItemRef.of(INSTRUCTION, id)),
-                        ref -> gateway.custodianOf(em.find(Trade.class, ref.id())), packageSize));
-        packages.forEachPending(pkg -> {
-            if (!gateway.isAvailable(pkg.groupKey())) {
-                pkg.fail(pkg.groupKey() + " rejected the file");
-                return;
-            }
-            EndOfDay.simulateWork(sendDelay);
-            List<String> trades = pkg.items().stream().map(item -> em.find(Trade.class, item.ref().id()))
-                                     .map(Trade::getTradeNumber).toList();
-            pkg.info().put(FILE, gateway.send(pkg.groupKey(), pkg.sequence(), trades));
-            ctx.runInfo().increment(FILES, 1);
-            pkg.done();
-        });
+                ctx.runInfo().increment(FILES, ctx.packages(INSTRUCTION).forStep(SettlementSender.class).createFrom(
+                        em.createQuery("SELECT t.id FROM Trade t WHERE t.businessDate = :date AND t.released = TRUE"
+                                + " ORDER BY t.tradeNumber", UUID.class).setParameter("date", date)
+                                .getResultStream().map(id -> ItemRef.of(INSTRUCTION, id)),
+                        ref -> gateway.custodianOf(em.find(Trade.class, ref.id())), packageSize)));
         return JobResult.success();
     }
 }

@@ -26,8 +26,8 @@ import java.util.UUID;
 public class PackageStore {
 
     private static final String COLUMNS = "id, namespace, job_id, item_type, group_key, seq, state, attempts,"
-            + " item_count, created_by_run_id, processed_by_run_id, next_attempt_at, last_error, info, created_at,"
-            + " updated_at";
+            + " item_count, created_by_run_id, created_by_job_id, processed_by_run_id, next_attempt_at, last_error,"
+            + " info, created_at, updated_at";
 
     private final SqlDialect dialect;
 
@@ -48,6 +48,7 @@ public class PackageStore {
      * @param attempts         failed attempts
      * @param itemCount        number of items
      * @param createdByRunId   the run that created it
+     * @param createdByJobId   the job that created it, another job than {@code jobId} after a handover
      * @param processedByRunId the run that processed it last, or {@code null}
      * @param nextAttemptAt    earliest next attempt after a failure, or {@code null}
      * @param lastError        the reason of the last failure, or {@code null}
@@ -56,7 +57,8 @@ public class PackageStore {
      * @param updatedAt        last change
      */
     public record PackageRow(UUID id, String namespace, UUID jobId, String itemType, String groupKey, long seq,
-                             String state, int attempts, int itemCount, UUID createdByRunId, UUID processedByRunId,
+                             String state, int attempts, int itemCount, UUID createdByRunId, UUID createdByJobId,
+                             UUID processedByRunId,
                              Instant nextAttemptAt, String lastError, String info, Instant createdAt,
                              Instant updatedAt) {
     }
@@ -67,19 +69,28 @@ public class PackageStore {
      * @param c         the connection
      * @param id        the package id
      * @param namespace the namespace
-     * @param jobId     the job
+     * @param jobId     the job that processes it
      * @param itemType  the item type
      * @param groupKey  the group key, or {@code null}
-     * @param runId     the creating run
+     * @param creator   the creating run and its job
      * @param now       the DB time
      * @throws SQLException on DB errors
      */
     public void insert(Connection c, UUID id, String namespace, UUID jobId, String itemType, String groupKey,
-                       UUID runId, Instant now) throws SQLException {
+                       Creator creator, Instant now) throws SQLException {
         Sql.update(c, "INSERT INTO dtp_work_package (id, namespace, job_id, item_type, group_key, seq, state,"
-                + " created_by_run_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, "
-                + dialect.nextValue("dtp_package_seq") + ", 'PENDING', ?, ?, ?)", id, namespace, jobId, itemType,
-                groupKey, runId, now, now);
+                + " created_by_run_id, created_by_job_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, "
+                + dialect.nextValue("dtp_package_seq") + ", 'PENDING', ?, ?, ?, ?)", id, namespace, jobId, itemType,
+                groupKey, creator.runId(), creator.jobId(), now, now);
+    }
+
+    /**
+     * The run that creates packages, and its job.
+     *
+     * @param runId the run
+     * @param jobId its job
+     */
+    public record Creator(UUID runId, UUID jobId) {
     }
 
     /**
@@ -210,6 +221,7 @@ public class PackageStore {
         return new PackageRow(Sql.uuid(rs, "id"), rs.getString("namespace"), Sql.uuid(rs, "job_id"),
                 rs.getString("item_type"), rs.getString("group_key"), rs.getLong("seq"), rs.getString("state"),
                 rs.getInt("attempts"), rs.getInt("item_count"), Sql.uuid(rs, "created_by_run_id"),
+                Sql.uuid(rs, "created_by_job_id"),
                 Sql.uuid(rs, "processed_by_run_id"), Sql.instant(rs, "next_attempt_at"), rs.getString("last_error"),
                 rs.getString("info"), Sql.instant(rs, "created_at"), Sql.instant(rs, "updated_at"));
     }

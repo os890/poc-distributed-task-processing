@@ -142,7 +142,7 @@ figure.diagram img { display: block; max-width: 100%; height: auto; margin: 0 au
 
 <div class="wrap">
   <header class="intro">
-    <span class="eyebrow">dtp · distributed task processing · slices 1 to 8</span>
+    <span class="eyebrow">dtp · distributed task processing · slices 1 to 9</span>
     <h1>From one job to a cluster in <span class="tok">21</span> steps</h1>
     <p class="lede">How to write process steps, define them in SQL, trigger and follow runs, track items through a
     flow defined in Java, change that flow while it runs, let people decide and approve, remind them, run checks in parallel, run an end of day per business date, plan around business days, send files in work packages, and run several deployments on one database: on Quarkus with CDI, or with the plain Java engine.</p>
@@ -848,7 +848,8 @@ definitions, without a deployment.</p>
 <section class="step" id="packages" aria-labelledby="packages-h"><h2 id="packages-h"><span class="n">Step 19</span>Send files in work packages</h2>
 <p>Some steps don't handle items one by one but in groups: after the end of day, the settlement instructions of the
 released trades go to the custodians, one file per custodian. A <em>work package</em> is such a group, processed as a
-whole in one fenced transaction. The collector is a <code>JobHandler</code>:</p>
+whole in one fenced transaction. A collector, a <code>JobHandler</code>, collects what is pending right now and creates the
+packages, here for another job that sends them:</p>
 <figure class="code"><figcaption>SettlementExport.java</figcaption><pre><code class="language-java">@ApplicationScoped
 public class SettlementExport implements JobHandler&lt;NoParams, DefaultOutcome&gt; {
 
@@ -857,11 +858,19 @@ public class SettlementExport implements JobHandler&lt;NoParams, DefaultOutcome&
 
     @Override
     public JobResult&lt;DefaultOutcome&gt; execute(JobContext&lt;NoParams&gt; ctx) {
-        WorkPackages&lt;Trade, UUID&gt; packages = ctx.packages(INSTRUCTION);
         // one instruction per released trade of the business date, grouped by custodian, at most 500 per file
-        packages.createFrom(releasedTrades(businessDate(ctx)).map(id -&gt; ItemRef.of(INSTRUCTION, id)),
-                ref -&gt; gateway.custodianOf(em.find(Trade.class, ref.id())), 500);
-        packages.forEachPending(pkg -&gt; {
+        ctx.packages(INSTRUCTION).forStep(SettlementSender.class)
+           .createFrom(releasedTrades(businessDate(ctx)).map(id -&gt; ItemRef.of(INSTRUCTION, id)),
+                       ref -&gt; gateway.custodianOf(em.find(Trade.class, ref.id())), 500);
+        return JobResult.success();
+    }
+}</code></pre></figure>
+<figure class="code"><figcaption>SettlementSender.java</figcaption><pre><code class="language-java">@ApplicationScoped
+public class SettlementSender implements JobHandler&lt;NoParams, DefaultOutcome&gt; {
+
+    @Override
+    public JobResult&lt;DefaultOutcome&gt; execute(JobContext&lt;NoParams&gt; ctx) {
+        ctx.packages(INSTRUCTION).forEachPending(pkg -&gt; {
             if (!gateway.isAvailable(pkg.groupKey())) {
                 pkg.fail(pkg.groupKey() + &quot; rejected the file&quot;);
                 return;
@@ -873,22 +882,26 @@ public class SettlementExport implements JobHandler&lt;NoParams, DefaultOutcome&
     }
 }</code></pre></figure>
 <p><code>createFrom</code> tracks each reference once: a second run with the same selection only packages what is new.
-For items that arrive through a flow, <code>createFromInbox(groupKey, maxSize)</code> packages the inbox of the step
-instead. Each package ends with exactly one of <code>done()</code>, which completes its items, or <code>fail(reason)</code>; an
-exception counts as a technical failure.</p>
-<p>A failed package is retried with the job's retry policy, then a person decides: <code>RETRY</code> or
-<code>DISCARD</code>, technical failures go to operations. Packages are never left half done: a crash rolls the package
-in progress back, and the node that takes over sends only what isn't sent yet. Packages a run leaves pending, at the
-end of its processing slot, its item limit or its time limit, are sent by the next run of the job:</p>
-<figure class="code"><figcaption>db/dtp-definitions/V5__settlement_export.sql</figcaption><pre><code class="language-sql">-- the inbox trigger also plans a run for pending packages, e.g. one that is due again after a rejection
+For items that arrive through a flow, <code>createFromInbox(groupKey, maxSize)</code> packages the inbox of the collector
+instead. Without <code>forStep</code>, the collector processes its packages itself; with <code>forSteps(group -&gt; ...)</code>,
+the packages of each group go to the job of the group, e.g. one sender for domestic and one for international
+custodians, which then work in parallel. The items move with their package, so their journey shows the handover.</p>
+<p>Each package ends with exactly one of <code>done()</code>, which completes its items, or <code>fail(reason)</code>; an
+exception counts as a technical failure. A failed package is retried with the retry policy of the job that processes
+it, then a person decides: <code>RETRY</code> or <code>DISCARD</code>, technical failures go to operations. Packages are never
+left half done: a crash rolls the package in progress back, and the node that takes over sends only what isn't sent
+yet. Packages a run leaves pending, at the end of its processing slot, its item limit or its time limit, are sent by
+the next run of the job:</p>
+<figure class="code"><figcaption>db/dtp-definitions/V6__settlement_sender.sql</figcaption><pre><code class="language-sql">-- the inbox trigger of the sender plans a run when packages are due: new ones, or due again after a rejection
 -- optional: item_limit (items per run) and time_limit (duration per run) stop a run softly, the rest waits
 INSERT INTO dtp_job_revision (job_id, revision, handler_class, inbox_min_items, retry_max, retry_backoff,
                               changed_by, changed_at)
-VALUES (&#x27;&lt;settlement-export&gt;&#x27;, 1, &#x27;com.acme.trade.SettlementExport&#x27;, 1, 1, &#x27;${settlement-retry-backoff}&#x27;,
+VALUES (&#x27;&lt;settlement-sender&gt;&#x27;, 1, &#x27;com.acme.trade.SettlementSender&#x27;, 1, 1, &#x27;${settlement-retry-backoff}&#x27;,
         &#x27;flyway&#x27;, CURRENT_TIMESTAMP);</code></pre></figure>
 <p>The export starts with a transition after the sign-off of the end of day, so it runs in the flow instance and
-reads the business date from it. <code>GET /dtp/packages</code> lists the packages with their state, items, attempts and
-the file each one was sent in.</p>
+reads the business date from it. The end of day completes once the files are created; sending them is the business
+of the sender. <code>GET /dtp/packages</code> lists the packages with the collector, the job that processes them, their
+state, items, attempts and the file each one was sent in.</p>
 </section>
 <section class="step" id="cluster" aria-labelledby="cluster-h"><h2 id="cluster-h"><span class="n">Step 20</span>Run it as a cluster</h2>
 <p>Start several instances on the same database. The example has scripts that start an H2 server (local
@@ -1007,10 +1020,10 @@ The core's own tests run three such engines in one JVM on a shared in-memory H2 
 <tr><td><code>CANCELLED</code></td><td>The run was cancelled</td></tr>
 <tr><td><code>SKIPPED</code></td><td>A trigger arrived while the job was busy and the policy is SKIP</td></tr></tbody></table></div>
 <h3 id="ref-scope">Not implemented yet</h3>
-<p>Fallback runs for open decision requests, joins of runs, work packages, collection windows,
-processing slots, business calendars, lane weights, the monitoring heat map, telemetry, the REST adapter,
-activations of a flow version per lane or tenant, and the red/green switch of whole deployments. PostgreSQL has
-its own migrations and SQL dialect but hasn't been run yet; slices 1 to 8 were tested on H2.</p>
+<p>Collection windows, sending work packages with an acknowledgement, lane weights, the monitoring heat map,
+telemetry, the REST adapter, activations of a flow version per lane or tenant, and the red/green switch of whole
+deployments. PostgreSQL has its own migrations and SQL dialect but hasn't been run yet; slices 1 to 9 were tested on
+H2.</p>
 </section>
 
   </main>

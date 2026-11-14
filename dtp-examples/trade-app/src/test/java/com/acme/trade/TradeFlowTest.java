@@ -24,6 +24,7 @@ import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.everyItem;
 import static org.hamcrest.Matchers.hasItem;
 import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.not;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -268,11 +269,13 @@ class TradeFlowTest {
     @Test
     @Order(6)
     void theSettlementExportSendsOneFilePerCustodianAndARejectedFileIsDecided() {
-        // after the sign-off of 2026-11-20 (order 4): seven released trades (trade 7 has a restricted ISIN)
+        // after the sign-off of 2026-11-20 (order 4): seven released trades (trade 7 has a restricted ISIN), the
+        // export created the files and handed them over to the sender
         await().atMost(Duration.ofSeconds(30)).until(() -> queries.isIdle());
         given().when().get("/dtp/packages").then().statusCode(200)
-               .body("findAll { it.job == 'settlement-export' }.itemCount.sum()", is(7))
-               .body("findAll { it.job == 'settlement-export' }.state", everyItem(equalTo("DONE")));
+               .body("findAll { it.collector == 'settlement-export' }.itemCount.sum()", is(7))
+               .body("findAll { it.collector == 'settlement-export' }.job", everyItem(equalTo("settlement-sender")))
+               .body("findAll { it.collector == 'settlement-export' }.state", everyItem(equalTo("DONE")));
 
         // 2026-11-23: one custodian rejects its file, a retry later it still does, an operator decides
         LocalDate date = LocalDate.of(2026, 11, 23);
@@ -301,7 +304,17 @@ class TradeFlowTest {
                           .seq();
         given().when().get("/settlement/files").then().statusCode(200)
                .body("findAll { it.startsWith('settlement-" + custodian + "-" + seq + ".xml') }.size()", is(1));
-        given().when().get("/eod/" + date).then().body("state", equalTo("COMPLETED"));
+        // the end of day completed with the export, sending was the sender's business
+        given().when().get("/eod/" + date).then().body("state", equalTo("COMPLETED"))
+               .body("runs.job", not(hasItem("settlement-sender")));
+        // an instruction's business key is the id of its trade
+        List<JourneyEntry> instruction = queries.journey(SettlementExport.INSTRUCTION.name(),
+                trade("T-2026-11-23-2").getId().toString());
+        assertThat(instruction).extracting(JourneyEntry::type).containsSubsequence("TRACKED", "PACKAGED", "COMPLETED");
+        assertThat(instruction).filteredOn(e -> "PACKAGED".equals(e.type())).singleElement().satisfies(e -> {
+            assertThat(e.fromJob()).isEqualTo("settlement-export");
+            assertThat(e.toJob()).isEqualTo("settlement-sender");
+        });
     }
 
     private Trade trade(String number) {
