@@ -15,8 +15,8 @@
  */
 package org.os890.dtp.core.domain;
 
-/** Types of the journal entries of an item (subset of the design, slice 1). */
+/** Types of the journal entries of an item (subset of the design). */
 public enum ItemEventType {
-    TRACKED, ROUTED, ROUTED_BACK, FAILED, RETRY_SCHEDULED, REPROCESSED, DEFERRED, LOOP_LIMIT_EXCEEDED, ESCALATED,
-    COMPLETED, DISCARDED, MIGRATED, VOTED, DECIDED
+    TRACKED, ROUTED, ROUTED_BACK, FORKED, BRANCH_FINISHED, JOINED, FAILED, RETRY_SCHEDULED, REPROCESSED, DEFERRED,
+    LOOP_LIMIT_EXCEEDED, ESCALATED, COMPLETED, DISCARDED, MIGRATED, VOTED, DECIDED
 }

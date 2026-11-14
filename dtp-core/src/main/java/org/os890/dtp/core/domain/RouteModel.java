@@ -15,6 +15,9 @@
  */
 package org.os890.dtp.core.domain;
 
+import java.util.List;
+import java.util.stream.Collectors;
+
 import org.os890.dtp.api.ProcessStep;
 
 /**
@@ -24,16 +27,39 @@ import org.os890.dtp.api.ProcessStep;
  * @param signalType class of the signal or result (enum class)
  * @param signal     name of the signal or result
  * @param kind       what happens
- * @param targetStep the target step (TO, BACK, RUN), otherwise {@code null}
+ * @param targetStep the target step (TO, BACK, RUN), the join step (FORK), otherwise {@code null}
  * @param targetFlow name of the target flow (FLOW), otherwise {@code null}
+ * @param branches   the branch steps (FORK), otherwise empty
  */
 public record RouteModel(Class<? extends ProcessStep> from, String signalType, String signal, RouteKind kind,
-                         Class<? extends ProcessStep> targetStep, String targetFlow) {
+                         Class<? extends ProcessStep> targetStep, String targetFlow,
+                         List<Class<? extends ProcessStep>> branches) {
 
-    /** Canonical text of the route, part of the version hash. */
+    public RouteModel {
+        branches = List.copyOf(branches);
+    }
+
+    /**
+     * A route without branches.
+     *
+     * @param from       the step that reports the signal (or finishes with the result)
+     * @param signalType class of the signal or result (enum class)
+     * @param signal     name of the signal or result
+     * @param kind       what happens
+     * @param targetStep the target step, or {@code null}
+     * @param targetFlow name of the target flow, or {@code null}
+     */
+    public RouteModel(Class<? extends ProcessStep> from, String signalType, String signal, RouteKind kind,
+                      Class<? extends ProcessStep> targetStep, String targetFlow) {
+        this(from, signalType, signal, kind, targetStep, targetFlow, List.of());
+    }
+
+    /** Canonical text of the route, part of the version hash (unchanged for routes without branches). */
     public String canonical() {
-        return from.getName() + "|" + signalType + "|" + signal + "|" + kind + "|"
+        String text = from.getName() + "|" + signalType + "|" + signal + "|" + kind + "|"
                 + (targetStep == null ? "" : targetStep.getName()) + "|" + (targetFlow == null ? "" : targetFlow);
+        return branches.isEmpty() ? text
+                : text + "|" + branches.stream().map(Class::getName).collect(Collectors.joining(","));
     }
 
     /**

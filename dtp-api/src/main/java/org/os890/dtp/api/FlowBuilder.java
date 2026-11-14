@@ -88,5 +88,36 @@ public interface FlowBuilder {
 
         /** Discards the item, the signal name is the reason. */
         StepRoutes discard();
+
+        /**
+         * Splits the item into parallel branches (DD-22): each branch step gets the item into its inbox, the steps run
+         * independently (possibly on different nodes). The signal a branch step reports is its result. When the last
+         * branch has finished, the item enters the inbox of the join step, which reads the results with
+         * {@link TrackedItem#branchResults()}.
+         *
+         * @param branch the first branch step
+         * @return the fork, add more branches and the join step
+         */
+        Fork fork(Class<? extends ProcessStep> branch);
+    }
+
+    /** A fork under construction: at least two branches and the join step. */
+    interface Fork {
+
+        /**
+         * Another branch.
+         *
+         * @param branch the branch step
+         * @return this fork
+         */
+        Fork and(Class<? extends ProcessStep> branch);
+
+        /**
+         * The step that receives the item when all branches have finished.
+         *
+         * @param step the join step
+         * @return the routes of the current step
+         */
+        StepRoutes joinAt(Class<? extends ProcessStep> step);
     }
 }

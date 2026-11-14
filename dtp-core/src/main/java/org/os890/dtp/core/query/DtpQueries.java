@@ -16,6 +16,7 @@
 package org.os890.dtp.core.query;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
@@ -155,10 +156,20 @@ public class DtpQueries {
      * @return the counts
      */
     public List<ItemCount> itemCounts() {
-        return tx.withConnection(c -> Sql.query(c, "SELECT j.name AS job, i.state, COUNT(*) AS cnt FROM dtp_item i"
-                + " LEFT JOIN dtp_job j ON j.id = i.current_job_id WHERE i.namespace = ?"
-                + " GROUP BY j.name, i.state ORDER BY j.name, i.state",
-                rs -> new ItemCount(rs.getString("job"), rs.getString("state"), rs.getInt("cnt")), namespace));
+        return tx.withConnection(c -> {
+            List<ItemCount> counts = new ArrayList<>(Sql.query(c, "SELECT j.name AS job, i.state, COUNT(*) AS cnt"
+                    + " FROM dtp_item i LEFT JOIN dtp_job j ON j.id = i.current_job_id WHERE i.namespace = ?"
+                    + " GROUP BY j.name, i.state ORDER BY j.name, i.state",
+                    rs -> new ItemCount(rs.getString("job"), rs.getString("state"), rs.getInt("cnt")), namespace));
+            // the open branches of forked items, by branch step
+            counts.addAll(Sql.query(c, "SELECT j.name AS job, b.state, COUNT(*) AS cnt FROM dtp_item_branch b"
+                    + " JOIN dtp_item i ON i.id = b.item_id JOIN dtp_job j ON j.id = b.branch_job_id"
+                    + " WHERE b.namespace = ? AND i.state = 'FORKED' AND b.state IN ('QUEUED', 'WAITING_FOR_DECISION')"
+                    + " GROUP BY j.name, b.state ORDER BY j.name, b.state",
+                    rs -> new ItemCount(rs.getString("job"), "BRANCH_" + rs.getString("state"), rs.getInt("cnt")),
+                    namespace));
+            return counts;
+        });
     }
 
     /**
@@ -175,7 +186,13 @@ public class DtpQueries {
                     + " WHERE i.namespace = ? AND i.state = 'QUEUED' AND r.inbox_min_items IS NOT NULL"
                     + " AND (i.next_attempt_at IS NULL OR i.next_attempt_at <= CURRENT_TIMESTAMP)",
                     rs -> rs.getInt(1), namespace).orElse(0);
-            return open == 0 && due == 0;
+            int branches = Sql.queryOne(c, "SELECT COUNT(*) FROM dtp_item_branch b"
+                    + " JOIN dtp_job j ON j.id = b.branch_job_id"
+                    + " JOIN dtp_job_revision r ON r.job_id = j.id AND r.revision = j.current_revision"
+                    + " WHERE b.namespace = ? AND b.state = 'QUEUED' AND r.inbox_min_items IS NOT NULL"
+                    + " AND (b.next_attempt_at IS NULL OR b.next_attempt_at <= CURRENT_TIMESTAMP)",
+                    rs -> rs.getInt(1), namespace).orElse(0);
+            return open == 0 && due == 0 && branches == 0;
         });
     }
 }

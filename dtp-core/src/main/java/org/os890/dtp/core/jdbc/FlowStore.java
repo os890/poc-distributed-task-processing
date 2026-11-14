@@ -227,13 +227,32 @@ public class FlowStore {
      * @param c         the connection
      * @param versionId the version
      * @param route     the route
+     * @param branches  the branch steps of a FORK, otherwise empty
      * @throws SQLException on DB errors
      */
-    public void insertRoute(Connection c, UUID versionId, RouteRow route) throws SQLException {
+    public void insertRoute(Connection c, UUID versionId, RouteRow route, List<UUID> branches) throws SQLException {
+        UUID id = UUID.randomUUID();
         Sql.update(c, "INSERT INTO dtp_flow_route (id, version_id, from_job_id, signal_type, signal, kind,"
-                + " target_job_id, target_flow_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", UUID.randomUUID(), versionId,
+                + " target_job_id, target_flow_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", id, versionId,
                 route.fromJobId(), route.signalType(), route.signal(), route.kind(), route.targetJobId(),
                 route.targetFlowId());
+        for (int i = 0; i < branches.size(); i++) {
+            Sql.update(c, "INSERT INTO dtp_flow_route_branch (route_id, position, job_id) VALUES (?, ?, ?)", id, i,
+                    branches.get(i));
+        }
+    }
+
+    /**
+     * The branch steps of a FORK route, in the order of the definition.
+     *
+     * @param c       the connection
+     * @param routeId the route
+     * @return the jobs of the branch steps
+     * @throws SQLException on DB errors
+     */
+    public List<UUID> branches(Connection c, UUID routeId) throws SQLException {
+        return Sql.query(c, "SELECT job_id FROM dtp_flow_route_branch WHERE route_id = ? ORDER BY position",
+                rs -> Sql.uuid(rs, "job_id"), routeId);
     }
 
     /**

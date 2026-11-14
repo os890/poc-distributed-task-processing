@@ -27,8 +27,8 @@ import org.os890.dtp.api.Inbox;
 import org.os890.dtp.api.ItemType;
 import org.os890.dtp.api.TrackedItem;
 import org.os890.dtp.core.DtpException;
+import org.os890.dtp.core.jdbc.ItemStore.InboxEntry;
 import org.os890.dtp.core.jdbc.ItemStore.InboxQuery;
-import org.os890.dtp.core.jdbc.ItemStore.ItemRow;
 
 /**
  * The inbox of the current job within a {@code JobHandler}. Every batch is its own fenced unit of work. Each item is
@@ -87,14 +87,14 @@ public class InboxImpl<E, ID> implements Inbox<E, ID> {
             EngineContext ctx = run.engine();
             InboxQuery query = new InboxQuery(ctx.namespace(), run.claimed().jobId(), type.name(), cursor.get(),
                     includeDeferred, false, batchSize);
-            List<ItemRow> rows = ctx.tx().withConnection(c -> ctx.items().lockInboxBatch(c, query, run.now()));
-            if (rows.isEmpty()) {
+            List<InboxEntry> entries = ctx.tx().withConnection(c -> ctx.items().lockInboxBatch(c, query, run.now()));
+            if (entries.isEmpty()) {
                 return false;
             }
-            cursor.accumulateAndGet(rows.getLast().inboxSeq(), Math::max);
+            cursor.accumulateAndGet(entries.getLast().seq(), Math::max);
             List<TrackedItem<E, ID>> handles = new ArrayList<>();
-            for (ItemRow row : rows) {
-                handles.add(new TrackedItemImpl<>(ctx, routing, row, type, run));
+            for (InboxEntry entry : entries) {
+                handles.add(new TrackedItemImpl<>(ctx, routing, entry, type, run));
             }
             batch.accept(handles);
             return true;

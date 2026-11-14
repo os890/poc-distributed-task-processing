@@ -98,6 +98,7 @@ public class FlowBuilderImpl implements FlowBuilder {
             throw new IllegalStateException("flow " + name + " has no entry step");
         }
         for (RouteModel route : routes) {
+            steps.addAll(route.branches());
             if (route.targetStep() != null) {
                 steps.add(route.targetStep());
             }
@@ -174,9 +175,51 @@ public class FlowBuilderImpl implements FlowBuilder {
             return route(RouteKind.DISCARD, null, null);
         }
 
+        @Override
+        public Fork fork(Class<? extends ProcessStep> branch) {
+            return new ForkTarget(this).and(branch);
+        }
+
         private StepRoutes route(RouteKind kind, Class<? extends ProcessStep> step, String flow) {
             add(new RouteModel(routes.from, RouteModel.typeOf(signal), signal.name(), kind, step, flow));
             return routes;
+        }
+    }
+
+    private class ForkTarget implements Fork {
+
+        private final SignalTarget target;
+        private final List<Class<? extends ProcessStep>> branches = new ArrayList<>();
+
+        ForkTarget(SignalTarget target) {
+            this.target = target;
+        }
+
+        @Override
+        public Fork and(Class<? extends ProcessStep> branch) {
+            Objects.requireNonNull(branch, "branch");
+            if (branches.contains(branch) || branch == target.routes.from) {
+                throw new IllegalStateException("flow " + name + ": " + branch.getSimpleName() + " is twice in the"
+                        + " fork of " + target.signal.name());
+            }
+            branches.add(branch);
+            return this;
+        }
+
+        @Override
+        public StepRoutes joinAt(Class<? extends ProcessStep> step) {
+            Objects.requireNonNull(step, "step");
+            if (branches.size() < 2) {
+                throw new IllegalStateException("flow " + name + ": the fork of " + target.signal.name()
+                        + " needs at least two branches");
+            }
+            if (branches.contains(step)) {
+                throw new IllegalStateException("flow " + name + ": the join step " + step.getSimpleName()
+                        + " can't be a branch of its fork");
+            }
+            add(new RouteModel(target.routes.from, RouteModel.typeOf(target.signal), target.signal.name(),
+                    RouteKind.FORK, step, null, branches));
+            return target.routes;
         }
     }
 }

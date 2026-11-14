@@ -116,6 +116,9 @@ public class FlowAdmin {
         if (!kind.isItemRoute()) {
             throw new IllegalArgumentException("only item routes can be overruled");
         }
+        if (kind == RouteKind.FORK) {
+            throw new IllegalArgumentException("an override can't fork, define the fork in the flow");
+        }
         Objects.requireNonNull(by, "by");
         return inTx(c -> {
             Instant now = ctx.clock().now(c);

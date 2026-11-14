@@ -19,9 +19,11 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.UUID;
 
 import org.os890.dtp.api.Approval;
 import org.os890.dtp.api.ApprovalResult;
+import org.os890.dtp.api.BranchResult;
 import org.os890.dtp.api.DecisionOption;
 import org.os890.dtp.api.ItemRef;
 import org.os890.dtp.api.ItemType;
@@ -33,10 +35,13 @@ import org.os890.dtp.core.domain.BuiltInOption;
 import org.os890.dtp.core.domain.DecisionKind;
 import org.os890.dtp.core.domain.FailureKind;
 import org.os890.dtp.core.domain.JobDefinition;
+import org.os890.dtp.core.jdbc.ItemStore.BranchRow;
+import org.os890.dtp.core.jdbc.ItemStore.InboxEntry;
 import org.os890.dtp.core.jdbc.ItemStore.ItemRow;
 
 /**
- * A tracked item handed over to application code. Exactly one routing operation is allowed per hand-over.
+ * A tracked item handed over to application code, or one of its parallel branches. Exactly one routing operation is
+ * allowed per hand-over.
  *
  * @param <E>  the entity type
  * @param <ID> the id type
@@ -48,14 +53,30 @@ public class TrackedItemImpl<E, ID> implements TrackedItem<E, ID> {
     private final ItemRow row;
     private final ItemType<E, ID> type;
     private final RunContext run;
+    private final BranchRow branch;
 
     private boolean handled;
 
     public TrackedItemImpl(EngineContext ctx, ItemRouting routing, ItemRow row, ItemType<E, ID> type,
                            RunContext run) {
+        this(ctx, routing, new InboxEntry(row, null), type, run);
+    }
+
+    /**
+     * Hands over an inbox entry: an item, or a branch of a forked item.
+     *
+     * @param ctx     the engine
+     * @param routing the item routing
+     * @param entry   the entry
+     * @param type    the item type
+     * @param run     the run, or {@code null}
+     */
+    public TrackedItemImpl(EngineContext ctx, ItemRouting routing, InboxEntry entry, ItemType<E, ID> type,
+                           RunContext run) {
         this.ctx = ctx;
         this.routing = routing;
-        this.row = row;
+        this.row = entry.item();
+        this.branch = entry.branch();
         this.type = type;
         this.run = run;
     }
@@ -88,7 +109,7 @@ public class TrackedItemImpl<E, ID> implements TrackedItem<E, ID> {
 
     @Override
     public Optional<String> arrivalReason() {
-        return Optional.ofNullable(row.arrivalReason());
+        return Optional.ofNullable(branch != null ? branch.arrivalReason() : row.arrivalReason());
     }
 
     @Override
@@ -104,7 +125,11 @@ public class TrackedItemImpl<E, ID> implements TrackedItem<E, ID> {
     @Override
     public void signal(Signal signal, String reason) {
         markHandled();
-        routing.signal(row, signal, reason, run);
+        if (branch != null) {
+            routing.finishBranch(row, branch, signal, reason, run);
+        } else {
+            routing.signal(row, signal, reason, run);
+        }
     }
 
     @Override
@@ -114,12 +139,14 @@ public class TrackedItemImpl<E, ID> implements TrackedItem<E, ID> {
 
     @Override
     public void routeTo(Class<? extends ProcessStep> job, String reason) {
+        notInBranch("routeTo");
         markHandled();
         routing.routeTo(row, ctx.catalog().byStep(job), reason, false, run);
     }
 
     @Override
     public void routeBack(Class<? extends ProcessStep> job, String reason) {
+        notInBranch("routeBack");
         markHandled();
         routing.routeTo(row, ctx.catalog().byStep(job), Objects.requireNonNull(reason, "reason"), true, run);
     }
@@ -127,20 +154,20 @@ public class TrackedItemImpl<E, ID> implements TrackedItem<E, ID> {
     @Override
     public void defer(Duration delay, String reason) {
         markHandled();
-        routing.defer(row, Objects.requireNonNull(delay, "delay"), reason, run);
+        routing.defer(row, branch, Objects.requireNonNull(delay, "delay"), reason, run);
     }
 
     @Override
     public void fail(String reason) {
         markHandled();
-        routing.fail(row, currentJob(), FailureKind.BUSINESS, reason, null, run);
+        routing.fail(row, branch, currentJob(), FailureKind.BUSINESS, reason, null, run);
     }
 
     @Override
     public void escalate(String reason) {
         markHandled();
-        routing.requestDecision(row, DecisionKind.CHOICE, Decisions.builtIn(BuiltInOption.ITEM), null, null, null,
-                Objects.requireNonNull(reason, "reason"), run);
+        routing.requestDecision(entry(), DecisionKind.CHOICE, Decisions.builtIn(BuiltInOption.ITEM), null, null,
+                null, Objects.requireNonNull(reason, "reason"), run);
     }
 
     @Override
@@ -152,14 +179,14 @@ public class TrackedItemImpl<E, ID> implements TrackedItem<E, ID> {
     public <O extends Enum<O> & DecisionOption> void requestDecision(String reason, Class<O> options,
                                                                      Responsibility team) {
         markHandled();
-        routing.requestDecision(row, DecisionKind.CHOICE, Decisions.optionsOf(options), options, null,
+        routing.requestDecision(entry(), DecisionKind.CHOICE, Decisions.optionsOf(options), options, null,
                 team == null ? null : team.group(), Objects.requireNonNull(reason, "reason"), run);
     }
 
     @Override
     public void requestApproval(Approval approval, String reason) {
         markHandled();
-        routing.requestDecision(row, DecisionKind.APPROVAL, Decisions.builtIn(List.of(BuiltInOption.APPROVED,
+        routing.requestDecision(entry(), DecisionKind.APPROVAL, Decisions.builtIn(List.of(BuiltInOption.APPROVED,
                 BuiltInOption.REJECTED)), null, approval.requiredApprovals(),
                 approval.team() == null ? null : approval.team().group(), Objects.requireNonNull(reason, "reason"),
                 run);
@@ -167,36 +194,65 @@ public class TrackedItemImpl<E, ID> implements TrackedItem<E, ID> {
 
     @Override
     public <O extends Enum<O> & DecisionOption> Optional<O> decision(Class<O> options) {
-        return routing.decisions().decisionOf(row.decisionId(), options);
+        return routing.decisions().decisionOf(decisionId(), options);
     }
 
     @Override
     public Optional<ApprovalResult> approval() {
-        return routing.decisions().approvalOf(row.decisionId());
+        return routing.decisions().approvalOf(decisionId());
+    }
+
+    @Override
+    public boolean isBranch() {
+        return branch != null;
+    }
+
+    @Override
+    public List<BranchResult> branchResults() {
+        return routing.branchResults(row);
     }
 
     @Override
     public void complete() {
+        notInBranch("complete");
         markHandled();
         routing.complete(row, run);
     }
 
     @Override
     public void discard(String reason) {
+        notInBranch("discard");
         markHandled();
         routing.discard(row, reason, run);
     }
 
     @Override
     public String toString() {
-        return "TrackedItem[" + type.name() + " " + row.refId() + ", " + row.businessKey() + "]";
+        return "TrackedItem[" + type.name() + " " + row.refId() + ", " + row.businessKey()
+                + (branch == null ? "" : ", branch " + ctx.catalog().byId(branch.branchJobId()).name()) + "]";
     }
 
     private JobDefinition currentJob() {
-        if (row.currentJobId() == null) {
+        UUID job = branch != null ? branch.branchJobId() : row.currentJobId();
+        if (job == null) {
             throw new IllegalStateException(this + " is in no inbox yet, route it first");
         }
-        return ctx.catalog().byId(row.currentJobId());
+        return ctx.catalog().byId(job);
+    }
+
+    private InboxEntry entry() {
+        return new InboxEntry(row, branch);
+    }
+
+    private UUID decisionId() {
+        return branch != null ? branch.decisionId() : row.decisionId();
+    }
+
+    private void notInBranch(String operation) {
+        if (branch != null) {
+            throw new IllegalStateException(this + " is a branch of a fork: " + operation + " isn't allowed, signal"
+                    + " the result of the branch (or defer, fail, escalate)");
+        }
     }
 
     /** Marks the item as routed, only one routing operation is allowed. */

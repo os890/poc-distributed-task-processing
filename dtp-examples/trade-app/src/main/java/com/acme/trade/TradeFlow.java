@@ -24,7 +24,7 @@ import org.os890.dtp.api.FlowDefinition;
  * The trade flow: the steps report signals, this definition decides where a trade goes next. At startup it is stored
  * as a flow version in the DB (a changed definition is a new version), operators can switch versions and overrule
  * single hops without a deployment. The jobs of the steps are generated, the trigger of the entry step is defined in
- * {@code db/dtp-definitions}.
+ * {@code db/dtp-definitions}. A valid trade is checked by two parallel branches, the enrichment joins their results.
  */
 @ApplicationScoped
 public class TradeFlow implements FlowDefinition {
@@ -35,7 +35,8 @@ public class TradeFlow implements FlowDefinition {
                 .on(ImportSignal.IMPORTED).to(TradeValidation.class)
                 .on(ImportSignal.REIMPORTED).to(TradeValidation.class);
         flow.step(TradeValidation.class)
-                .on(ValidationSignal.VALID).to(TradeEnrichment.class)
+                .on(ValidationSignal.VALID).fork(LimitCheck.class).and(ComplianceCheck.class)
+                    .joinAt(TradeEnrichment.class)
                 .on(ValidationSignal.MISSING_ISIN).back(TradeImport.class);
         flow.step(TradeEnrichment.class)
                 .on(EnrichmentSignal.ENRICHED).complete()

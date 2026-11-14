@@ -22,16 +22,17 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
 
-import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.os890.dtp.api.Approval;
 import org.os890.dtp.api.ApprovalResult;
+import org.os890.dtp.api.BranchResult;
 import org.os890.dtp.api.ItemProcessing;
 import org.os890.dtp.api.ItemProcessor;
 import org.os890.dtp.api.TrackedItem;
 
 /**
- * Adds market data. Four batches of 25 trades run in parallel, each in its own fenced transaction. Large trades need
- * the approval of two members of the risk desk (four-eyes principle); they come back to this step afterwards.
+ * The join step of the parallel checks: rejects restricted trades and adds market data. Four batches of 25 trades run
+ * in parallel, each in its own fenced transaction. Trades above the limit need the approval of two members of the risk
+ * desk (four-eyes principle); they come back to this step afterwards.
  */
 @ApplicationScoped
 @ItemProcessing(batchSize = 25, parallelism = 4)
@@ -43,9 +44,6 @@ public class TradeEnrichment implements ItemProcessor<Trade, UUID> {
     @Inject
     EntityManager em;
 
-    @ConfigProperty(name = "trade.approval.quantity-limit", defaultValue = "1000000")
-    long quantityLimit;
-
     @Override
     public void process(TrackedItem<Trade, UUID> item) {
         Optional<ApprovalResult> approval = item.approval();
@@ -55,11 +53,17 @@ public class TradeEnrichment implements ItemProcessor<Trade, UUID> {
                                                : "rejected by " + approval.get().decidedBy()));
             return;
         }
+        // the results of the parallel branches
+        BranchResult compliance = item.branchResult(ComplianceCheck.class).orElseThrow();
+        if (compliance.is(ComplianceSignal.RESTRICTED)) {
+            item.signal(EnrichmentSignal.REJECTED, compliance.reason());
+            return;
+        }
         Trade trade = em.find(Trade.class, item.ref().id());
         marketData.enrich(trade);              // same transaction as the routing
-        if (trade.getQuantity() > quantityLimit) {
-            item.requestApproval(Approval.quorum(2).assignedTo(Desk.RISK), "quantity " + trade.getQuantity()
-                    + " above the limit of " + quantityLimit);
+        BranchResult limit = item.branchResult(LimitCheck.class).orElseThrow();
+        if (limit.is(LimitSignal.ABOVE_LIMIT)) {
+            item.requestApproval(Approval.quorum(2).assignedTo(Desk.RISK), limit.reason());
         } else {
             item.signal(EnrichmentSignal.ENRICHED);
         }

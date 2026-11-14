@@ -16,9 +16,9 @@
 package org.os890.dtp.core.domain;
 
 /**
- * States of a tracked item. Slice 1: items are never left {@code IN_PROGRESS} across commits (the state change and
- * the routing commit together), and fork/join is not implemented yet ({@code FORKED}).
+ * States of a tracked item. Items are never left {@code IN_PROGRESS} across commits (the state change and the routing
+ * commit together). A {@code FORKED} item is in the inboxes of its branch steps ({@code dtp_item_branch}, DD-22).
  */
 public enum ItemState {
-    QUEUED, WAITING_FOR_DECISION, COMPLETED, DISCARDED
+    QUEUED, FORKED, WAITING_FOR_DECISION, COMPLETED, DISCARDED
 }

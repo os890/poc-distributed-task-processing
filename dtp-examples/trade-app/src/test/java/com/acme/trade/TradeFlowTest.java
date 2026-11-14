@@ -61,19 +61,25 @@ class TradeFlowTest {
                .when().post("/trades/imports")
                .then().statusCode(200).body("newlyCreated", equalTo(true));
 
-        await().atMost(Duration.ofSeconds(30)).until(() -> queries.isIdle() && count("COMPLETED") == 6);
-        assertThat(types("T-2026-11-13-1")).containsExactly("TRACKED", "ROUTED", "ROUTED", "COMPLETED");
+        // 4 and 8 have no ISIN, the ISIN of 7 is restricted
+        await().atMost(Duration.ofSeconds(30)).until(() -> queries.isIdle() && count("COMPLETED") == 5);
+        assertThat(types("T-2026-11-13-1")).containsExactly("TRACKED", "ROUTED", "FORKED", "BRANCH_FINISHED",
+                "BRANCH_FINISHED", "JOINED", "COMPLETED");
         assertThat(types("T-2026-11-13-4")).containsExactly("TRACKED", "ROUTED", "ROUTED_BACK");
+        JourneyEntry restricted = queries.journey(Trade.ITEM.name(), "T-2026-11-13-7").getLast();
+        assertThat(restricted.type()).isEqualTo("DISCARDED");
+        assertThat(restricted.reason()).isEqualTo("restricted ISIN AT0000000007");
 
         // the next import without new trades re-imports the routed-back ones
         given().contentType(ContentType.JSON).body(new ImportParams(DATE, 0))
                .when().post("/trades/imports")
                .then().statusCode(200);
-        await().atMost(Duration.ofSeconds(30)).until(() -> queries.isIdle() && count("COMPLETED") == 8);
+        await().atMost(Duration.ofSeconds(30)).until(() -> queries.isIdle() && count("COMPLETED") == 7);
 
         given().when().get("/trades/T-2026-11-13-4/journey")
                .then().statusCode(200)
-               .body("type", equalTo(List.of("TRACKED", "ROUTED", "ROUTED_BACK", "ROUTED", "ROUTED", "COMPLETED")))
+               .body("type", equalTo(List.of("TRACKED", "ROUTED", "ROUTED_BACK", "ROUTED", "FORKED",
+                       "BRANCH_FINISHED", "BRANCH_FINISHED", "JOINED", "COMPLETED")))
                .body("reason", hasItem("missing ISIN"));
         given().when().get("/trades/unknown/journey").then().statusCode(404);
         given().when().get("/dtp/runs").then().statusCode(200).body("job", hasItem("trade-import"));
@@ -91,7 +97,8 @@ class TradeFlowTest {
                                 .extract().path("[0].activeVersion");
         given().when().get("/dtp/flows/trade-flow/diagram")
                .then().statusCode(200)
-               .body(containsString("-.->|MISSING_ISIN|"), containsString("-->|ENRICHED| done"));
+               .body(containsString("-.->|MISSING_ISIN|"), containsString("-->|ENRICHED| done"))
+               .body(containsString("-->|VALID| fork_"));
         given().when().get("/dtp/flows/validation")
                .then().statusCode(200)
                .body("message", hasItem("trade-validation is part of a loop but has no max_item_visits"));

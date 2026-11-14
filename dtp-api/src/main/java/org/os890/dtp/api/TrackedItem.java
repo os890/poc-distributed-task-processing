@@ -16,6 +16,7 @@
 package org.os890.dtp.api;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -25,8 +26,10 @@ import java.util.Optional;
  * {@code fail}, {@code complete}, {@code discard}) has to be called per hand-over. {@code signal} lets the flow
  * definition decide, the others route manually.
  *
- * <p>Slice 1 of the PoC: fork/join, approvals and decision requests are not implemented yet. An item that exceeds
- * its retries or its loop limit waits in state {@code WAITING_FOR_DECISION}.
+ * <p>In a parallel branch (a fork of the flow, DD-22), {@code signal} finishes the branch: the signal is the branch
+ * result, read by the join step with {@link #branchResults()}. {@code defer}, {@code fail} and the decision requests
+ * apply to the branch only; {@code routeTo}, {@code routeBack}, {@code complete} and {@code discard} aren't allowed
+ * in a branch.
  *
  * @param <E>  the tracked entity type
  * @param <ID> its id type
@@ -159,6 +162,43 @@ public interface TrackedItem<E, ID> {
      * @return the result, empty if the item didn't come back from an approval
      */
     Optional<ApprovalResult> approval();
+
+    /**
+     * {@code true} if the item is handed over as a parallel branch: {@link #signal(Signal)} finishes the branch.
+     *
+     * @return {@code true} in a branch step
+     */
+    boolean isBranch();
+
+    /**
+     * The results of the branches of the last fork, in the order of the fork definition. The join step reads them.
+     *
+     * @return the results of the finished branches
+     */
+    List<BranchResult> branchResults();
+
+    /**
+     * The result of one branch of the last fork.
+     *
+     * @param branch the branch step
+     * @return the result, empty if the branch didn't finish (yet)
+     */
+    default Optional<BranchResult> branchResult(Class<? extends ProcessStep> branch) {
+        return branchResults().stream().filter(r -> r.isOf(branch)).findFirst();
+    }
+
+    /**
+     * The typed result of one branch of the last fork.
+     *
+     * @param branch  the branch step
+     * @param signals the signal enum of the branch step
+     * @param <S>     the signal type
+     * @return the signal the branch reported, empty if the branch didn't finish (yet) or reported another type
+     */
+    default <S extends Enum<S> & Signal> Optional<S> branchResult(Class<? extends ProcessStep> branch,
+                                                                  Class<S> signals) {
+        return branchResult(branch).flatMap(r -> r.signal(signals));
+    }
 
     /** Completes the item's journey. */
     void complete();

@@ -31,6 +31,7 @@ import org.os890.dtp.api.ApprovalResult;
 import org.os890.dtp.api.DecisionOption;
 import org.os890.dtp.api.RunOutcome;
 import org.os890.dtp.core.DtpException;
+import org.os890.dtp.core.domain.BranchState;
 import org.os890.dtp.core.domain.BuiltInOption;
 import org.os890.dtp.core.domain.DecisionKind;
 import org.os890.dtp.core.domain.ItemEventType;
@@ -371,20 +372,35 @@ public class Decisions {
             return;
         }
         ItemRow item = ctx.items().load(c, request.subjectId());
-        if (item.state() != ItemState.WAITING_FOR_DECISION) {
+        boolean branch = item.state() == ItemState.FORKED;
+        if (branch ? !waitingBranch(c, request) : item.state() != ItemState.WAITING_FOR_DECISION) {
             throw new DtpException("item " + item.businessKey() + " doesn't wait for a decision");
         }
         itemEvent(c, request, ItemEventType.DECIDED, request.requestedByJobId(), reason, now);
         boolean builtIn = optionViews(request).stream().anyMatch(o -> o.name().equals(option) && o.builtIn());
         if (builtIn && BuiltInOption.DISCARD.name().equals(option)) {
+            // the branches first, then the item: the order in which a finishing branch locks them
+            ctx.items().cancelBranches(c, item.id(), now);
+            ctx.items().lock(c, item.id());
             ctx.items().setState(c, item.id(), ItemState.DISCARDED, item.attempts(), now);
             itemEvent(c, request, ItemEventType.DISCARDED, null, reason, now);
+            return;
+        }
+        if (branch) {
+            // a decision about a branch (DD-22): the branch goes back into the inbox of its step
+            ctx.items().requeueBranchAfterDecision(c, item.id(), request.requestedByJobId(), request.id(), reason,
+                    now);
             return;
         }
         if (builtIn && BuiltInOption.RESET_VISITS.name().equals(option)) {
             ctx.items().resetVisits(c, item.id(), request.requestedByJobId());
         }
         ctx.items().requeueAfterDecision(c, item.id(), request.requestedByJobId(), request.id(), reason, now);
+    }
+
+    private boolean waitingBranch(Connection c, RequestRow request) throws SQLException {
+        return ctx.items().branch(c, request.subjectId(), request.requestedByJobId())
+                  .filter(b -> b.state() == BranchState.WAITING_FOR_DECISION).isPresent();
     }
 
     private void itemEvent(Connection c, RequestRow request, ItemEventType type, UUID toJob, String reason,

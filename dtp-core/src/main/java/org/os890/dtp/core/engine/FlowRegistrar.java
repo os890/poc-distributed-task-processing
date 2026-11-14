@@ -107,7 +107,7 @@ public class FlowRegistrar {
                         : flows.ensureFlow(c, ctx.namespace(), route.targetFlow(), null, now);
                 flows.insertRoute(c, versionId, new RouteRow(null, jobs.get(route.from()), route.signalType(),
                         route.signal(), route.kind(), route.targetStep() == null ? null : jobs.get(route.targetStep()),
-                        targetFlow, false));
+                        targetFlow, false), route.branches().stream().map(jobs::get).toList());
             }
         } else {
             versionId = existing.get().id();

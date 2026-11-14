@@ -133,7 +133,7 @@ public class FlowRouting {
             Resolved resolved = ctx.tx().withConnection(c -> resolve(c, item, signal, run));
             ItemRow pinned = item.flowVersionId() == null || !item.flowVersionId().equals(resolved.versionId())
                     ? pin(item, resolved.versionId(), run) : item;
-            apply(pinned, resolved.route(), why, run);
+            apply(pinned, resolved, why, run);
             return null;
         });
     }
@@ -162,7 +162,11 @@ public class FlowRouting {
         }
     }
 
-    private record Resolved(UUID versionId, RouteRow route) {
+    private record Resolved(UUID versionId, RouteRow route, List<UUID> branches) {
+
+        Resolved(UUID versionId, RouteRow route) {
+            this(versionId, route, List.of());
+        }
     }
 
     private Resolved resolve(Connection c, ItemRow item, Signal signal, RunContext run) throws SQLException {
@@ -195,15 +199,21 @@ public class FlowRouting {
             return new Resolved(target.id(), new RouteRow(found.id(), fromJob, found.signalType(), found.signal(),
                     RouteKind.FLOW, target.entryJobId(), found.targetFlowId(), found.override()));
         }
+        if (found.kind() == RouteKind.FORK) {
+            return new Resolved(versionId, found, flows.branches(c, found.id()));
+        }
         return new Resolved(versionId, found);
     }
 
-    private void apply(ItemRow item, RouteRow route, String reason, RunContext run) {
+    private void apply(ItemRow item, Resolved resolved, String reason, RunContext run) {
+        RouteRow route = resolved.route();
         switch (route.kind()) {
             case TO, FLOW -> routing.routeTo(item, ctx.catalog().byId(route.targetJobId()), reason, false, run);
             case BACK -> routing.routeTo(item, ctx.catalog().byId(route.targetJobId()), reason, true, run);
             case COMPLETE -> routing.complete(item, run);
             case DISCARD -> routing.discard(item, reason, run);
+            case FORK -> routing.fork(item, resolved.branches().stream().map(ctx.catalog()::byId).toList(),
+                    ctx.catalog().byId(route.targetJobId()), reason, run);
             default -> throw new IllegalStateException(route.kind() + " isn't an item route");
         }
     }

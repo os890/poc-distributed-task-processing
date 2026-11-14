@@ -37,6 +37,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import org.os890.dtp.core.domain.JobDefinition;
+import org.os890.dtp.core.domain.RouteKind;
 import org.os890.dtp.core.jdbc.DbClock;
 import org.os890.dtp.core.jdbc.FlowStore;
 import org.os890.dtp.core.jdbc.FlowStore.FlowRow;
@@ -311,12 +312,12 @@ public class FlowQueries {
             if (route.kind().isItemRoute() && overrides.containsKey(route.fromJobId() + "|" + route.signal())) {
                 overruled.add(links.size());
             }
-            links.add(link(route, ids, jobById, ends, c));
+            links.addAll(links(route, ids, jobById, ends, c));
         }
         for (RouteRow override : overrides.values()) {
             if (ids.containsKey(override.fromJobId())) {
                 overriding.add(links.size());
-                links.add(link(new RouteRow(override.id(), override.fromJobId(), null, override.signal() + " ⚠",
+                links.addAll(links(new RouteRow(override.id(), override.fromJobId(), null, override.signal() + " ⚠",
                         override.kind(), override.targetJobId(), override.targetFlowId(), true), ids, jobById, ends,
                         c));
             }
@@ -341,27 +342,45 @@ public class FlowQueries {
         return active;
     }
 
-    private String link(RouteRow route, Map<UUID, String> ids, Map<UUID, JobDefinition> jobById, Set<String> ends,
-                        Connection c) throws SQLException {
+    private List<String> links(RouteRow route, Map<UUID, String> ids, Map<UUID, JobDefinition> jobById,
+                               Set<String> ends, Connection c) throws SQLException {
         String from = ids.get(route.fromJobId());
         String label = escape(route.signal());
         return switch (route.kind()) {
-            case TO -> from + " -->|" + label + "| " + node(route.targetJobId(), ids, jobById, ends);
-            case BACK -> from + " -.->|" + label + "| " + node(route.targetJobId(), ids, jobById, ends);
-            case RUN -> from + " ==>|" + label + "| " + node(route.targetJobId(), ids, jobById, ends);
+            case TO -> List.of(from + " -->|" + label + "| " + node(route.targetJobId(), ids, jobById, ends));
+            case BACK -> List.of(from + " -.->|" + label + "| " + node(route.targetJobId(), ids, jobById, ends));
+            case RUN -> List.of(from + " ==>|" + label + "| " + node(route.targetJobId(), ids, jobById, ends));
             case COMPLETE -> {
                 ends.add("done(((complete)))");
-                yield from + " -->|" + label + "| done";
+                yield List.of(from + " -->|" + label + "| done");
             }
             case DISCARD -> {
                 ends.add("discarded[/discarded/]");
-                yield from + " -->|" + label + "| discarded";
+                yield List.of(from + " -->|" + label + "| discarded");
             }
             case FLOW -> {
                 String name = flows.flow(c, route.targetFlowId()).name();
                 String id = "f_" + name.replaceAll("[^A-Za-z0-9]", "_");
                 ends.add(id + "[[\"flow " + escape(name) + "\"]]");
-                yield from + " -->|" + label + "| " + id;
+                yield List.of(from + " -->|" + label + "| " + id);
+            }
+            case FORK -> {
+                // the branches run in parallel, the join step gets the item when the last one has finished
+                String fork = "fork_" + from + "_" + label.replaceAll("[^A-Za-z0-9]", "_");
+                String join = "join_" + from + "_" + label.replaceAll("[^A-Za-z0-9]", "_");
+                ends.add(fork + "{{\"fork\"}}");
+                ends.add(join + "{{\"join\"}}");
+                List<String> edges = new ArrayList<>();
+                edges.add(from + " -->|" + label + "| " + fork);
+                List<UUID> branches = flows.branches(c, route.id());
+                for (UUID branch : branches) {
+                    edges.add(fork + " --> " + node(branch, ids, jobById, ends));
+                }
+                for (UUID branch : branches) {
+                    edges.add(node(branch, ids, jobById, ends) + " --> " + join);
+                }
+                edges.add(join + " --> " + node(route.targetJobId(), ids, jobById, ends));
+                yield edges;
             }
         };
     }
@@ -403,7 +422,12 @@ public class FlowQueries {
 
         Map<UUID, Set<UUID>> successors = new HashMap<>();
         for (RouteRow route : routes) {
-            if (route.targetJobId() != null) {
+            if (route.kind() == RouteKind.FORK) {
+                for (UUID branch : flows.branches(c, route.id())) {
+                    successors.computeIfAbsent(route.fromJobId(), k -> new HashSet<>()).add(branch);
+                    successors.computeIfAbsent(branch, k -> new HashSet<>()).add(route.targetJobId());
+                }
+            } else if (route.targetJobId() != null) {
                 successors.computeIfAbsent(route.fromJobId(), k -> new HashSet<>()).add(route.targetJobId());
             }
         }

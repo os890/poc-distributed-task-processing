@@ -30,8 +30,8 @@ import org.os890.dtp.api.ItemType;
 import org.os890.dtp.core.DtpException;
 import org.os890.dtp.core.domain.FailureKind;
 import org.os890.dtp.core.domain.LeaseLostException;
+import org.os890.dtp.core.jdbc.ItemStore.InboxEntry;
 import org.os890.dtp.core.jdbc.ItemStore.InboxQuery;
-import org.os890.dtp.core.jdbc.ItemStore.ItemRow;
 
 /**
  * Runs an {@link ItemProcessor}: iterates the inbox in batches (each batch is one fenced unit of work), up to
@@ -100,13 +100,13 @@ public class ItemProcessorDriver {
         List<UUID> ids = new ArrayList<>();
         try {
             return run.unitOfWork(false, () -> {
-                List<ItemRow> rows = lock();
-                if (rows.isEmpty()) {
+                List<InboxEntry> entries = lock();
+                if (entries.isEmpty()) {
                     return false;
                 }
-                rows.forEach(row -> ids.add(row.id()));
-                for (ItemRow row : rows) {
-                    process(row);
+                entries.forEach(entry -> ids.add(entry.item().id()));
+                for (InboxEntry entry : entries) {
+                    process(entry);
                 }
                 return true;
             });
@@ -135,11 +135,11 @@ public class ItemProcessorDriver {
             try {
                 run.unitOfWork(false, () -> {
                     EngineContext ctx = run.engine();
-                    ItemRow row = ctx.tx().withConnection(c -> ctx.items().lockQueued(c, id, run.claimed().jobId(),
-                            run.now())).orElse(null);
-                    if (row != null) {
-                        routing.reprocessed(row, run);
-                        process(row);
+                    InboxEntry entry = ctx.tx().withConnection(c -> ctx.items().lockQueued(c, id,
+                            run.claimed().jobId(), run.now())).orElse(null);
+                    if (entry != null) {
+                        routing.reprocessed(entry.item(), entry.branch(), run);
+                        process(entry);
                     }
                     return null;
                 });
@@ -155,30 +155,30 @@ public class ItemProcessorDriver {
         run.unitOfWork(false, () -> {
             EngineContext ctx = run.engine();
             ctx.tx().withConnection(c -> ctx.items().lockQueued(c, id, run.claimed().jobId(), run.now()))
-                    .ifPresent(row -> routing.fail(row, run.job(), FailureKind.TECHNICAL,
+                    .ifPresent(entry -> routing.fail(entry.item(), entry.branch(), run.job(), FailureKind.TECHNICAL,
                             String.valueOf(error.getMessage()), error, run));
             return null;
         });
     }
 
-    private List<ItemRow> lock() {
+    private List<InboxEntry> lock() {
         EngineContext ctx = run.engine();
         Long after = cursor == null ? null : cursor.get();
         InboxQuery query = new InboxQuery(ctx.namespace(), run.claimed().jobId(), type.name(), after,
                 settings.includeDeferred(), true, settings.batchSize());
-        List<ItemRow> rows = ctx.tx().withConnection(c -> ctx.items().lockInboxBatch(c, query, run.now()));
+        List<InboxEntry> entries = ctx.tx().withConnection(c -> ctx.items().lockInboxBatch(c, query, run.now()));
         if (cursor != null) {
-            rows.forEach(row -> cursor.accumulateAndGet(row.inboxSeq(), Math::max));
+            entries.forEach(entry -> cursor.accumulateAndGet(entry.seq(), Math::max));
         }
-        return rows;
+        return entries;
     }
 
-    private void process(ItemRow row) {
-        TrackedItemImpl<Object, Object> item = new TrackedItemImpl<>(run.engine(), routing, row, type, run);
+    private void process(InboxEntry entry) {
+        TrackedItemImpl<Object, Object> item = new TrackedItemImpl<>(run.engine(), routing, entry, type, run);
         processor.process(item);
         if (!item.isHandled()) {
             throw new IllegalStateException(processor.getClass().getName() + " returned without routing " + item
-                    + " (routeTo, routeBack, defer, fail, complete or discard)");
+                    + " (signal, routeTo, routeBack, defer, fail, complete or discard)");
         }
     }
 

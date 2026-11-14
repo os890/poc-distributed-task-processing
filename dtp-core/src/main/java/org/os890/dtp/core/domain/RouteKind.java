@@ -15,9 +15,12 @@
  */
 package org.os890.dtp.core.domain;
 
-/** Kinds of routes of a flow: item routes of a signal, or the successor of a typed run result. */
+/**
+ * Kinds of routes of a flow: item routes of a signal, or the successor of a typed run result. A {@link #FORK} targets
+ * the join step, its branches are stored separately.
+ */
 public enum RouteKind {
-    TO, BACK, FLOW, COMPLETE, DISCARD, RUN;
+    TO, BACK, FLOW, COMPLETE, DISCARD, FORK, RUN;
 
     /** {@code true} for the routes of item signals (all but {@link #RUN}). */
     public boolean isItemRoute() {
