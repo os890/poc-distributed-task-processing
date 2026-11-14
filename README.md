@@ -56,8 +56,8 @@
 ## First Implementation
 
 Branch `poc-impl` contains a first implementation (slice 1) with a runtime demo on three Quarkus nodes, flows with
-signals, versions and overrides (slice 2), decision requests and approvals (slice 3), and fork/join on item level
-(slice 4): see [IMPLEMENTATION.md](IMPLEMENTATION.md).
+signals, versions and overrides (slice 2), decision requests and approvals (slice 3), fork/join on item level
+(slice 4), and decision fallbacks with domain events (slice 5): see [IMPLEMENTATION.md](IMPLEMENTATION.md).
 
 ## License
 

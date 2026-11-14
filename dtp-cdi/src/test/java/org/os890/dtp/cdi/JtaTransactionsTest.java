@@ -47,6 +47,46 @@ class JtaTransactionsTest {
     }
 
     @Test
+    void actionsAfterTheCommitRunOnlyAfterASuccessfulCommit() {
+        tx.afterCommit(() -> tm.log().add("without transaction"));
+        tx.required(() -> {
+            tx.afterCommit(() -> tm.log().add("after commit"));
+            return tx.requiresNew(() -> {
+                tx.afterCommit(() -> tm.log().add("after inner commit"));
+                return null;
+            });
+        });
+        assertThatThrownBy(() -> tx.required(() -> {
+            tx.afterCommit(() -> tm.log().add("never"));
+            throw new IllegalStateException("boom");
+        })).isInstanceOf(IllegalStateException.class);
+        tx.required(() -> {
+            tx.afterCommit(() -> {
+                throw new IllegalStateException("a failing observer is logged");
+            });
+            return null;
+        });
+        assertThat(tm.log()).containsExactly("without transaction", "begin 1", "suspend 1", "begin 2", "commit 2",
+                "after inner commit", "resume 1", "commit 1", "after commit", "begin 3", "rollback 3", "begin 4",
+                "commit 4");
+    }
+
+    @Test
+    void actionsInATransactionOfTheApplicationRunAfterItsCompletion() throws Exception {
+        tm.begin();
+        tx.required(() -> {
+            tx.afterCommit(() -> tm.log().add("after the commit of the application"));
+            return null;
+        });
+        tm.commit();
+        tm.begin();
+        tx.afterCommit(() -> tm.log().add("never"));
+        tm.rollback();
+        assertThat(tm.log()).containsExactly("begin 1", "commit 1", "after the commit of the application", "begin 2",
+                "rollback 2");
+    }
+
+    @Test
     void connectionsComeFromTheDataSource() {
         String product = tx.withConnection(c -> c.getMetaData().getDatabaseProductName());
         assertThat(product).isEqualTo("H2");

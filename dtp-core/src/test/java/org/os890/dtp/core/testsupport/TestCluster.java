@@ -20,7 +20,9 @@ import static org.awaitility.Awaitility.await;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import javax.sql.DataSource;
@@ -51,6 +53,16 @@ public class TestCluster implements AutoCloseable {
     private final Transactions tx;
     private final List<DtpEngine> nodes = new ArrayList<>();
     private final JobDefinitions definitions;
+    private final List<Published> events = new CopyOnWriteArrayList<>();
+
+    /**
+     * A domain event published by a node.
+     *
+     * @param node  the node name
+     * @param event the event
+     */
+    public record Published(String node, Object event) {
+    }
 
     public TestCluster() {
         JdbcDataSource h2 = new JdbcDataSource();
@@ -126,15 +138,37 @@ public class TestCluster implements AutoCloseable {
                 .transactions(tx)
                 .steps(registry)
                 .config(config)
+                .events(event -> events.add(new Published(config.nodeName(), event)))
                 .build()
                 .start();
         nodes.add(engine);
         return engine;
     }
 
+    /**
+     * The domain events published by all nodes, in the order of publishing.
+     *
+     * @param type the event type
+     * @param <E>  the event type
+     * @return the events
+     */
+    public <E> List<E> events(Class<E> type) {
+        return events.stream().map(Published::event).filter(type::isInstance).map(type::cast).toList();
+    }
+
+    /**
+     * The domain events published by all nodes.
+     *
+     * @return the events
+     */
+    public List<Published> published() {
+        return List.copyOf(events);
+    }
+
     /** Creates the schema without starting a node, e.g. to define jobs before the first node starts. */
     public void migrate() {
-        SchemaMigrator.migrate(dataSource, tx.withConnection(SqlDialect::detect), getClass().getClassLoader());
+        SchemaMigrator.migrate(dataSource, tx.withConnection(SqlDialect::detect), getClass().getClassLoader(),
+                Map.of());
     }
 
     public Transactions tx() {

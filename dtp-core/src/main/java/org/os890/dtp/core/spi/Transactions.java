@@ -52,6 +52,14 @@ public interface Transactions {
     <T> T withConnection(ConnectionWork<T> work);
 
     /**
+     * Runs the action after the commit of the current transaction, or right away if none is active. Nothing runs if
+     * the transaction rolls back. Used for the domain events.
+     *
+     * @param action the action, without a transaction when it runs
+     */
+    void afterCommit(Runnable action);
+
+    /**
      * Work within a transaction.
      *
      * @param <T> result type

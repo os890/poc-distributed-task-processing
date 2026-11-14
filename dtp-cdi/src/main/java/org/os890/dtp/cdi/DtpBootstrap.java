@@ -25,6 +25,7 @@ import jakarta.enterprise.event.Startup;
 import jakarta.enterprise.inject.Any;
 import jakarta.enterprise.inject.Instance;
 import jakarta.enterprise.inject.Produces;
+import jakarta.enterprise.inject.spi.BeanManager;
 import jakarta.inject.Inject;
 import jakarta.transaction.TransactionManager;
 
@@ -46,7 +47,8 @@ import org.os890.dtp.core.spi.Transactions;
 /**
  * Starts the dtp engine with the CDI container ({@code dtp.enabled}, default {@code true}): every deployment that
  * contains the library joins the cluster. Uses the default datasource and JTA if a {@link TransactionManager} is
- * available, otherwise plain JDBC transactions.
+ * available, otherwise plain JDBC transactions. The domain events ({@code org.os890.dtp.api.event}) are fired as CDI
+ * events after the commit.
  */
 @ApplicationScoped
 public class DtpBootstrap {
@@ -64,6 +66,9 @@ public class DtpBootstrap {
 
     @Inject
     Instance<TransactionManager> transactionManagers;
+
+    @Inject
+    BeanManager beanManager;
 
     private DtpEngine engine;
 
@@ -103,6 +108,7 @@ public class DtpBootstrap {
                     .dataSource(dataSource)
                     .transactions(tx)
                     .steps(new CdiStepRegistry(steps, flows))
+                    .events(new CdiEventPublisher(beanManager))
                     .config(DtpSettings.read(ConfigProvider.getConfig()))
                     .build()
                     .start();

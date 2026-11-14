@@ -18,7 +18,9 @@ package org.os890.dtp.core.jdbc;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
+import java.util.List;
 
 import javax.sql.DataSource;
 
@@ -30,7 +32,12 @@ public class JdbcTransactions implements Transactions {
 
     private final DataSource dataSource;
 
-    private final ThreadLocal<Deque<Connection>> connections = ThreadLocal.withInitial(ArrayDeque::new);
+    private static final System.Logger LOG = System.getLogger(JdbcTransactions.class.getName());
+
+    private final ThreadLocal<Deque<Tx>> transactions = ThreadLocal.withInitial(ArrayDeque::new);
+
+    private record Tx(Connection connection, List<Runnable> afterCommit) {
+    }
 
     public JdbcTransactions(DataSource dataSource) {
         this.dataSource = dataSource;
@@ -38,7 +45,7 @@ public class JdbcTransactions implements Transactions {
 
     @Override
     public <T> T required(Work<T> work) {
-        if (!connections.get().isEmpty()) {
+        if (!transactions.get().isEmpty()) {
             return call(work);
         }
         return begin(work);
@@ -52,15 +59,25 @@ public class JdbcTransactions implements Transactions {
     @Override
     public <T> T withConnection(ConnectionWork<T> work) {
         try {
-            Connection current = connections.get().peek();
+            Tx current = transactions.get().peek();
             if (current != null) {
-                return work.run(current);
+                return work.run(current.connection());
             }
             try (Connection c = dataSource.getConnection()) {
                 return work.run(c);
             }
         } catch (SQLException e) {
             throw new DtpException(e);
+        }
+    }
+
+    @Override
+    public void afterCommit(Runnable action) {
+        Tx current = transactions.get().peek();
+        if (current == null) {
+            run(action);
+        } else {
+            current.afterCommit().add(action);
         }
     }
 
@@ -72,12 +89,13 @@ public class JdbcTransactions implements Transactions {
         } catch (SQLException e) {
             throw new DtpException(e);
         }
-        Deque<Connection> stack = connections.get();
-        stack.push(c);
+        Deque<Tx> stack = transactions.get();
+        Tx tx = new Tx(c, new ArrayList<>());
+        stack.push(tx);
+        T result;
         try {
-            T result = call(work);
+            result = call(work);
             c.commit();
-            return result;
         } catch (SQLException e) {
             rollback(c, e);
             throw new DtpException(e);
@@ -87,6 +105,16 @@ public class JdbcTransactions implements Transactions {
         } finally {
             stack.pop();
             close(c);
+        }
+        tx.afterCommit().forEach(JdbcTransactions::run);
+        return result;
+    }
+
+    private static void run(Runnable action) {
+        try {
+            action.run();
+        } catch (RuntimeException e) {
+            LOG.log(System.Logger.Level.WARNING, "an action after the commit failed", e);
         }
     }
 

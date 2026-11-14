@@ -33,9 +33,9 @@ import org.os890.dtp.core.domain.TriggerType;
 import org.os890.dtp.core.jdbc.LeaseStore.ExpiredLease;
 
 /**
- * The tasks of the housekeeping leader (DD-3): creating lease rows, planning time and inbox triggers, taking over
- * expired leases and marking dead nodes. Every action is idempotent (run keys) or conditional (tokens), so two
- * leaders for a short moment do no harm.
+ * The tasks of the housekeeping leader (DD-3): creating lease rows, planning time and inbox triggers and decision
+ * fallbacks, taking over expired leases and marking dead nodes. Every action is idempotent (run keys) or conditional
+ * (tokens), so two leaders for a short moment do no harm.
  */
 public class Housekeeping {
 
@@ -72,6 +72,7 @@ public class Housekeeping {
                 guarded("inbox of " + job.name(), () -> planContinuous(job, TriggerType.INBOX, job.inboxMinItems()));
             }
         }
+        guarded("decision fallbacks", () -> decisions.planFallbacks(planner));
         guarded("lease takeover", this::reapLeases);
         guarded("dead nodes", () -> ctx.tx().required(() -> ctx.tx().withConnection(c -> ctx.nodes().markDead(c,
                 ctx.namespace(), ctx.clock().now(c).minus(ctx.config().deadAfter())))));

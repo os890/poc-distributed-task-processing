@@ -74,6 +74,7 @@ import org.os890.dtp.core.jdbc.SchemaMigrator;
 import org.os890.dtp.core.jdbc.SqlDialect;
 import org.os890.dtp.core.query.DtpQueries;
 import org.os890.dtp.core.query.FlowQueries;
+import org.os890.dtp.core.spi.DomainEventPublisher;
 import org.os890.dtp.core.spi.StepRegistry;
 import org.os890.dtp.core.spi.Transactions;
 
@@ -94,6 +95,7 @@ public class DtpEngine {
     private final Transactions tx;
     private final StepRegistry registry;
     private final DtpConfig config;
+    private final DomainEventPublisher events;
     private final UUID nodeId = UUID.randomUUID();
     private final Random random;
     private final ReentrantLock claimLock = new ReentrantLock();
@@ -121,6 +123,7 @@ public class DtpEngine {
         this.registry = Objects.requireNonNull(builder.registry, "steps");
         this.config = builder.config != null ? builder.config : DtpConfig.builder().build();
         this.tx = builder.transactions != null ? builder.transactions : new JdbcTransactions(dataSource);
+        this.events = builder.events != null ? builder.events : DomainEventPublisher.NONE;
         long seed = config.randomSeed() != null ? config.randomSeed() ^ nodeId.getLeastSignificantBits()
                                                  : new Random().nextLong();
         this.random = new Random(seed);
@@ -142,6 +145,7 @@ public class DtpEngine {
         private Transactions transactions;
         private StepRegistry registry;
         private DtpConfig config;
+        private DomainEventPublisher events;
 
         public Builder dataSource(DataSource value) {
             dataSource = value;
@@ -163,6 +167,17 @@ public class DtpEngine {
             return this;
         }
 
+        /**
+         * The publisher of the domain events, e.g. CDI events. Without one, the events are dropped.
+         *
+         * @param value the publisher
+         * @return this builder
+         */
+        public Builder events(DomainEventPublisher value) {
+            events = value;
+            return this;
+        }
+
         public DtpEngine build() {
             return new DtpEngine(this);
         }
@@ -181,7 +196,8 @@ public class DtpEngine {
         SqlDialect dialect = tx.withConnection(SqlDialect::detect);
         if (config.migrateSchema()) {
             ClassLoader loader = Thread.currentThread().getContextClassLoader();
-            SchemaMigrator.migrate(dataSource, dialect, loader != null ? loader : getClass().getClassLoader());
+            SchemaMigrator.migrate(dataSource, dialect, loader != null ? loader : getClass().getClassLoader(),
+                    config.definitionPlaceholders());
         }
         Map<Class<? extends ProcessStep>, StepInfo> steps = new LinkedHashMap<>();
         registry.stepClasses().forEach(step -> steps.put(step, StepInfo.of(step)));
@@ -190,7 +206,7 @@ public class DtpEngine {
                 new RunStore(dialect), new NodeStore(), new LeaderStore(dialect), new ItemStore(dialect),
                 new FlowStore(dialect),
                 new JobCatalog(tx, jobStore, config.namespace(), config.definitionRefresh().toNanos()),
-                new JsonCodec(), registry, Map.copyOf(steps));
+                new JsonCodec(), registry, Map.copyOf(steps), events);
         RunPlanner planner = new RunPlanner(ctx);
         ItemRouting routing = new ItemRouting(ctx);
         List<FlowModel> flowModels = FlowRegistrar.compile(registry.flowDefinitions());

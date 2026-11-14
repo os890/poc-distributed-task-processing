@@ -54,6 +54,9 @@ class TradeFlowTest {
     @Inject
     DtpQueries queries;
 
+    @Inject
+    TeamNotifications notifications;
+
     @Test
     @Order(1)
     void tradesFlowThroughImportValidationAndEnrichment() {
@@ -138,6 +141,17 @@ class TradeFlowTest {
         given().contentType(ContentType.JSON).body(new ImportParams(date, 10))
                .when().post("/trades/imports").then().statusCode(200);
         await().atMost(Duration.ofSeconds(30)).until(() -> types(large).contains("ESCALATED"));
+
+        // the app informs the risk desk (domain event), the fallback reminds them after 1 s (PT4H in production)
+        String reminder = "Reminder: still open for " + large;
+        await().atMost(Duration.ofSeconds(30)).until(() -> notifications.latest().stream()
+                                                                       .anyMatch(m -> m.subject().equals(reminder)));
+        assertThat(notifications.latest()).anySatisfy(m -> {
+            assertThat(m.audience()).isEqualTo("risk");
+            assertThat(m.subject()).isEqualTo("Approval needed (2 approvers): " + large);
+        });
+        given().when().get("/notifications").then().statusCode(200)
+               .body("find { it.subject == '%s' }.body".formatted(reminder), containsString("approvals 0 of 2"));
 
         String id = given().header("X-User", "rita").header("X-Groups", "risk")
                            .when().get("/dtp/decisions")

@@ -30,6 +30,7 @@ import org.os890.dtp.core.jdbc.LeaseStore;
 import org.os890.dtp.core.jdbc.NodeStore;
 import org.os890.dtp.core.jdbc.RunStore;
 import org.os890.dtp.core.jdbc.SqlDialect;
+import org.os890.dtp.core.spi.DomainEventPublisher;
 import org.os890.dtp.core.spi.StepRegistry;
 import org.os890.dtp.core.spi.Transactions;
 
@@ -52,15 +53,25 @@ import org.os890.dtp.core.spi.Transactions;
  * @param json     the JSON codec
  * @param registry the process steps of this node
  * @param steps    the validated step infos by class
+ * @param events   the publisher of the domain events
  */
 public record EngineContext(DtpConfig config, UUID nodeId, Transactions tx, SqlDialect dialect, DbClock clock,
                             JobStore jobs, LeaseStore leases, RunStore runs, NodeStore nodes, LeaderStore leaders,
                             ItemStore items, FlowStore flows, JobCatalog catalog, JsonCodec json, StepRegistry registry,
-                            Map<Class<? extends ProcessStep>, StepInfo> steps) {
+                            Map<Class<? extends ProcessStep>, StepInfo> steps, DomainEventPublisher events) {
 
     /** The namespace. */
     public String namespace() {
         return config.namespace();
+    }
+
+    /**
+     * Publishes a domain event after the commit of the current transaction (or right away without one).
+     *
+     * @param event the event
+     */
+    public void publishAfterCommit(Object event) {
+        tx.afterCommit(() -> events.publish(event));
     }
 
     /** The DB time, read in the current transaction (or a short one). */

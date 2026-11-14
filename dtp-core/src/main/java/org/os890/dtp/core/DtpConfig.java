@@ -17,6 +17,7 @@ package org.os890.dtp.core;
 
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -38,14 +39,16 @@ import java.util.Objects;
  * @param randomSeed          seed of the jitter (DD-14), or {@code null} for a random one
  * @param flowExport          export of the flows after the start
  * @param flowExportPath      file of the export
+ * @param definitionPlaceholders Flyway placeholders of the application's job definitions, e.g. a fallback delay
  */
 public record DtpConfig(String namespace, String nodeName, Duration pollInterval, Duration housekeepingInterval,
                         Duration heartbeatInterval, Duration leaseDuration, Duration leaderLeaseDuration,
                         Duration deadAfter, Duration misfireGrace, Duration definitionRefresh, Duration drainTimeout,
                         int maxConcurrentRuns, boolean migrateSchema, Long randomSeed, FlowExport flowExport,
-                        Path flowExportPath) {
+                        Path flowExportPath, Map<String, String> definitionPlaceholders) {
 
     public DtpConfig {
+        definitionPlaceholders = Map.copyOf(definitionPlaceholders);
         Objects.requireNonNull(namespace, "namespace");
         Objects.requireNonNull(nodeName, "nodeName");
         if (maxConcurrentRuns < 1) {
@@ -92,6 +95,7 @@ public record DtpConfig(String namespace, String nodeName, Duration pollInterval
         private Long randomSeed;
         private FlowExport flowExport = FlowExport.NONE;
         private Path flowExportPath = Path.of("target", "dtp-flows.md");
+        private Map<String, String> definitionPlaceholders = Map.of();
 
         public Builder namespace(String value) {
             namespace = value;
@@ -185,10 +189,22 @@ public record DtpConfig(String namespace, String nodeName, Duration pollInterval
             return this;
         }
 
+        /**
+         * Placeholders of the application's job definitions (DD-15): {@code ${name}} in the SQL scripts, e.g. delays
+         * that differ per environment.
+         *
+         * @param value the placeholders by name
+         * @return this builder
+         */
+        public Builder definitionPlaceholders(Map<String, String> value) {
+            definitionPlaceholders = Objects.requireNonNull(value, "definitionPlaceholders");
+            return this;
+        }
+
         public DtpConfig build() {
             return new DtpConfig(namespace, nodeName, pollInterval, housekeepingInterval, heartbeatInterval,
                     leaseDuration, leaderLeaseDuration, deadAfter, misfireGrace, definitionRefresh, drainTimeout,
-                    maxConcurrentRuns, migrateSchema, randomSeed, flowExport, flowExportPath);
+                    maxConcurrentRuns, migrateSchema, randomSeed, flowExport, flowExportPath, definitionPlaceholders);
         }
 
         private static String defaultNodeName() {

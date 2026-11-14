@@ -15,6 +15,8 @@
  */
 package org.os890.dtp.core.jdbc;
 
+import java.util.Map;
+
 import javax.sql.DataSource;
 
 import org.flywaydb.core.Flyway;
@@ -37,8 +39,10 @@ public class SchemaMigrator {
      * @param dataSource  the data source
      * @param dialect     the SQL dialect
      * @param classLoader the class loader that sees the application's definition scripts
+     * @param placeholders the placeholders of the definition scripts
      */
-    public static void migrate(DataSource dataSource, SqlDialect dialect, ClassLoader classLoader) {
+    public static void migrate(DataSource dataSource, SqlDialect dialect, ClassLoader classLoader,
+                               Map<String, String> placeholders) {
         Flyway.configure(classLoader)
                 .dataSource(dataSource)
                 .locations("classpath:db/migration/dtp/" + dialect.migrationFolder())
@@ -51,6 +55,7 @@ public class SchemaMigrator {
                 .dataSource(dataSource)
                 .locations(DEFINITIONS_LOCATION)
                 .table("dtp_definition_history")
+                .placeholders(placeholders)
                 .baselineOnMigrate(true)
                 .baselineVersion("0")
                 .failOnMissingLocations(false)

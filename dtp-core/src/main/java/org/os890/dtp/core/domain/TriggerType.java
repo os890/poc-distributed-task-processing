@@ -17,5 +17,5 @@ package org.os890.dtp.core.domain;
 
 /** What created a run. */
 public enum TriggerType {
-    CRON, ASAP, INBOX, EXTERNAL, TRANSITION
+    CRON, ASAP, INBOX, EXTERNAL, TRANSITION, FALLBACK
 }

@@ -31,6 +31,10 @@ public class DecisionStore {
 
     private static final String SELECT = "SELECT * FROM dtp_decision_request";
 
+    // a disabled fallback job doesn't block the others, its overdue fallbacks are planned once it is enabled again
+    private static final String DUE_FALLBACKS = " JOIN dtp_job j ON j.id = r.fallback_job_id AND j.enabled = TRUE"
+            + " WHERE r.state = 'OPEN' AND r.fallback_due_at <= ? AND r.fallback_run_id IS NULL AND r.namespace = ?";
+
     /**
      * A decision request.
      *
@@ -52,11 +56,15 @@ public class DecisionStore {
      * @param decidedAt         when
      * @param comment           comment of the decision
      * @param createdAt         when it was requested
+     * @param fallbackJobId     job of the fallback run, or {@code null}
+     * @param fallbackDueAt     when the fallback run is due, or {@code null}
+     * @param fallbackRunId     the planned fallback run, or {@code null}
      */
     public record RequestRow(UUID id, String namespace, DecisionKind kind, SubjectType subjectType, UUID subjectId,
                              UUID requestedByJobId, UUID runId, String reason, String options, String optionType,
                              Integer requiredApprovals, String responsibleGroup, String state, String decidedOption,
-                             String decidedBy, Instant decidedAt, String comment, Instant createdAt) {
+                             String decidedBy, Instant decidedAt, String comment, Instant createdAt,
+                             UUID fallbackJobId, Instant fallbackDueAt, UUID fallbackRunId) {
 
         /** {@code true} while nobody decided. */
         public boolean isOpen() {
@@ -85,10 +93,12 @@ public class DecisionStore {
     public void insert(Connection c, RequestRow request) throws SQLException {
         Sql.update(c, "INSERT INTO dtp_decision_request (id, namespace, kind, subject_type, subject_id,"
                 + " requested_by_job_id, run_id, reason, options, option_type, required_approvals, responsible_group,"
-                + " state, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)", request.id(),
+                + " state, created_at, fallback_job_id, fallback_due_at)"
+                + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, ?)", request.id(),
                 request.namespace(), request.kind(), request.subjectType(), request.subjectId(),
                 request.requestedByJobId(), request.runId(), request.reason(), request.options(),
-                request.optionType(), request.requiredApprovals(), request.responsibleGroup(), request.createdAt());
+                request.optionType(), request.requiredApprovals(), request.responsibleGroup(), request.createdAt(),
+                request.fallbackJobId(), request.fallbackDueAt());
     }
 
     /**
@@ -161,6 +171,36 @@ public class DecisionStore {
     }
 
     /**
+     * Open requests whose fallback run is due and not planned yet, the longest overdue first. Only requests whose
+     * fallback job is enabled.
+     *
+     * @param c         the connection
+     * @param namespace the namespace
+     * @param now       the DB time
+     * @param limit     at most this many
+     * @return the request ids
+     * @throws SQLException on DB errors
+     */
+    public List<UUID> dueFallbacks(Connection c, String namespace, Instant now, int limit) throws SQLException {
+        return Sql.query(c, "SELECT r.id FROM dtp_decision_request r" + DUE_FALLBACKS
+                + " ORDER BY r.fallback_due_at, r.id LIMIT ?", rs -> Sql.uuid(rs, "id"), now, namespace, limit);
+    }
+
+    /**
+     * Records the planned fallback run, only once.
+     *
+     * @param c     the connection
+     * @param id    the request
+     * @param runId the run
+     * @return {@code false} if it was decided or planned meanwhile
+     * @throws SQLException on DB errors
+     */
+    public boolean fallbackPlanned(Connection c, UUID id, UUID runId) throws SQLException {
+        return Sql.update(c, "UPDATE dtp_decision_request SET fallback_run_id = ? WHERE id = ? AND state = 'OPEN'"
+                + " AND fallback_run_id IS NULL", runId, id) == 1;
+    }
+
+    /**
      * Records a vote.
      *
      * @param c         the connection
@@ -194,6 +234,7 @@ public class DecisionStore {
                 rs.getString("reason"), rs.getString("options"), rs.getString("option_type"),
                 Sql.integer(rs, "required_approvals"), rs.getString("responsible_group"), rs.getString("state"),
                 rs.getString("decided_option"), rs.getString("decided_by"), Sql.instant(rs, "decided_at"),
-                rs.getString("decision_comment"), Sql.instant(rs, "created_at"));
+                rs.getString("decision_comment"), Sql.instant(rs, "created_at"), Sql.uuid(rs, "fallback_job_id"),
+                Sql.instant(rs, "fallback_due_at"), Sql.uuid(rs, "fallback_run_id"));
     }
 }

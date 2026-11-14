@@ -29,14 +29,21 @@ import java.util.UUID;
 
 import org.os890.dtp.api.ApprovalResult;
 import org.os890.dtp.api.DecisionOption;
+import org.os890.dtp.api.DecisionRequest;
 import org.os890.dtp.api.RunOutcome;
+import org.os890.dtp.api.event.DecisionFallbackDue;
+import org.os890.dtp.api.event.DecisionMade;
+import org.os890.dtp.api.event.DecisionRequested;
+import org.os890.dtp.api.event.VoteCast;
 import org.os890.dtp.core.DtpException;
 import org.os890.dtp.core.domain.BranchState;
 import org.os890.dtp.core.domain.BuiltInOption;
 import org.os890.dtp.core.domain.DecisionKind;
 import org.os890.dtp.core.domain.ItemEventType;
 import org.os890.dtp.core.domain.ItemState;
+import org.os890.dtp.core.domain.JobDefinition;
 import org.os890.dtp.core.domain.SubjectType;
+import org.os890.dtp.core.domain.TriggerType;
 import org.os890.dtp.core.jdbc.DecisionStore;
 import org.os890.dtp.core.jdbc.DecisionStore.RequestRow;
 import org.os890.dtp.core.jdbc.DecisionStore.VoteRow;
@@ -48,12 +55,16 @@ import org.os890.dtp.core.spi.Transactions;
  * Decision requests (DD-5): one mechanism for everything that waits for a person. A user picks an option
  * ({@code CHOICE}) or a quorum of distinct users approves ({@code APPROVAL}, DD-16). Requests assigned to a team can
  * only be seen and decided by its members (DD-24). A decided item goes back into the inbox of the step that requested
- * the decision, with the decision attached (DD-19). Requests never expire (D38).
+ * the decision, with the decision attached (DD-19). Requests never expire (D38), but the requesting job can name a
+ * fallback job: one run of it per request that stays open longer than the fallback delay, e.g. to remind people.
+ * Requests, votes, decisions and planned fallbacks are published as domain events after the commit.
  */
 public class Decisions {
 
     /** Group of the operators, responsible for technical failures and abandoned runs (DD-29). */
     public static final String OPERATORS = "dtp-operator";
+
+    private static final int FALLBACKS_PER_TICK = 100;
 
     private final EngineContext ctx;
     private final DecisionStore store = new DecisionStore();
@@ -250,6 +261,7 @@ public class Decisions {
             Instant now = ctx.clock().now(c);
             store.insertVote(c, id, new VoteRow(who.user(), vote.name(), comment, now));
             itemEvent(c, request, ItemEventType.VOTED, null, vote + " by " + who.user() + suffix(comment), now);
+            ctx.publishAfterCommit(new VoteCast(event(c, request), who.user(), vote.name(), comment));
             long approvals = votes.stream().filter(v -> Vote.APPROVE.name().equals(v.vote())).count()
                     + (vote == Vote.APPROVE ? 1 : 0);
             if (vote == Vote.REJECT) {
@@ -275,11 +287,52 @@ public class Decisions {
      */
     UUID request(Connection c, NewRequest r, Instant now) throws SQLException {
         UUID id = UUID.randomUUID();
-        store.insert(c, new RequestRow(id, ctx.namespace(), r.kind(), r.subjectType(), r.subjectId(),
+        JobDefinition job = ctx.catalog().byId(r.requestedByJobId());
+        RequestRow row = new RequestRow(id, ctx.namespace(), r.kind(), r.subjectType(), r.subjectId(),
                 r.requestedByJobId(), r.runId(), r.reason(), ctx.json().write(r.options()),
                 r.optionType() == null ? null : r.optionType().getName(), r.requiredApprovals(),
-                r.responsibleGroup(), null, null, null, null, null, now));
+                r.responsibleGroup(), "OPEN", null, null, null, null, now, job.fallbackJobId(),
+                job.hasDecisionFallback() ? now.plus(job.fallbackDelay()) : null, null);
+        store.insert(c, row);
+        ctx.publishAfterCommit(new DecisionRequested(event(c, row)));
         return id;
+    }
+
+    /**
+     * Plans the due fallback runs (housekeeping leader): one run of the fallback job per open request, with the
+     * request as typed parameters ({@link DecisionRequest}). The request stays open (D38). Each request in its own
+     * transaction.
+     *
+     * @param planner the run planner
+     * @return the number of planned runs
+     */
+    int planFallbacks(RunPlanner planner) {
+        List<UUID> due = ctx.tx().withConnection(c -> store.dueFallbacks(c, ctx.namespace(), ctx.clock().now(c),
+                FALLBACKS_PER_TICK));
+        int planned = 0;
+        for (UUID id : due) {
+            if (inTx(c -> planFallback(c, planner, id))) {
+                planned++;
+            }
+        }
+        return planned;
+    }
+
+    private boolean planFallback(Connection c, RunPlanner planner, UUID id) throws SQLException {
+        RequestRow request = request(c, id, true);
+        if (!request.isOpen() || request.fallbackRunId() != null) {
+            return false;
+        }
+        JobDefinition job = ctx.catalog().byId(request.fallbackJobId());
+        DecisionRequest view = event(c, request);
+        Instant now = ctx.clock().now(c);
+        RunPlanner.Planned run = planner.plan(c, job, new RunPlanner.Trigger(TriggerType.FALLBACK, "fallback:" + id,
+                "decision request " + id + " open since " + request.createdAt(), ctx.json().write(view), null), now);
+        if (run.runId() == null || !store.fallbackPlanned(c, id, run.runId())) {
+            return false;
+        }
+        ctx.publishAfterCommit(new DecisionFallbackDue(view, job.name(), run.runId()));
+        return true;
     }
 
     /**
@@ -360,6 +413,7 @@ public class Decisions {
             throw new DtpException("decision request " + request.id() + " was decided already");
         }
         String reason = option + " by " + user + suffix(comment);
+        ctx.publishAfterCommit(new DecisionMade(event(c, request), option, user, comment));
         if (request.subjectType() == SubjectType.RUN) {
             RunOutcome outcome = switch (BuiltInOption.valueOf(option)) {
                 case FAIL -> RunOutcome.FAILED;
@@ -444,6 +498,22 @@ public class Decisions {
                 businessKey, ctx.catalog().byId(row.requestedByJobId()).name(), row.reason(), optionViews(row),
                 row.requiredApprovals(), row.responsibleGroup(), row.state(), votes, row.decidedOption(),
                 row.decidedBy(), row.decidedAt(), row.comment(), row.createdAt());
+    }
+
+    private DecisionRequest event(Connection c, RequestRow row) throws SQLException {
+        String itemType = null;
+        String businessKey = null;
+        if (row.subjectType() == SubjectType.ITEM) {
+            ItemRow item = ctx.items().load(c, row.subjectId());
+            itemType = item.itemType();
+            businessKey = item.businessKey();
+        }
+        int approvals = (int) store.votes(c, row.id()).stream().filter(v -> Vote.APPROVE.name().equals(v.vote()))
+                                   .count();
+        return new DecisionRequest(row.id(), DecisionRequest.Kind.valueOf(row.kind().name()),
+                row.subjectType().name(), row.subjectId(), itemType, businessKey,
+                ctx.catalog().byId(row.requestedByJobId()).name(), row.reason(), row.requiredApprovals(), approvals,
+                row.responsibleGroup(), row.createdAt());
     }
 
     @SuppressWarnings("unchecked")

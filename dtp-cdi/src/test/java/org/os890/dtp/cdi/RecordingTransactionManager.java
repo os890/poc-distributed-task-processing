@@ -48,6 +48,7 @@ class RecordingTransactionManager implements TransactionManager {
         SimpleTransaction tx = current.get();
         log.add("commit " + tx.id);
         current.remove();
+        tx.synchronizations.forEach(s -> s.afterCompletion(Status.STATUS_COMMITTED));
     }
 
     @Override
@@ -55,6 +56,7 @@ class RecordingTransactionManager implements TransactionManager {
         SimpleTransaction tx = current.get();
         log.add("rollback " + tx.id);
         current.remove();
+        tx.synchronizations.forEach(s -> s.afterCompletion(Status.STATUS_ROLLEDBACK));
     }
 
     @Override
@@ -95,6 +97,7 @@ class RecordingTransactionManager implements TransactionManager {
     private static class SimpleTransaction implements Transaction {
 
         private final int id;
+        private final List<Synchronization> synchronizations = new ArrayList<>();
         private int status = Status.STATUS_ACTIVE;
 
         SimpleTransaction(int id) {
@@ -123,7 +126,7 @@ class RecordingTransactionManager implements TransactionManager {
 
         @Override
         public void registerSynchronization(Synchronization sync) {
-            throw new UnsupportedOperationException();
+            synchronizations.add(sync);
         }
 
         @Override

@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.UUID;
 
 import org.os890.dtp.api.RunOutcome;
+import org.os890.dtp.core.domain.ConcurrencyPolicy;
 import org.os890.dtp.core.domain.JobDefinition;
 import org.os890.dtp.core.domain.RunState;
 import org.os890.dtp.core.domain.TriggerType;
@@ -78,8 +79,11 @@ public class RunPlanner {
         List<RunState> open = runs.openRunStates(c, job.id());
         RunState state = RunState.PENDING;
         RunOutcome outcome = null;
+        // a fallback run belongs to one decision request: never skipped or coalesced, the job lease serializes them
+        ConcurrencyPolicy policy = trigger.type() == TriggerType.FALLBACK ? ConcurrencyPolicy.QUEUE_ALL
+                                                                          : job.concurrency();
         if (!open.isEmpty()) {
-            switch (job.concurrency()) {
+            switch (policy) {
                 case SKIP -> {
                     state = RunState.FINISHED;
                     outcome = RunOutcome.SKIPPED;
@@ -92,7 +96,7 @@ public class RunPlanner {
                 case QUEUE_ALL -> {
                     // another pending run
                 }
-                default -> throw new IllegalStateException("unknown policy " + job.concurrency());
+                default -> throw new IllegalStateException("unknown policy " + policy);
             }
         }
         String parameters = trigger.parameters() != null ? trigger.parameters() : job.defaultParameters();

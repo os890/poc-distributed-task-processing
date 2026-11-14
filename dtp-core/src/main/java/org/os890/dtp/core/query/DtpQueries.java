@@ -192,7 +192,11 @@ public class DtpQueries {
                     + " WHERE b.namespace = ? AND b.state = 'QUEUED' AND r.inbox_min_items IS NOT NULL"
                     + " AND (b.next_attempt_at IS NULL OR b.next_attempt_at <= CURRENT_TIMESTAMP)",
                     rs -> rs.getInt(1), namespace).orElse(0);
-            return open == 0 && due == 0 && branches == 0;
+            int fallbacks = Sql.queryOne(c, "SELECT COUNT(*) FROM dtp_decision_request d"
+                    + " JOIN dtp_job j ON j.id = d.fallback_job_id AND j.enabled = TRUE WHERE d.namespace = ?"
+                    + " AND d.state = 'OPEN' AND d.fallback_due_at <= CURRENT_TIMESTAMP AND d.fallback_run_id IS NULL",
+                    rs -> rs.getInt(1), namespace).orElse(0);
+            return open == 0 && due == 0 && branches == 0 && fallbacks == 0;
         });
     }
 }

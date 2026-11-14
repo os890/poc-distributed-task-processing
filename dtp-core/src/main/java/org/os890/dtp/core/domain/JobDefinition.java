@@ -40,16 +40,31 @@ import java.util.UUID;
  * @param maxItemVisits     loop limit per item for this job's inbox, or {@code null}
  * @param leaseDuration     lease duration of the job's runs, or {@code null} for the engine default
  * @param defaultParameters default run parameters as JSON, or {@code null}
+ * @param fallbackJobId     job of the fallback run of decision requests that stay open, or {@code null} (D38)
+ * @param fallbackDelay     how long a request stays open before its fallback run, or {@code null}
  * @param transitions       successors of the job
  */
 public record JobDefinition(UUID id, String namespace, String name, int revision, boolean enabled,
                             String handlerClass, boolean asap, String cronExpression, String cronZone,
                             boolean external, Integer inboxMinItems, ConcurrencyPolicy concurrency,
                             TakeoverPolicy takeover, int retryMax, Duration retryBackoff, Integer maxItemVisits,
-                            Duration leaseDuration, String defaultParameters, List<TransitionDefinition> transitions) {
+                            Duration leaseDuration, String defaultParameters, UUID fallbackJobId,
+                            Duration fallbackDelay, List<TransitionDefinition> transitions) {
 
     public JobDefinition {
         transitions = List.copyOf(transitions);
+        if ((fallbackJobId == null) != (fallbackDelay == null)) {
+            throw new IllegalArgumentException("job " + name + ": a decision fallback needs a job and a delay");
+        }
+    }
+
+    /**
+     * Whether the decision requests of this job get a fallback run.
+     *
+     * @return {@code true} with a fallback job
+     */
+    public boolean hasDecisionFallback() {
+        return fallbackJobId != null;
     }
 
     /**
@@ -61,6 +76,6 @@ public record JobDefinition(UUID id, String namespace, String name, int revision
     public JobDefinition withTransitions(List<TransitionDefinition> newTransitions) {
         return new JobDefinition(id, namespace, name, revision, enabled, handlerClass, asap, cronExpression,
                 cronZone, external, inboxMinItems, concurrency, takeover, retryMax, retryBackoff, maxItemVisits,
-                leaseDuration, defaultParameters, newTransitions);
+                leaseDuration, defaultParameters, fallbackJobId, fallbackDelay, newTransitions);
     }
 }

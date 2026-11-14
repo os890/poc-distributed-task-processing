@@ -18,7 +18,9 @@ package org.os890.dtp.cdi;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
+import java.util.TreeMap;
 import java.util.function.Consumer;
 
 import org.eclipse.microprofile.config.Config;
@@ -26,6 +28,9 @@ import org.os890.dtp.core.DtpConfig;
 
 /** Reads the {@code dtp.*} settings via MicroProfile Config. Durations: ISO-8601 ({@code PT1S}) or {@code 500ms}. */
 public class DtpSettings {
+
+    /** Prefix of the placeholders of the job definitions, e.g. {@code dtp.definitions.placeholders.reminder-after}. */
+    static final String PLACEHOLDERS = "dtp.definitions.placeholders.";
 
     private DtpSettings() {
     }
@@ -56,6 +61,13 @@ public class DtpSettings {
         string(config, "dtp.flows.export").map(v -> DtpConfig.FlowExport.valueOf(v.trim().toUpperCase(Locale.ROOT)))
                                           .ifPresent(builder::flowExport);
         string(config, "dtp.flows.export-path").map(Path::of).ifPresent(builder::flowExportPath);
+        Map<String, String> placeholders = new TreeMap<>();
+        for (String name : config.getPropertyNames()) {
+            if (name.startsWith(PLACEHOLDERS)) {
+                string(config, name).ifPresent(v -> placeholders.put(name.substring(PLACEHOLDERS.length()), v));
+            }
+        }
+        builder.definitionPlaceholders(placeholders);
         return builder.build();
     }
 

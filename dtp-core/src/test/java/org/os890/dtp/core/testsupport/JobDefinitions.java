@@ -67,6 +67,8 @@ public class JobDefinitions {
         private Integer maxItemVisits;
         private Duration leaseDuration;
         private String defaultParameters;
+        private Class<? extends ProcessStep> fallbackJob;
+        private Duration fallbackDelay;
 
         Definition(Class<? extends ProcessStep> step) {
             this.step = step;
@@ -123,6 +125,19 @@ public class JobDefinitions {
             return this;
         }
 
+        /**
+         * The fallback of decision requests that stay open (the fallback job has to be saved first).
+         *
+         * @param job   the fallback job
+         * @param delay the delay
+         * @return this definition
+         */
+        public Definition decisionFallback(Class<? extends ProcessStep> job, Duration delay) {
+            fallbackJob = job;
+            fallbackDelay = delay;
+            return this;
+        }
+
         public Definition on(RunOutcome outcome, Class<? extends ProcessStep> target) {
             transitions.add(new Object[] {outcome.name(), null, target});
             return this;
@@ -152,6 +167,11 @@ public class JobDefinitions {
                         id, step.getName(), asap, cron, external, inboxMinItems, concurrency, takeover, retryMax,
                         retryBackoff.toString(), maxItemVisits, leaseDuration == null ? null : leaseDuration.toString(),
                         defaultParameters);
+                if (fallbackJob != null) {
+                    Sql.update(c, "UPDATE dtp_job_revision SET fallback_delay = ?, fallback_job_id = (SELECT id"
+                            + " FROM dtp_job WHERE namespace = ? AND name = ?) WHERE job_id = ?",
+                            fallbackDelay.toString(), namespace, fallbackJob.getSimpleName(), id);
+                }
                 for (Object[] t : transitions) {
                     Sql.update(c, "INSERT INTO dtp_transition (id, source_job_id, source_revision, on_outcome,"
                             + " on_result_status, target_job_id) SELECT ?, ?, 1, ?, ?, id FROM dtp_job"
