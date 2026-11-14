@@ -23,8 +23,11 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
+import org.os890.dtp.core.domain.BuiltInOption;
 import org.os890.dtp.core.domain.CronExpression;
+import org.os890.dtp.core.domain.DecisionKind;
 import org.os890.dtp.core.domain.JobDefinition;
+import org.os890.dtp.core.domain.SubjectType;
 import org.os890.dtp.core.domain.TakeoverPolicy;
 import org.os890.dtp.core.domain.TriggerType;
 import org.os890.dtp.core.jdbc.LeaseStore.ExpiredLease;
@@ -42,11 +45,13 @@ public class Housekeeping {
 
     private final EngineContext ctx;
     private final RunPlanner planner;
+    private final Decisions decisions;
     private final Map<String, CronExpression> crons = new ConcurrentHashMap<>();
 
     public Housekeeping(EngineContext ctx, RunPlanner planner) {
         this.ctx = ctx;
         this.planner = planner;
+        this.decisions = new Decisions(ctx);
     }
 
     /** One housekeeping cycle. Each step runs in its own transaction, so one failure doesn't block the others. */
@@ -121,7 +126,13 @@ public class Housekeeping {
                 if (!ctx.leases().expire(c, lease, now)) {
                     return false;
                 }
-                ctx.runs().afterLeaseExpired(c, lease.runId(), rerun, now);
+                if (ctx.runs().afterLeaseExpired(c, lease.runId(), rerun, now) && !rerun) {
+                    // takeover policy ABANDON: an operator decides (DD-5)
+                    decisions.request(c, new Decisions.NewRequest(DecisionKind.CHOICE, SubjectType.RUN,
+                            lease.runId(), lease.jobId(), lease.runId(), "lease of node " + lease.owner()
+                            + " expired, takeover policy ABANDON", Decisions.builtIn(BuiltInOption.RUN), null, null,
+                            Decisions.OPERATORS), now);
+                }
                 return true;
             }));
             if (taken) {

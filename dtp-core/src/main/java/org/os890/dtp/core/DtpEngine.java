@@ -44,6 +44,7 @@ import org.os890.dtp.api.StopReason;
 import org.os890.dtp.api.TrackedItem;
 import org.os890.dtp.core.domain.FlowModel;
 import org.os890.dtp.core.engine.ClaimedRun;
+import org.os890.dtp.core.engine.Decisions;
 import org.os890.dtp.core.engine.EngineContext;
 import org.os890.dtp.core.engine.FlowAdmin;
 import org.os890.dtp.core.engine.FlowRegistrar;
@@ -108,6 +109,7 @@ public class DtpEngine {
     private FlowQueries flowQueries;
     private FlowRouting flowRouting;
     private FlowAdmin flowAdmin;
+    private Decisions decisions;
     private ScheduledExecutorService scheduler;
     private int idleRounds;
 
@@ -203,6 +205,7 @@ public class DtpEngine {
         flowRouting = new FlowRouting(ctx, routing, planner, flowNames);
         routing.attach(flowRouting);
         flowAdmin = new FlowAdmin(ctx);
+        decisions = routing.decisions();
         Set<String> capabilities = steps.keySet().stream().map(Class::getName).collect(Collectors.toSet());
         leader = new LeaderElector(ctx);
         housekeeping = new Housekeeping(ctx, planner);
@@ -307,6 +310,15 @@ public class DtpEngine {
      */
     public FlowAdmin flowAdmin() {
         return requireStarted(flowAdmin);
+    }
+
+    /**
+     * Decision requests and approvals: open requests per user, decide, vote.
+     *
+     * @return the decisions
+     */
+    public Decisions decisions() {
+        return requireStarted(decisions);
     }
 
     /**

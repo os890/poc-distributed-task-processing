@@ -32,7 +32,7 @@ import org.os890.dtp.core.domain.ItemState;
 public class ItemStore {
 
     private static final String COLUMNS = "id, namespace, item_type, ref_id, ref_version, business_key, lane,"
-            + " current_job_id, inbox_seq, state, arrival_reason, attempts, flow_version_id";
+            + " current_job_id, inbox_seq, state, arrival_reason, attempts, flow_version_id, decision_request_id";
 
     private final SqlDialect dialect;
 
@@ -56,10 +56,11 @@ public class ItemStore {
      * @param arrivalReason reason of the last routing
      * @param attempts      failed attempts in the current inbox
      * @param flowVersionId the flow version the item is pinned to, or {@code null}
+     * @param decisionId    the decision that brought the item back into its inbox, or {@code null}
      */
     public record ItemRow(UUID id, String namespace, String itemType, String refId, long refVersion,
                           String businessKey, String lane, UUID currentJobId, Long inboxSeq, ItemState state,
-                          String arrivalReason, int attempts, UUID flowVersionId) {
+                          String arrivalReason, int attempts, UUID flowVersionId, UUID decisionId) {
 
         /**
          * Same item, pinned to a flow version.
@@ -69,7 +70,7 @@ public class ItemStore {
          */
         public ItemRow pinnedTo(UUID versionId) {
             return new ItemRow(id, namespace, itemType, refId, refVersion, businessKey, lane, currentJobId, inboxSeq,
-                    state, arrivalReason, attempts, versionId);
+                    state, arrivalReason, attempts, versionId, decisionId);
         }
     }
 
@@ -198,8 +199,51 @@ public class ItemStore {
      */
     public void route(Connection c, UUID itemId, UUID jobId, String reason, Instant now) throws SQLException {
         Sql.update(c, "UPDATE dtp_item SET current_job_id = ?, inbox_seq = " + dialect.nextValue("dtp_inbox_seq")
-                + ", state = 'QUEUED', arrival_reason = ?, attempts = 0, next_attempt_at = NULL, updated_at = ?"
-                + " WHERE id = ?", jobId, reason, now, itemId);
+                + ", state = 'QUEUED', arrival_reason = ?, attempts = 0, next_attempt_at = NULL,"
+                + " decision_request_id = NULL, updated_at = ? WHERE id = ?", jobId, reason, now, itemId);
+    }
+
+    /**
+     * Re-queues an item after a decision (DD-19): at the end of the inbox of the requesting job, with the decision
+     * attached, without counting a visit.
+     *
+     * @param c         the connection
+     * @param itemId    the item
+     * @param jobId     the requesting job
+     * @param requestId the decision request
+     * @param reason    the arrival reason
+     * @param now       the DB time
+     * @throws SQLException on DB errors
+     */
+    public void requeueAfterDecision(Connection c, UUID itemId, UUID jobId, UUID requestId, String reason,
+                                     Instant now) throws SQLException {
+        route(c, itemId, jobId, reason, now);
+        Sql.update(c, "UPDATE dtp_item SET decision_request_id = ? WHERE id = ?", requestId, itemId);
+    }
+
+    /**
+     * Resets the visits of an item in a job's inbox (decision {@code RESET_VISITS}).
+     *
+     * @param c      the connection
+     * @param itemId the item
+     * @param jobId  the job
+     * @throws SQLException on DB errors
+     */
+    public void resetVisits(Connection c, UUID itemId, UUID jobId) throws SQLException {
+        Sql.update(c, "DELETE FROM dtp_item_visit WHERE item_id = ? AND job_id = ?", itemId, jobId);
+    }
+
+    /**
+     * An item by id.
+     *
+     * @param c      the connection
+     * @param itemId the item
+     * @return the item
+     * @throws SQLException on DB errors
+     */
+    public ItemRow load(Connection c, UUID itemId) throws SQLException {
+        return Sql.queryOne(c, "SELECT " + COLUMNS + " FROM dtp_item WHERE id = ?", ItemStore::map, itemId)
+                  .orElseThrow(() -> new SQLException("unknown item " + itemId));
     }
 
     /**
@@ -321,6 +365,6 @@ public class ItemStore {
                 rs.getString("ref_id"), rs.getLong("ref_version"), rs.getString("business_key"),
                 rs.getString("lane"), Sql.uuid(rs, "current_job_id"), inboxSeq,
                 ItemState.valueOf(rs.getString("state")), rs.getString("arrival_reason"), rs.getInt("attempts"),
-                Sql.uuid(rs, "flow_version_id"));
+                Sql.uuid(rs, "flow_version_id"), Sql.uuid(rs, "decision_request_id"));
     }
 }

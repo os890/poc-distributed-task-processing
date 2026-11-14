@@ -1,0 +1,455 @@
+/*
+ * Copyright 2026 os890
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.os890.dtp.core.engine;
+
+import java.sql.Connection;
+import java.sql.SQLException;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.Set;
+import java.util.UUID;
+
+import org.os890.dtp.api.ApprovalResult;
+import org.os890.dtp.api.DecisionOption;
+import org.os890.dtp.api.RunOutcome;
+import org.os890.dtp.core.DtpException;
+import org.os890.dtp.core.domain.BuiltInOption;
+import org.os890.dtp.core.domain.DecisionKind;
+import org.os890.dtp.core.domain.ItemEventType;
+import org.os890.dtp.core.domain.ItemState;
+import org.os890.dtp.core.domain.SubjectType;
+import org.os890.dtp.core.jdbc.DecisionStore;
+import org.os890.dtp.core.jdbc.DecisionStore.RequestRow;
+import org.os890.dtp.core.jdbc.DecisionStore.VoteRow;
+import org.os890.dtp.core.jdbc.ItemStore.ItemEvent;
+import org.os890.dtp.core.jdbc.ItemStore.ItemRow;
+import org.os890.dtp.core.spi.Transactions;
+
+/**
+ * Decision requests (DD-5): one mechanism for everything that waits for a person. A user picks an option
+ * ({@code CHOICE}) or a quorum of distinct users approves ({@code APPROVAL}, DD-16). Requests assigned to a team can
+ * only be seen and decided by its members (DD-24). A decided item goes back into the inbox of the step that requested
+ * the decision, with the decision attached (DD-19). Requests never expire (D38).
+ */
+public class Decisions {
+
+    /** Group of the operators, responsible for technical failures and abandoned runs (DD-29). */
+    public static final String OPERATORS = "dtp-operator";
+
+    private final EngineContext ctx;
+    private final DecisionStore store = new DecisionStore();
+
+    public Decisions(EngineContext ctx) {
+        this.ctx = ctx;
+    }
+
+    /** Votes of an approval. */
+    public enum Vote {
+        APPROVE, REJECT
+    }
+
+    /**
+     * The user who decides or votes. The caller authenticates the user (e.g. MP JWT) and checks the role.
+     *
+     * @param user   the user name
+     * @param groups the groups of the user
+     */
+    public record Decider(String user, Set<String> groups) {
+
+        public Decider {
+            Objects.requireNonNull(user, "user");
+            groups = Set.copyOf(groups);
+        }
+
+        /**
+         * A decider.
+         *
+         * @param user   the user name
+         * @param groups the groups
+         * @return the decider
+         */
+        public static Decider of(String user, String... groups) {
+            return new Decider(user, Set.of(groups));
+        }
+
+        boolean isMemberOf(String group) {
+            return group == null || groups.contains(group);
+        }
+    }
+
+    /**
+     * An option of a request.
+     *
+     * @param name    the name
+     * @param label   the label
+     * @param builtIn {@code true} if the framework applies it, {@code false} for an option of the requesting step
+     */
+    public record OptionView(String name, String label, boolean builtIn) {
+    }
+
+    /**
+     * A vote of an approval.
+     *
+     * @param voter   the user
+     * @param vote    APPROVE or REJECT
+     * @param comment the comment
+     * @param votedAt when
+     */
+    public record VoteView(String voter, String vote, String comment, Instant votedAt) {
+    }
+
+    /**
+     * A decision request.
+     *
+     * @param id                the id
+     * @param kind              CHOICE or APPROVAL
+     * @param subjectType       ITEM or RUN
+     * @param subjectId         the item or run
+     * @param itemType          the item type (items only)
+     * @param businessKey       the business key (items only)
+     * @param job               the job that requested the decision
+     * @param reason            why
+     * @param options           the options
+     * @param requiredApprovals the quorum (approvals only)
+     * @param responsibleGroup  the responsible team, or {@code null}
+     * @param state             OPEN or DECIDED
+     * @param votes             the votes (approvals only)
+     * @param decidedOption     the decision
+     * @param decidedBy         who decided
+     * @param decidedAt         when
+     * @param comment           the comment of the decision
+     * @param createdAt         when it was requested
+     */
+    public record DecisionView(UUID id, String kind, String subjectType, UUID subjectId, String itemType,
+                               String businessKey, String job, String reason, List<OptionView> options,
+                               Integer requiredApprovals, String responsibleGroup, String state, List<VoteView> votes,
+                               String decidedOption, String decidedBy, Instant decidedAt, String comment,
+                               Instant createdAt) {
+    }
+
+    /**
+     * A new request.
+     *
+     * @param kind              CHOICE or APPROVAL
+     * @param subjectType       ITEM or RUN
+     * @param subjectId         the item or run
+     * @param requestedByJobId  the job the decided item goes back to
+     * @param runId             the requesting run, or {@code null}
+     * @param reason            why
+     * @param options           the options
+     * @param optionType        the enum of custom options, or {@code null}
+     * @param requiredApprovals the quorum, or {@code null}
+     * @param responsibleGroup  the team, or {@code null}
+     */
+    record NewRequest(DecisionKind kind, SubjectType subjectType, UUID subjectId, UUID requestedByJobId, UUID runId,
+                      String reason, List<OptionView> options, Class<?> optionType, Integer requiredApprovals,
+                      String responsibleGroup) {
+    }
+
+    /**
+     * The open requests the user may decide, oldest first.
+     *
+     * @param who the user
+     * @return the requests
+     */
+    public List<DecisionView> open(Decider who) {
+        return ctx.tx().withConnection(c -> {
+            List<DecisionView> views = new ArrayList<>();
+            for (RequestRow row : store.open(c, ctx.namespace())) {
+                if (who.isMemberOf(row.responsibleGroup())) {
+                    views.add(view(c, row));
+                }
+            }
+            return views;
+        });
+    }
+
+    /**
+     * A request.
+     *
+     * @param id the request
+     * @return the request
+     */
+    public DecisionView get(UUID id) {
+        return ctx.tx().withConnection(c -> view(c, request(c, id, false)));
+    }
+
+    /**
+     * The requests of an item or run, newest first.
+     *
+     * @param subjectId the item or run
+     * @return the requests
+     */
+    public List<DecisionView> ofSubject(UUID subjectId) {
+        return ctx.tx().withConnection(c -> {
+            List<DecisionView> views = new ArrayList<>();
+            for (RequestRow row : store.ofSubject(c, subjectId)) {
+                views.add(view(c, row));
+            }
+            return views;
+        });
+    }
+
+    /**
+     * Decides a {@code CHOICE} request and applies the decision in the same transaction.
+     *
+     * @param id      the request
+     * @param option  the chosen option
+     * @param who     the user
+     * @param comment the comment, or {@code null}
+     */
+    public void decide(UUID id, String option, Decider who, String comment) {
+        inTx(c -> {
+            RequestRow request = request(c, id, true);
+            check(request, who, DecisionKind.CHOICE);
+            if (optionViews(request).stream().noneMatch(o -> o.name().equals(option))) {
+                throw new DtpException("decision request " + id + " has no option " + option);
+            }
+            decideAndApply(c, request, option, who.user(), comment);
+            return null;
+        });
+    }
+
+    /**
+     * Votes on an {@code APPROVAL} request. One vote per user; one rejection rejects, the quorum of distinct approvals
+     * approves (DD-16).
+     *
+     * @param id      the request
+     * @param vote    the vote
+     * @param who     the user
+     * @param comment the comment, or {@code null}
+     * @return {@code true} if this vote decided the request
+     */
+    public boolean vote(UUID id, Vote vote, Decider who, String comment) {
+        return inTx(c -> {
+            RequestRow request = request(c, id, true);
+            check(request, who, DecisionKind.APPROVAL);
+            List<VoteRow> votes = store.votes(c, id);
+            if (votes.stream().anyMatch(v -> v.voter().equals(who.user()))) {
+                throw new DtpException(who.user() + " voted already on decision request " + id);
+            }
+            Instant now = ctx.clock().now(c);
+            store.insertVote(c, id, new VoteRow(who.user(), vote.name(), comment, now));
+            itemEvent(c, request, ItemEventType.VOTED, null, vote + " by " + who.user() + suffix(comment), now);
+            long approvals = votes.stream().filter(v -> Vote.APPROVE.name().equals(v.vote())).count()
+                    + (vote == Vote.APPROVE ? 1 : 0);
+            if (vote == Vote.REJECT) {
+                decideAndApply(c, request, BuiltInOption.REJECTED.name(), who.user(), comment);
+                return true;
+            }
+            if (approvals >= request.requiredApprovals()) {
+                decideAndApply(c, request, BuiltInOption.APPROVED.name(), who.user(), comment);
+                return true;
+            }
+            return false;
+        });
+    }
+
+    /**
+     * Inserts a request in the caller's transaction.
+     *
+     * @param c   the connection
+     * @param r   the request
+     * @param now the DB time
+     * @return the request id
+     * @throws SQLException on DB errors
+     */
+    UUID request(Connection c, NewRequest r, Instant now) throws SQLException {
+        UUID id = UUID.randomUUID();
+        store.insert(c, new RequestRow(id, ctx.namespace(), r.kind(), r.subjectType(), r.subjectId(),
+                r.requestedByJobId(), r.runId(), r.reason(), ctx.json().write(r.options()),
+                r.optionType() == null ? null : r.optionType().getName(), r.requiredApprovals(),
+                r.responsibleGroup(), null, null, null, null, null, now));
+        return id;
+    }
+
+    /**
+     * Options of a custom option enum, plus {@code DISCARD} unless the enum has its own.
+     *
+     * @param type the enum
+     * @return the options
+     */
+    static List<OptionView> optionsOf(Class<? extends DecisionOption> type) {
+        DecisionOption[] constants = type.getEnumConstants();
+        if (constants == null || constants.length == 0) {
+            throw new IllegalArgumentException(type.getName() + " has to be an enum with at least one constant");
+        }
+        List<OptionView> options = new ArrayList<>();
+        Arrays.stream(constants).forEach(o -> options.add(new OptionView(o.name(), o.label(), false)));
+        if (options.stream().noneMatch(o -> o.name().equals(BuiltInOption.DISCARD.name()))) {
+            options.add(builtIn(BuiltInOption.DISCARD));
+        }
+        return options;
+    }
+
+    /**
+     * Built-in options.
+     *
+     * @param options the options
+     * @return the views
+     */
+    static List<OptionView> builtIn(List<BuiltInOption> options) {
+        return options.stream().map(Decisions::builtIn).toList();
+    }
+
+    /**
+     * The custom option of the decision that brought an item back.
+     *
+     * @param requestId the request, or {@code null}
+     * @param type      the option enum
+     * @param <O>       the option type
+     * @return the option, empty if the request had another option type
+     */
+    <O extends Enum<O> & DecisionOption> Optional<O> decisionOf(UUID requestId, Class<O> type) {
+        if (requestId == null) {
+            return Optional.empty();
+        }
+        RequestRow request = ctx.tx().withConnection(c -> request(c, requestId, false));
+        if (!type.getName().equals(request.optionType()) || request.decidedOption() == null) {
+            return Optional.empty();
+        }
+        return Arrays.stream(type.getEnumConstants()).filter(o -> o.name().equals(request.decidedOption()))
+                     .findFirst();
+    }
+
+    /**
+     * The approval that brought an item back.
+     *
+     * @param requestId the request, or {@code null}
+     * @return the result, empty if it wasn't an approval
+     */
+    Optional<ApprovalResult> approvalOf(UUID requestId) {
+        if (requestId == null) {
+            return Optional.empty();
+        }
+        return ctx.tx().withConnection(c -> {
+            RequestRow request = request(c, requestId, false);
+            if (request.kind() != DecisionKind.APPROVAL || request.decidedOption() == null) {
+                return Optional.empty();
+            }
+            List<String> approvers = store.votes(c, requestId).stream()
+                    .filter(v -> Vote.APPROVE.name().equals(v.vote())).map(VoteRow::voter).toList();
+            return Optional.of(new ApprovalResult(BuiltInOption.APPROVED.name().equals(request.decidedOption()),
+                    approvers, request.decidedBy(), request.comment()));
+        });
+    }
+
+    private void decideAndApply(Connection c, RequestRow request, String option, String user, String comment)
+            throws SQLException {
+        Instant now = ctx.clock().now(c);
+        if (!store.decide(c, request.id(), option, user, comment, now)) {
+            throw new DtpException("decision request " + request.id() + " was decided already");
+        }
+        String reason = option + " by " + user + suffix(comment);
+        if (request.subjectType() == SubjectType.RUN) {
+            RunOutcome outcome = switch (BuiltInOption.valueOf(option)) {
+                case FAIL -> RunOutcome.FAILED;
+                case SKIP -> RunOutcome.SKIPPED;
+                default -> null;
+            };
+            if (!ctx.runs().decided(c, request.subjectId(), outcome, now)) {
+                throw new DtpException("run " + request.subjectId() + " doesn't wait for a decision");
+            }
+            return;
+        }
+        ItemRow item = ctx.items().load(c, request.subjectId());
+        if (item.state() != ItemState.WAITING_FOR_DECISION) {
+            throw new DtpException("item " + item.businessKey() + " doesn't wait for a decision");
+        }
+        itemEvent(c, request, ItemEventType.DECIDED, request.requestedByJobId(), reason, now);
+        boolean builtIn = optionViews(request).stream().anyMatch(o -> o.name().equals(option) && o.builtIn());
+        if (builtIn && BuiltInOption.DISCARD.name().equals(option)) {
+            ctx.items().setState(c, item.id(), ItemState.DISCARDED, item.attempts(), now);
+            itemEvent(c, request, ItemEventType.DISCARDED, null, reason, now);
+            return;
+        }
+        if (builtIn && BuiltInOption.RESET_VISITS.name().equals(option)) {
+            ctx.items().resetVisits(c, item.id(), request.requestedByJobId());
+        }
+        ctx.items().requeueAfterDecision(c, item.id(), request.requestedByJobId(), request.id(), reason, now);
+    }
+
+    private void itemEvent(Connection c, RequestRow request, ItemEventType type, UUID toJob, String reason,
+                           Instant now) throws SQLException {
+        if (request.subjectType() == SubjectType.ITEM) {
+            ctx.items().append(c, new ItemEvent(request.subjectId(), ctx.namespace(), type,
+                    request.requestedByJobId(), toJob, null, null, ctx.nodeId(), reason, null, null, null), now);
+        }
+    }
+
+    private static void check(RequestRow request, Decider who, DecisionKind kind) {
+        if (request.kind() != kind) {
+            throw new DtpException("decision request " + request.id() + " is an " + request.kind()
+                    + (kind == DecisionKind.CHOICE ? ", vote instead" : ", decide instead"));
+        }
+        if (!request.isOpen()) {
+            throw new DtpException("decision request " + request.id() + " was decided already");
+        }
+        if (!who.isMemberOf(request.responsibleGroup())) {
+            throw new DtpException("decision request " + request.id() + " is assigned to "
+                    + request.responsibleGroup() + ", " + who.user() + " isn't a member");
+        }
+    }
+
+    private RequestRow request(Connection c, UUID id, boolean lock) throws SQLException {
+        Optional<RequestRow> row = lock ? store.lock(c, id) : store.load(c, id);
+        return row.orElseThrow(() -> new IllegalArgumentException("unknown decision request " + id));
+    }
+
+    private DecisionView view(Connection c, RequestRow row) throws SQLException {
+        String itemType = null;
+        String businessKey = null;
+        if (row.subjectType() == SubjectType.ITEM) {
+            ItemRow item = ctx.items().load(c, row.subjectId());
+            itemType = item.itemType();
+            businessKey = item.businessKey();
+        }
+        List<VoteView> votes = store.votes(c, row.id()).stream()
+                .map(v -> new VoteView(v.voter(), v.vote(), v.comment(), v.votedAt())).toList();
+        return new DecisionView(row.id(), row.kind().name(), row.subjectType().name(), row.subjectId(), itemType,
+                businessKey, ctx.catalog().byId(row.requestedByJobId()).name(), row.reason(), optionViews(row),
+                row.requiredApprovals(), row.responsibleGroup(), row.state(), votes, row.decidedOption(),
+                row.decidedBy(), row.decidedAt(), row.comment(), row.createdAt());
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<OptionView> optionViews(RequestRow row) {
+        List<Map<String, Object>> raw = ctx.json().read(row.options(), List.class);
+        List<OptionView> options = new ArrayList<>();
+        for (Map<String, Object> option : raw) {
+            options.add(new OptionView(String.valueOf(option.get("name")), String.valueOf(option.get("label")),
+                    Boolean.TRUE.equals(option.get("builtIn"))));
+        }
+        return options;
+    }
+
+    private static OptionView builtIn(BuiltInOption option) {
+        return new OptionView(option.name(), option.label(), true);
+    }
+
+    private static String suffix(String comment) {
+        return comment == null || comment.isBlank() ? "" : ": " + comment;
+    }
+
+    private <T> T inTx(Transactions.ConnectionWork<T> work) {
+        return ctx.tx().required(() -> ctx.tx().withConnection(work));
+    }
+}

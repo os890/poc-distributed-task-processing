@@ -298,6 +298,25 @@ public class RunStore {
     }
 
     /**
+     * Applies the decision about an abandoned run: planned again ({@code PENDING}) or finished with an outcome.
+     *
+     * @param c       the connection
+     * @param runId   the run
+     * @param outcome the outcome, or {@code null} to plan the run again
+     * @param now     the DB time
+     * @return {@code false} if the run doesn't wait for a decision
+     * @throws SQLException on DB errors
+     */
+    public boolean decided(Connection c, UUID runId, RunOutcome outcome, Instant now) throws SQLException {
+        if (outcome == null) {
+            return Sql.update(c, "UPDATE dtp_run SET state = 'PENDING' WHERE id = ? AND state = 'WAITING_FOR_DECISION'",
+                    runId) == 1;
+        }
+        return Sql.update(c, "UPDATE dtp_run SET state = 'FINISHED', outcome = ?, finished_at = ? WHERE id = ?"
+                + " AND state = 'WAITING_FOR_DECISION'", outcome, now, runId) == 1;
+    }
+
+    /**
      * Stop requests of runs (e.g. a cancel via the API), by run id.
      *
      * @param c      the connection

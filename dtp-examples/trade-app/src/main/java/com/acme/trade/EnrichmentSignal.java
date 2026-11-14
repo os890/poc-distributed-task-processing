@@ -19,5 +19,5 @@ import org.os890.dtp.api.Signal;
 
 /** Signals of the {@link TradeEnrichment}. */
 public enum EnrichmentSignal implements Signal {
-    ENRICHED
+    ENRICHED, REJECTED
 }

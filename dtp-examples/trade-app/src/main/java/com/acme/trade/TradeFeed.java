@@ -45,6 +45,7 @@ public class TradeFeed {
         for (long n = offset + 1; n <= offset + count; n++) {
             String isin = n % 4 == 0 ? null : String.format("AT%010d", n);
             Trade trade = new Trade("T-" + businessDate + "-" + n, isin, businessDate);
+            trade.setQuantity(n % 10 == 0 ? 5_000_000 : 1_000 * n);
             em.persist(trade);
             trades.add(trade);
         }

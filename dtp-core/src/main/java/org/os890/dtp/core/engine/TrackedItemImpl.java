@@ -16,14 +16,21 @@
 package org.os890.dtp.core.engine;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
+import org.os890.dtp.api.Approval;
+import org.os890.dtp.api.ApprovalResult;
+import org.os890.dtp.api.DecisionOption;
 import org.os890.dtp.api.ItemRef;
 import org.os890.dtp.api.ItemType;
 import org.os890.dtp.api.ProcessStep;
+import org.os890.dtp.api.Responsibility;
 import org.os890.dtp.api.Signal;
 import org.os890.dtp.api.TrackedItem;
+import org.os890.dtp.core.domain.BuiltInOption;
+import org.os890.dtp.core.domain.DecisionKind;
 import org.os890.dtp.core.domain.FailureKind;
 import org.os890.dtp.core.domain.JobDefinition;
 import org.os890.dtp.core.jdbc.ItemStore.ItemRow;
@@ -127,6 +134,45 @@ public class TrackedItemImpl<E, ID> implements TrackedItem<E, ID> {
     public void fail(String reason) {
         markHandled();
         routing.fail(row, currentJob(), FailureKind.BUSINESS, reason, null, run);
+    }
+
+    @Override
+    public void escalate(String reason) {
+        markHandled();
+        routing.requestDecision(row, DecisionKind.CHOICE, Decisions.builtIn(BuiltInOption.ITEM), null, null, null,
+                Objects.requireNonNull(reason, "reason"), run);
+    }
+
+    @Override
+    public <O extends Enum<O> & DecisionOption> void requestDecision(String reason, Class<O> options) {
+        requestDecision(reason, options, null);
+    }
+
+    @Override
+    public <O extends Enum<O> & DecisionOption> void requestDecision(String reason, Class<O> options,
+                                                                     Responsibility team) {
+        markHandled();
+        routing.requestDecision(row, DecisionKind.CHOICE, Decisions.optionsOf(options), options, null,
+                team == null ? null : team.group(), Objects.requireNonNull(reason, "reason"), run);
+    }
+
+    @Override
+    public void requestApproval(Approval approval, String reason) {
+        markHandled();
+        routing.requestDecision(row, DecisionKind.APPROVAL, Decisions.builtIn(List.of(BuiltInOption.APPROVED,
+                BuiltInOption.REJECTED)), null, approval.requiredApprovals(),
+                approval.team() == null ? null : approval.team().group(), Objects.requireNonNull(reason, "reason"),
+                run);
+    }
+
+    @Override
+    public <O extends Enum<O> & DecisionOption> Optional<O> decision(Class<O> options) {
+        return routing.decisions().decisionOf(row.decisionId(), options);
+    }
+
+    @Override
+    public Optional<ApprovalResult> approval() {
+        return routing.decisions().approvalOf(row.decisionId());
     }
 
     @Override

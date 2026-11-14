@@ -45,6 +45,8 @@ public class Trade {
 
     private BigDecimal price;
 
+    private long quantity;
+
     protected Trade() {
     }
 
@@ -77,6 +79,14 @@ public class Trade {
 
     public LocalDate getBusinessDate() {
         return businessDate;
+    }
+
+    public long getQuantity() {
+        return quantity;
+    }
+
+    public void setQuantity(long quantity) {
+        this.quantity = quantity;
     }
 
     public BigDecimal getPrice() {

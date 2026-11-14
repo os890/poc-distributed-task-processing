@@ -36,6 +36,7 @@ import org.os890.dtp.api.Items;
 import org.os890.dtp.api.JobEngine;
 import org.os890.dtp.api.ProcessStep;
 import org.os890.dtp.core.DtpEngine;
+import org.os890.dtp.core.engine.Decisions;
 import org.os890.dtp.core.engine.FlowAdmin;
 import org.os890.dtp.core.jdbc.JdbcTransactions;
 import org.os890.dtp.core.query.DtpQueries;
@@ -141,5 +142,10 @@ public class DtpBootstrap {
     @Produces
     FlowAdmin flowAdmin() {
         return engine().flowAdmin();
+    }
+
+    @Produces
+    Decisions decisions() {
+        return engine().decisions();
     }
 }

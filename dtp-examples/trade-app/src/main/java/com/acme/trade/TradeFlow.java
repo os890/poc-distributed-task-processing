@@ -38,6 +38,7 @@ public class TradeFlow implements FlowDefinition {
                 .on(ValidationSignal.VALID).to(TradeEnrichment.class)
                 .on(ValidationSignal.MISSING_ISIN).back(TradeImport.class);
         flow.step(TradeEnrichment.class)
-                .on(EnrichmentSignal.ENRICHED).complete();
+                .on(EnrichmentSignal.ENRICHED).complete()
+                .on(EnrichmentSignal.REJECTED).discard();
     }
 }

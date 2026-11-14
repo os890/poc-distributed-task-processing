@@ -57,7 +57,7 @@ public class ItemsImpl implements Items {
         ItemRow row = ctx.tx().required(() -> ctx.tx().withConnection(c -> {
             ItemRow inserted = new ItemRow(UUID.randomUUID(), ctx.namespace(), ref.type().name(),
                     IdCodec.encode(ref.id()), ref.optionalVersion().orElse(0L), businessKey,
-                    lane == null ? null : lane.name(), null, null, ItemState.QUEUED, null, 0, null);
+                    lane == null ? null : lane.name(), null, null, ItemState.QUEUED, null, 0, null, null);
             ctx.items().insert(c, inserted, lane == null ? 0 : lane.priority(),
                     current != null ? current.now() : ctx.clock().now(c));
             routing.tracked(inserted, current);

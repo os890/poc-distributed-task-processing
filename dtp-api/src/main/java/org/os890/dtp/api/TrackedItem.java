@@ -107,6 +107,59 @@ public interface TrackedItem<E, ID> {
      */
     void fail(String reason);
 
+    /**
+     * Hands the item over to a person (DD-5): it waits in state {@code WAITING_FOR_DECISION} until a user decides
+     * {@code RETRY} (back into this step's inbox), {@code RESET_VISITS} or {@code DISCARD}.
+     *
+     * @param reason the reason shown to the user
+     */
+    void escalate(String reason);
+
+    /**
+     * Asks a user to choose one of the options (plus {@code DISCARD}). The item comes back into this step's inbox,
+     * which reads the choice with {@link #decision(Class)} (DD-19).
+     *
+     * @param reason  the reason shown to the user
+     * @param options the options, an enum
+     * @param <O>     the option type
+     */
+    <O extends Enum<O> & DecisionOption> void requestDecision(String reason, Class<O> options);
+
+    /**
+     * Same as {@link #requestDecision(String, Class)}, for the members of a team only (DD-24).
+     *
+     * @param reason  the reason shown to the user
+     * @param options the options, an enum
+     * @param team    the responsible team
+     * @param <O>     the option type
+     */
+    <O extends Enum<O> & DecisionOption> void requestDecision(String reason, Class<O> options, Responsibility team);
+
+    /**
+     * Asks for an approval (DD-16). The item comes back into this step's inbox once the quorum is reached or a user
+     * rejected, the step reads the result with {@link #approval()}.
+     *
+     * @param approval the quorum and the team
+     * @param reason   the reason shown to the users
+     */
+    void requestApproval(Approval approval, String reason);
+
+    /**
+     * The decision that brought the item back into this inbox.
+     *
+     * @param options the option type of the request
+     * @param <O>     the option type
+     * @return the chosen option, empty if the item didn't come back from a decision of this type
+     */
+    <O extends Enum<O> & DecisionOption> Optional<O> decision(Class<O> options);
+
+    /**
+     * The approval that brought the item back into this inbox.
+     *
+     * @return the result, empty if the item didn't come back from an approval
+     */
+    Optional<ApprovalResult> approval();
+
     /** Completes the item's journey. */
     void complete();
 

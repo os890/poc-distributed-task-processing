@@ -24,15 +24,19 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
 import org.os890.dtp.api.Signal;
+import org.os890.dtp.core.domain.BuiltInOption;
+import org.os890.dtp.core.domain.DecisionKind;
 import org.os890.dtp.core.domain.FailureKind;
 import org.os890.dtp.core.domain.ItemEventType;
 import org.os890.dtp.core.domain.ItemState;
 import org.os890.dtp.core.domain.JobDefinition;
+import org.os890.dtp.core.domain.SubjectType;
 import org.os890.dtp.core.jdbc.ItemStore;
 import org.os890.dtp.core.jdbc.ItemStore.ItemEvent;
 import org.os890.dtp.core.jdbc.ItemStore.ItemRow;
@@ -46,11 +50,18 @@ public class ItemRouting {
     private static final int STACK_FRAMES_FOR_HASH = 5;
 
     private final EngineContext ctx;
+    private final Decisions decisions;
 
     private FlowRouting flows;
 
     public ItemRouting(EngineContext ctx) {
         this.ctx = ctx;
+        this.decisions = new Decisions(ctx);
+    }
+
+    /** The decision requests. */
+    public Decisions decisions() {
+        return decisions;
     }
 
     /**
@@ -94,9 +105,13 @@ public class ItemRouting {
             items.append(c, event(item, back ? ItemEventType.ROUTED_BACK : ItemEventType.ROUTED, target.id(), reason,
                     run), now);
             if (target.maxItemVisits() != null && visits > target.maxItemVisits()) {
+                String why = "visit " + visits + " of " + target.name() + " exceeds max_item_visits "
+                        + target.maxItemVisits();
                 items.setState(c, item.id(), ItemState.WAITING_FOR_DECISION, 0, now);
-                items.append(c, event(item, ItemEventType.LOOP_LIMIT_EXCEEDED, target.id(), "visit " + visits
-                        + " of " + target.name() + " exceeds max_item_visits " + target.maxItemVisits(), run), now);
+                items.append(c, event(item, ItemEventType.LOOP_LIMIT_EXCEEDED, target.id(), why, run), now);
+                decisions.request(c, new Decisions.NewRequest(DecisionKind.CHOICE, SubjectType.ITEM, item.id(),
+                        target.id(), runId(run), why, Decisions.builtIn(BuiltInOption.ITEM_LOOP), null, null, null),
+                        now);
             }
         });
     }
@@ -168,10 +183,40 @@ public class ItemRouting {
                 items.append(c, event(item, ItemEventType.RETRY_SCHEDULED, null, "retry " + attempts + " of "
                         + job.retryMax() + " at " + next, run), now);
             } else {
+                String why = "retries exhausted (" + job.retryMax() + ")" + (reason == null ? "" : ": " + reason);
                 items.setState(c, item.id(), ItemState.WAITING_FOR_DECISION, attempts, now);
-                items.append(c, event(item, ItemEventType.ESCALATED, null, "retries exhausted ("
-                        + job.retryMax() + ")", run), now);
+                items.append(c, event(item, ItemEventType.ESCALATED, null, why, run), now);
+                // technical failures go to operations, business failures to the business (DD-29)
+                decisions.request(c, new Decisions.NewRequest(DecisionKind.CHOICE, SubjectType.ITEM, item.id(),
+                        job.id(), runId(run), why, Decisions.builtIn(BuiltInOption.ITEM), null, null,
+                        kind == FailureKind.TECHNICAL ? Decisions.OPERATORS : null), now);
             }
+        });
+    }
+
+    /**
+     * Hands an item over to a person: it waits for a decision, the result comes back to the requesting job.
+     *
+     * @param item       the item
+     * @param kind       CHOICE or APPROVAL
+     * @param options    the options
+     * @param optionType the enum of custom options, or {@code null}
+     * @param quorum     the quorum of an approval, or {@code null}
+     * @param team       the responsible team, or {@code null}
+     * @param reason     the reason
+     * @param run        the current run, or {@code null}
+     */
+    public void requestDecision(ItemRow item, DecisionKind kind, List<Decisions.OptionView> options,
+                                Class<?> optionType, Integer quorum, String team, String reason, RunContext run) {
+        UUID requestingJob = item.currentJobId() != null ? item.currentJobId() : run != null ? run.job().id() : null;
+        if (requestingJob == null) {
+            throw new IllegalStateException("item " + item.businessKey() + " is in no step, route it first");
+        }
+        inTx(run, (c, now) -> {
+            ctx.items().setState(c, item.id(), ItemState.WAITING_FOR_DECISION, item.attempts(), now);
+            ctx.items().append(c, event(item, ItemEventType.ESCALATED, null, reason, run), now);
+            decisions.request(c, new Decisions.NewRequest(kind, SubjectType.ITEM, item.id(), requestingJob,
+                    runId(run), reason, options, optionType, quorum, team), now);
         });
     }
 
