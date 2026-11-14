@@ -83,7 +83,8 @@ public class InboxImpl<E, ID> implements Inbox<E, ID> {
     }
 
     private boolean nextBatch(int batchSize, AtomicLong cursor, Consumer<List<TrackedItem<E, ID>>> batch) {
-        return run.unitOfWork(true, () -> {
+        int[] handed = {0};
+        boolean found = run.unitOfWork(true, () -> {
             EngineContext ctx = run.engine();
             InboxQuery query = new InboxQuery(ctx.namespace(), run.claimed().jobId(), type.name(), cursor.get(),
                     includeDeferred, false, batchSize);
@@ -96,9 +97,12 @@ public class InboxImpl<E, ID> implements Inbox<E, ID> {
             for (InboxEntry entry : entries) {
                 handles.add(new TrackedItemImpl<>(ctx, routing, entry, type, run));
             }
+            handed[0] = handles.size();
             batch.accept(handles);
             return true;
         });
+        run.countItems(handed[0]);
+        return found;
     }
 
     private static void await(Future<?> future) {

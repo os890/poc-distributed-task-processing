@@ -69,10 +69,35 @@ public class DtpQueries {
      * @param startedAt    start of the first attempt
      * @param finishedAt   end time
      * @param info         custom run info as JSON
+     * @param stopReason   why the run stopped early (e.g. {@code SLOT_END}, {@code LIMIT_REACHED}), or {@code null}
      */
     public record RunView(UUID id, String job, String state, String outcome, String resultStatus, String triggerType,
                           int attempt, String node, Instant createdAt, Instant startedAt, Instant finishedAt,
-                          String info) {
+                          String info, String stopReason) {
+    }
+
+    /**
+     * A work package.
+     *
+     * @param id            the package
+     * @param job           the job that processes it
+     * @param seq           its number
+     * @param groupKey      the group key
+     * @param itemType      the type of its items
+     * @param state         PENDING, DONE, WAITING_FOR_DECISION or DISCARDED
+     * @param itemCount     number of items
+     * @param attempts      failed attempts
+     * @param lastError     reason of the last failure
+     * @param nextAttemptAt next attempt after a failure
+     * @param createdBy     the run that created it
+     * @param processedBy   the run that processed it last
+     * @param info          custom information as JSON, e.g. a file name
+     * @param createdAt     creation time
+     * @param updatedAt     last change
+     */
+    public record PackageView(UUID id, String job, long seq, String groupKey, String itemType, String state,
+                              int itemCount, int attempts, String lastError, Instant nextAttemptAt, UUID createdBy,
+                              UUID processedBy, String info, Instant createdAt, Instant updatedAt) {
     }
 
     /**
@@ -126,14 +151,34 @@ public class DtpQueries {
      */
     public List<RunView> runs(int limit) {
         return tx.withConnection(c -> Sql.query(c, "SELECT r.id, j.name AS job, r.state, r.outcome, r.result_status,"
-                + " r.trigger_type, r.attempt, n.name AS node, r.created_at, r.started_at, r.finished_at, r.info"
+                + " r.trigger_type, r.attempt, n.name AS node, r.created_at, r.started_at, r.finished_at, r.info,"
+                + " r.stop_reason"
                 + " FROM dtp_run r JOIN dtp_job j ON j.id = r.job_id LEFT JOIN dtp_node n ON n.id = r.owner_node_id"
                 + " WHERE r.namespace = ? ORDER BY r.created_at DESC, r.id LIMIT ?",
                 rs -> new RunView(Sql.uuid(rs, "id"), rs.getString("job"), rs.getString("state"),
                         rs.getString("outcome"), rs.getString("result_status"), rs.getString("trigger_type"),
                         rs.getInt("attempt"), rs.getString("node"), Sql.instant(rs, "created_at"),
-                        Sql.instant(rs, "started_at"), Sql.instant(rs, "finished_at"), rs.getString("info")),
-                namespace, limit));
+                        Sql.instant(rs, "started_at"), Sql.instant(rs, "finished_at"), rs.getString("info"),
+                        rs.getString("stop_reason")), namespace, limit));
+    }
+
+    /**
+     * The most recent work packages.
+     *
+     * @param limit maximum number of packages
+     * @return the packages, newest first
+     */
+    public List<PackageView> packages(int limit) {
+        return tx.withConnection(c -> Sql.query(c, "SELECT p.id, j.name AS job, p.seq, p.group_key, p.item_type,"
+                + " p.state, p.item_count, p.attempts, p.last_error, p.next_attempt_at, p.created_by_run_id,"
+                + " p.processed_by_run_id, p.info, p.created_at, p.updated_at FROM dtp_work_package p"
+                + " JOIN dtp_job j ON j.id = p.job_id WHERE p.namespace = ? ORDER BY p.seq DESC LIMIT ?",
+                rs -> new PackageView(Sql.uuid(rs, "id"), rs.getString("job"), rs.getLong("seq"),
+                        rs.getString("group_key"), rs.getString("item_type"), rs.getString("state"),
+                        rs.getInt("item_count"), rs.getInt("attempts"), rs.getString("last_error"),
+                        Sql.instant(rs, "next_attempt_at"), Sql.uuid(rs, "created_by_run_id"),
+                        Sql.uuid(rs, "processed_by_run_id"), rs.getString("info"), Sql.instant(rs, "created_at"),
+                        Sql.instant(rs, "updated_at")), namespace, limit));
     }
 
     /**
@@ -196,7 +241,13 @@ public class DtpQueries {
                     + " JOIN dtp_job j ON j.id = d.fallback_job_id AND j.enabled = TRUE WHERE d.namespace = ?"
                     + " AND d.state = 'OPEN' AND d.fallback_due_at <= CURRENT_TIMESTAMP AND d.fallback_run_id IS NULL",
                     rs -> rs.getInt(1), namespace).orElse(0);
-            return open == 0 && due == 0 && branches == 0 && fallbacks == 0;
+            int packages = Sql.queryOne(c, "SELECT COUNT(*) FROM dtp_work_package p"
+                    + " JOIN dtp_job j ON j.id = p.job_id"
+                    + " JOIN dtp_job_revision r ON r.job_id = j.id AND r.revision = j.current_revision"
+                    + " WHERE p.namespace = ? AND p.state = 'PENDING' AND r.inbox_min_items IS NOT NULL"
+                    + " AND (p.next_attempt_at IS NULL OR p.next_attempt_at <= CURRENT_TIMESTAMP)",
+                    rs -> rs.getInt(1), namespace).orElse(0);
+            return open == 0 && due == 0 && branches == 0 && fallbacks == 0 && packages == 0;
         });
     }
 }

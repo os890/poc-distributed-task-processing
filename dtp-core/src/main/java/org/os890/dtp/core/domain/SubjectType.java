@@ -17,5 +17,5 @@ package org.os890.dtp.core.domain;
 
 /** What waits for a decision. */
 public enum SubjectType {
-    ITEM, RUN
+    ITEM, RUN, WORK_PACKAGE
 }

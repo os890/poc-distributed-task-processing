@@ -31,6 +31,7 @@ import org.os890.dtp.core.domain.SubjectType;
 import org.os890.dtp.core.domain.TakeoverPolicy;
 import org.os890.dtp.core.domain.TriggerType;
 import org.os890.dtp.core.jdbc.LeaseStore.ExpiredLease;
+import org.os890.dtp.core.jdbc.PackageStore;
 import org.os890.dtp.core.jdbc.RunStore;
 
 /**
@@ -49,6 +50,7 @@ public class Housekeeping {
     private final RunPlanner planner;
     private final Decisions decisions;
     private final FlowInstances instances;
+    private final PackageStore packages;
     private final Map<String, CronExpression> crons = new ConcurrentHashMap<>();
     private final Map<UUID, Instant> examinedSlots = new ConcurrentHashMap<>();
 
@@ -57,6 +59,7 @@ public class Housekeeping {
         this.planner = planner;
         this.decisions = new Decisions(ctx);
         this.instances = new FlowInstances(ctx);
+        this.packages = new PackageStore(ctx.dialect());
     }
 
     /** One housekeeping cycle. Each step runs in its own transaction, so one failure doesn't block the others. */
@@ -147,7 +150,9 @@ public class Housekeeping {
                 return null;
             }
             Instant now = ctx.clock().now(c);
-            if (minItems > 0 && ctx.items().countDue(c, job.id(), now) < minItems) {
+            // pending packages (carried over, or due again after a failure) are work of the job as well
+            if (minItems > 0 && ctx.items().countDue(c, job.id(), now) < minItems
+                    && packages.countDue(c, job.id(), now) == 0) {
                 return null;
             }
             String previous = ctx.runs().latestRunId(c, job.id()).map(UUID::toString).orElse("first");

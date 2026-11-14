@@ -49,6 +49,8 @@ import java.util.UUID;
  * @param calendarShift     what happens to a cron slot on a day that isn't a business day
  * @param cronFlowInstance  every cron slot starts a flow instance, business key: the business date of the slot
  * @param slots             processing slots, empty if runs may start any time
+ * @param itemLimit         a run stops softly after this many items, or {@code null}
+ * @param timeLimit         a run stops softly after this duration, or {@code null}
  * @param joinMembers       members of the run join this job is the target of, empty without join (DD-9)
  * @param transitions       successors of the job
  */
@@ -58,7 +60,8 @@ public record JobDefinition(UUID id, String namespace, String name, int revision
                             TakeoverPolicy takeover, int retryMax, Duration retryBackoff, Integer maxItemVisits,
                             Duration leaseDuration, String defaultParameters, UUID fallbackJobId,
                             Duration fallbackDelay, UUID cronCalendarId, CalendarShift calendarShift,
-                            boolean cronFlowInstance, List<ProcessingSlot> slots, List<JoinMember> joinMembers,
+                            boolean cronFlowInstance, List<ProcessingSlot> slots, Long itemLimit, Duration timeLimit,
+                            List<JoinMember> joinMembers,
                             List<TransitionDefinition> transitions) {
 
     public JobDefinition {
@@ -110,7 +113,7 @@ public record JobDefinition(UUID id, String namespace, String name, int revision
         return new JobDefinition(id, namespace, name, revision, enabled, handlerClass, asap, cronExpression,
                 cronZone, external, inboxMinItems, concurrency, takeover, retryMax, retryBackoff, maxItemVisits,
                 leaseDuration, defaultParameters, fallbackJobId, fallbackDelay, cronCalendarId, calendarShift,
-                cronFlowInstance, slots, joinMembers, newTransitions);
+                cronFlowInstance, slots, itemLimit, timeLimit, joinMembers, newTransitions);
     }
 
     /**
@@ -123,7 +126,7 @@ public record JobDefinition(UUID id, String namespace, String name, int revision
         return new JobDefinition(id, namespace, name, revision, enabled, handlerClass, asap, cronExpression,
                 cronZone, external, inboxMinItems, concurrency, takeover, retryMax, retryBackoff, maxItemVisits,
                 leaseDuration, defaultParameters, fallbackJobId, fallbackDelay, cronCalendarId, calendarShift,
-                cronFlowInstance, slots, members, transitions);
+                cronFlowInstance, slots, itemLimit, timeLimit, members, transitions);
     }
 
     /**
@@ -136,7 +139,7 @@ public record JobDefinition(UUID id, String namespace, String name, int revision
         return new JobDefinition(id, namespace, name, revision, enabled, handlerClass, asap, cronExpression,
                 cronZone, external, inboxMinItems, concurrency, takeover, retryMax, retryBackoff, maxItemVisits,
                 leaseDuration, defaultParameters, fallbackJobId, fallbackDelay, cronCalendarId, calendarShift,
-                cronFlowInstance, newSlots, joinMembers, transitions);
+                cronFlowInstance, newSlots, itemLimit, timeLimit, joinMembers, transitions);
     }
 
     /**

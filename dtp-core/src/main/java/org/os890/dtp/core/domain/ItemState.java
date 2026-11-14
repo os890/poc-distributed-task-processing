@@ -17,8 +17,9 @@ package org.os890.dtp.core.domain;
 
 /**
  * States of a tracked item. Items are never left {@code IN_PROGRESS} across commits (the state change and the routing
- * commit together). A {@code FORKED} item is in the inboxes of its branch steps ({@code dtp_item_branch}, DD-22).
+ * commit together). A {@code FORKED} item is in the inboxes of its branch steps ({@code dtp_item_branch}, DD-22). A
+ * {@code PACKAGED} item belongs to a pending work package of its current job ({@code dtp_item.work_package_id}).
  */
 public enum ItemState {
-    QUEUED, FORKED, WAITING_FOR_DECISION, COMPLETED, DISCARDED
+    QUEUED, FORKED, PACKAGED, WAITING_FOR_DECISION, COMPLETED, DISCARDED
 }

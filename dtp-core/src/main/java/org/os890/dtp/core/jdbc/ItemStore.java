@@ -176,6 +176,69 @@ public class ItemStore {
     }
 
     /**
+     * Assigns a queued item of the job to a work package (state {@code PACKAGED}).
+     *
+     * @param c         the connection
+     * @param itemId    the item, locked by the caller
+     * @param packageId the package
+     * @param now       the DB time
+     * @throws SQLException on DB errors
+     */
+    public void assignToPackage(Connection c, UUID itemId, UUID packageId, Instant now) throws SQLException {
+        Sql.update(c, "UPDATE dtp_item SET state = 'PACKAGED', work_package_id = ?, updated_at = ? WHERE id = ?",
+                packageId, now, itemId);
+    }
+
+    /**
+     * Whether a reference is tracked already.
+     *
+     * @param c         the connection
+     * @param namespace the namespace
+     * @param itemType  the item type
+     * @param refId     the encoded id
+     * @param version   the version, 0 without
+     * @return {@code true} if an item with this reference exists
+     * @throws SQLException on DB errors
+     */
+    public boolean isTracked(Connection c, String namespace, String itemType, String refId, long version)
+            throws SQLException {
+        return Sql.queryOne(c, "SELECT COUNT(*) FROM dtp_item WHERE namespace = ? AND item_type = ? AND ref_id = ?"
+                + " AND ref_version = ?", rs -> rs.getInt(1), namespace, itemType, refId, version).orElse(0) > 0;
+    }
+
+    /**
+     * Tracks a new item directly in a work package of a job (state {@code PACKAGED}).
+     *
+     * @param c         the connection
+     * @param item      the new item
+     * @param jobId     the job of the package
+     * @param packageId the package
+     * @param now       the DB time
+     * @throws SQLException on DB errors, e.g. if the item is tracked already
+     */
+    public void insertPackaged(Connection c, ItemRow item, UUID jobId, UUID packageId, Instant now)
+            throws SQLException {
+        Sql.update(c, "INSERT INTO dtp_item (id, namespace, item_type, ref_id, ref_version, business_key, lane,"
+                + " lane_priority, current_job_id, inbox_seq, state, attempts, work_package_id, created_at, updated_at)"
+                + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, " + dialect.nextValue("dtp_inbox_seq")
+                + ", 'PACKAGED', 0, ?, ?, ?)", item.id(), item.namespace(), item.itemType(), item.refId(),
+                item.refVersion(), item.businessKey(), item.lane(), item.lanePriority(), jobId, packageId, now, now);
+    }
+
+    /**
+     * The items of a pending work package, locked.
+     *
+     * @param c         the connection
+     * @param packageId the package
+     * @return the items still assigned to it, in inbox order
+     * @throws SQLException on DB errors
+     */
+    public List<ItemRow> lockPackaged(Connection c, UUID packageId) throws SQLException {
+        return Sql.query(c, "SELECT " + COLUMNS + " FROM dtp_item WHERE work_package_id = ? AND state = 'PACKAGED'"
+                + " ORDER BY inbox_seq FOR UPDATE", ItemStore::map, packageId);
+    }
+
+    /**
      * Locks the next due entries of an inbox: items routed into the inbox and branches of forked items. Locked rows
      * are skipped, so parallel batches get disjoint entries.
      *

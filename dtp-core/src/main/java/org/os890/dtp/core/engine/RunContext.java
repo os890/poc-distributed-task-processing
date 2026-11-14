@@ -16,6 +16,7 @@
 package org.os890.dtp.core.engine;
 
 import java.time.Instant;
+import java.util.concurrent.atomic.AtomicLong;
 
 import org.os890.dtp.api.StopReason;
 import org.os890.dtp.core.domain.JobDefinition;
@@ -35,6 +36,8 @@ public class RunContext {
     private static final ThreadLocal<RunContext> CURRENT = new ThreadLocal<>();
 
     private final ThreadLocal<Instant> unitNow = new ThreadLocal<>();
+
+    private final AtomicLong processedItems = new AtomicLong();
 
     private volatile StopReason stopReason;
     private volatile Runnable onStop;
@@ -89,6 +92,20 @@ public class RunContext {
             if (callback != null) {
                 callback.run();
             }
+        }
+    }
+
+    /**
+     * Counts processed items; once the item limit of the job is reached, the run is asked to stop
+     * ({@code LIMIT_REACHED}).
+     *
+     * @param count the number of items just processed
+     */
+    public void countItems(long count) {
+        long total = processedItems.addAndGet(count);
+        Long limit = job.itemLimit();
+        if (limit != null && total >= limit) {
+            requestStop(StopReason.LIMIT_REACHED);
         }
     }
 

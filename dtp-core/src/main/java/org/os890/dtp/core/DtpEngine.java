@@ -428,15 +428,22 @@ public class DtpEngine {
                     run.requestStop(StopReason.LEASE_LOST);
                 }
             }
-            // processing slots: a run is asked to stop at the end of its slot, the running unit of work is finished
-            var slotted = executor.active().stream().filter(run -> run.claimed().slotEnd() != null).toList();
-            var now = slotted.isEmpty() ? null : tx.withConnection(c -> ctx.clock().now(c));
-            for (RunContext run : slotted) {
+            // processing slots and time limits: a run is asked to stop at the end of its slot or of its time limit,
+            // the running unit of work is finished first
+            var limited = executor.active().stream().filter(run -> run.claimed().slotEnd() != null
+                    || run.claimed().limitAt() != null).toList();
+            var now = limited.isEmpty() ? null : tx.withConnection(c -> ctx.clock().now(c));
+            for (RunContext run : limited) {
                 var slotEnd = run.claimed().slotEnd();
-                if (!now.isBefore(slotEnd) && run.shouldContinue()) {
+                var limitAt = run.claimed().limitAt();
+                if (slotEnd != null && !now.isBefore(slotEnd) && run.shouldContinue()) {
                     LOG.log(System.Logger.Level.INFO, "run {0} of job {1}: its processing slot ended",
                             run.claimed().runId(), run.job().name());
                     run.requestStop(StopReason.SLOT_END);
+                } else if (limitAt != null && !now.isBefore(limitAt) && run.shouldContinue()) {
+                    LOG.log(System.Logger.Level.INFO, "run {0} of job {1}: its time limit is reached",
+                            run.claimed().runId(), run.job().name());
+                    run.requestStop(StopReason.LIMIT_REACHED);
                 }
             }
             var ids = executor.active().stream().map(run -> run.claimed().runId()).toList();

@@ -23,6 +23,7 @@ import org.os890.dtp.api.ItemType;
 import org.os890.dtp.api.Items;
 import org.os890.dtp.api.JobContext;
 import org.os890.dtp.api.RunInfo;
+import org.os890.dtp.api.WorkPackages;
 
 /**
  * The context of a {@code JobHandler} run.
@@ -69,5 +70,10 @@ public class JobContextImpl<P> implements JobContext<P> {
     @Override
     public <E, ID> Inbox<E, ID> inbox(ItemType<E, ID> type) {
         return new InboxImpl<>(run, routing, type, false);
+    }
+
+    @Override
+    public <E, ID> WorkPackages<E, ID> packages(ItemType<E, ID> type) {
+        return new WorkPackagesImpl<>(run, routing, type);
     }
 }

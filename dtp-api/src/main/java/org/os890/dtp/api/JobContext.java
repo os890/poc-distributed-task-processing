@@ -20,7 +20,7 @@ import java.util.Optional;
 /**
  * Everything a handler needs during a run. Only valid inside {@link JobHandler#execute(JobContext)}.
  *
- * <p>Slice 1 of the PoC: work packages and collection windows are not implemented yet.
+ * <p>Collection windows are not implemented yet.
  *
  * @param <P> type of the run parameters
  */
@@ -54,4 +54,14 @@ public interface JobContext<P> {
      * @return the inbox
      */
     <E, ID> Inbox<E, ID> inbox(ItemType<E, ID> type);
+
+    /**
+     * The work packages of this job for the given item type.
+     *
+     * @param type the item type
+     * @param <E>  the tracked entity type
+     * @param <ID> its id type
+     * @return the packages
+     */
+    <E, ID> WorkPackages<E, ID> packages(ItemType<E, ID> type);
 }

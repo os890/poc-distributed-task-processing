@@ -48,6 +48,7 @@ public class TradeEnrichment implements ItemProcessor<Trade, UUID> {
     public void process(TrackedItem<Trade, UUID> item) {
         Optional<ApprovalResult> approval = item.approval();
         if (approval.isPresent()) {
+            em.find(Trade.class, item.ref().id()).setReleased(approval.get().approved());
             item.signal(approval.get().approved() ? EnrichmentSignal.ENRICHED : EnrichmentSignal.REJECTED,
                     (approval.get().approved() ? "approved by " + approval.get().approvers()
                                                : "rejected by " + approval.get().decidedBy()));
@@ -65,6 +66,7 @@ public class TradeEnrichment implements ItemProcessor<Trade, UUID> {
         if (limit.is(LimitSignal.ABOVE_LIMIT)) {
             item.requestApproval(Approval.quorum(2).assignedTo(Desk.RISK), limit.reason());
         } else {
+            trade.setReleased(true);
             item.signal(EnrichmentSignal.ENRICHED);
         }
     }

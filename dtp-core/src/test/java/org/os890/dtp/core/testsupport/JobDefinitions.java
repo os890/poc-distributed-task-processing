@@ -101,6 +101,8 @@ public class JobDefinitions {
         private String calendar;
         private CalendarShift shift = CalendarShift.SKIP;
         private boolean cronFlowInstance;
+        private Long itemLimit;
+        private Duration timeLimit;
 
         Definition(Class<? extends ProcessStep> step) {
             this.step = step;
@@ -126,6 +128,16 @@ public class JobDefinitions {
         public Definition calendar(String name, CalendarShift value) {
             calendar = name;
             shift = value;
+            return this;
+        }
+
+        public Definition itemLimit(long value) {
+            itemLimit = value;
+            return this;
+        }
+
+        public Definition timeLimit(Duration value) {
+            timeLimit = value;
             return this;
         }
 
@@ -245,8 +257,10 @@ public class JobDefinitions {
                         retryBackoff.toString(), maxItemVisits, leaseDuration == null ? null : leaseDuration.toString(),
                         defaultParameters);
                 Sql.update(c, "UPDATE dtp_job_revision SET calendar_shift = ?, cron_flow_instance = ?,"
+                        + " item_limit = ?, time_limit = ?,"
                         + " cron_calendar_id = (SELECT id FROM dtp_calendar WHERE namespace = ? AND name = ?)"
-                        + " WHERE job_id = ?", shift, cronFlowInstance, namespace, calendar, id);
+                        + " WHERE job_id = ?", shift, cronFlowInstance, itemLimit,
+                        timeLimit == null ? null : timeLimit.toString(), namespace, calendar, id);
                 for (Object[] slot : slots) {
                     Sql.update(c, "INSERT INTO dtp_job_slot (id, job_id, revision, calendar_id, from_time, to_time)"
                             + " VALUES (?, ?, 1, (SELECT id FROM dtp_calendar WHERE namespace = ? AND name = ?), ?, ?)",

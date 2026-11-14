@@ -21,6 +21,7 @@ import static org.awaitility.Awaitility.await;
 import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.everyItem;
 import static org.hamcrest.Matchers.hasItem;
 import static org.hamcrest.Matchers.is;
 
@@ -38,6 +39,7 @@ import java.util.UUID;
 import javax.sql.DataSource;
 
 import jakarta.inject.Inject;
+import jakarta.persistence.EntityManager;
 
 import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
@@ -66,6 +68,12 @@ class TradeFlowTest {
 
     @Inject
     BusinessCalendars calendars;
+
+    @Inject
+    SettlementGateway gateway;
+
+    @Inject
+    EntityManager em;
 
     @Inject
     DataSource dataSource;
@@ -229,9 +237,9 @@ class TradeFlowTest {
         });
         given().when().get(eod).then()
                .body("runs.job", containsInAnyOrder("end-of-day", "position-report", "pnl-report", "pnl-report",
-                       "eod-sign-off"))
+                       "eod-sign-off", "settlement-export"))
                .body("runs[0].job", equalTo("end-of-day"))
-               .body("runs[-1].job", equalTo("eod-sign-off"))
+               .body("runs[-1].job", equalTo("settlement-export"))
                .body("joins[0].fired", is(true));
         given().header("X-User", "otto").when().post("/dtp/runs/" + failed + "/reruns").then().statusCode(409);
         given().when().get("/dtp/flow-instances").then().statusCode(200).body("businessKey", hasItem("2026-11-20"));
@@ -255,6 +263,50 @@ class TradeFlowTest {
             assertThat(rs.next()).isTrue();
             assertThat(rs.getInt(1)).isPositive().isEqualTo(rs.getInt(2));
         }
+    }
+
+    @Test
+    @Order(6)
+    void theSettlementExportSendsOneFilePerCustodianAndARejectedFileIsDecided() {
+        // after the sign-off of 2026-11-20 (order 4): seven released trades (trade 7 has a restricted ISIN)
+        await().atMost(Duration.ofSeconds(30)).until(() -> queries.isIdle());
+        given().when().get("/dtp/packages").then().statusCode(200)
+               .body("findAll { it.job == 'settlement-export' }.itemCount.sum()", is(7))
+               .body("findAll { it.job == 'settlement-export' }.state", everyItem(equalTo("DONE")));
+
+        // 2026-11-23: one custodian rejects its file, a retry later it still does, an operator decides
+        LocalDate date = LocalDate.of(2026, 11, 23);
+        given().contentType(ContentType.JSON).body(new ImportParams(date, 3))
+               .when().post("/trades/imports").then().statusCode(200);
+        await().atMost(Duration.ofSeconds(30)).until(() -> queries.isIdle()
+                && types("T-2026-11-23-3").contains("COMPLETED"));
+        String custodian = gateway.custodianOf(trade("T-2026-11-23-2"));
+        given().when().post("/settlement/custodians/" + custodian + "/outage").then().statusCode(204);
+        given().header("X-User", "otto").when().post("/eod/" + date).then().statusCode(200);
+        await().atMost(Duration.ofSeconds(30)).until(() -> queries.isIdle() && queries.packages(20).stream()
+                .anyMatch(p -> custodian.equals(p.groupKey()) && "WAITING_FOR_DECISION".equals(p.state())));
+        String id = given().header("X-User", "otto").when().get("/dtp/decisions").then().statusCode(200)
+                           .extract().path("find { it.subjectType == 'WORK_PACKAGE' }.id");
+        given().when().get("/dtp/decisions/" + id).then()
+               .body("reason", containsString(custodian + " rejected the file"))
+               .body("options.name", containsInAnyOrder("RETRY", "DISCARD"));
+
+        given().when().delete("/settlement/custodians/" + custodian + "/outage").then().statusCode(204);
+        given().header("X-User", "otto").contentType(ContentType.JSON)
+               .body(Map.of("option", "RETRY", "comment", "custodian is back")).when()
+               .post("/dtp/decisions/" + id + "/decision").then().statusCode(204);
+        await().atMost(Duration.ofSeconds(30)).until(() -> queries.isIdle() && queries.packages(20).stream()
+                .filter(p -> custodian.equals(p.groupKey())).allMatch(p -> "DONE".equals(p.state())));
+        long seq = queries.packages(20).stream().filter(p -> custodian.equals(p.groupKey())).findFirst().orElseThrow()
+                          .seq();
+        given().when().get("/settlement/files").then().statusCode(200)
+               .body("findAll { it.startsWith('settlement-" + custodian + "-" + seq + ".xml') }.size()", is(1));
+        given().when().get("/eod/" + date).then().body("state", equalTo("COMPLETED"));
+    }
+
+    private Trade trade(String number) {
+        return em.createQuery("SELECT t FROM Trade t WHERE t.tradeNumber = :n", Trade.class)
+                 .setParameter("n", number).getSingleResult();
     }
 
     private static ValidatableResponse vote(String id, String user, String groups, String vote) {

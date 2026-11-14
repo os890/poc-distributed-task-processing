@@ -49,6 +49,8 @@ import org.os890.dtp.core.jdbc.DecisionStore.RequestRow;
 import org.os890.dtp.core.jdbc.DecisionStore.VoteRow;
 import org.os890.dtp.core.jdbc.ItemStore.ItemEvent;
 import org.os890.dtp.core.jdbc.ItemStore.ItemRow;
+import org.os890.dtp.core.jdbc.PackageStore;
+import org.os890.dtp.core.jdbc.PackageStore.PackageRow;
 import org.os890.dtp.core.spi.Transactions;
 
 /**
@@ -426,6 +428,10 @@ public class Decisions {
             new FlowInstances(ctx).runEnded(c, request.subjectId(), now);
             return;
         }
+        if (request.subjectType() == SubjectType.WORK_PACKAGE) {
+            decidePackage(c, request, BuiltInOption.DISCARD.name().equals(option), reason, now);
+            return;
+        }
         ItemRow item = ctx.items().load(c, request.subjectId());
         boolean branch = item.state() == ItemState.FORKED;
         if (branch ? !waitingBranch(c, request) : item.state() != ItemState.WAITING_FOR_DECISION) {
@@ -451,6 +457,24 @@ public class Decisions {
             ctx.items().resetVisits(c, item.id(), request.requestedByJobId());
         }
         ctx.items().requeueAfterDecision(c, item.id(), request.requestedByJobId(), request.id(), reason, now);
+    }
+
+    /**
+     * A decision about a work package: pending again with its attempts reset (the next run of the job processes
+     * it, within its processing slot, D39), or discarded with its items.
+     */
+    private void decidePackage(Connection c, RequestRow request, boolean discard, String reason, Instant now)
+            throws SQLException {
+        if (!new PackageStore(ctx.dialect()).decided(c, request.subjectId(), discard, now)) {
+            throw new DtpException("work package " + request.subjectId() + " doesn't wait for a decision");
+        }
+        if (discard) {
+            for (ItemRow item : ctx.items().lockPackaged(c, request.subjectId())) {
+                ctx.items().setState(c, item.id(), ItemState.DISCARDED, item.attempts(), now);
+                ctx.items().append(c, new ItemEvent(item.id(), ctx.namespace(), ItemEventType.DISCARDED,
+                        request.requestedByJobId(), null, null, null, ctx.nodeId(), reason, null, null, null), now);
+            }
+        }
     }
 
     private boolean waitingBranch(Connection c, RequestRow request) throws SQLException {
@@ -492,6 +516,10 @@ public class Decisions {
             ItemRow item = ctx.items().load(c, row.subjectId());
             itemType = item.itemType();
             businessKey = item.businessKey();
+        } else if (row.subjectType() == SubjectType.WORK_PACKAGE) {
+            PackageRow pkg = new PackageStore(ctx.dialect()).load(c, row.subjectId());
+            itemType = pkg.itemType();
+            businessKey = "work package " + pkg.seq() + (pkg.groupKey() == null ? "" : " (" + pkg.groupKey() + ")");
         }
         List<VoteView> votes = store.votes(c, row.id()).stream()
                 .map(v -> new VoteView(v.voter(), v.vote(), v.comment(), v.votedAt())).toList();
@@ -508,6 +536,10 @@ public class Decisions {
             ItemRow item = ctx.items().load(c, row.subjectId());
             itemType = item.itemType();
             businessKey = item.businessKey();
+        } else if (row.subjectType() == SubjectType.WORK_PACKAGE) {
+            PackageRow pkg = new PackageStore(ctx.dialect()).load(c, row.subjectId());
+            itemType = pkg.itemType();
+            businessKey = "work package " + pkg.seq() + (pkg.groupKey() == null ? "" : " (" + pkg.groupKey() + ")");
         }
         int approvals = (int) store.votes(c, row.id()).stream().filter(v -> Vote.APPROVE.name().equals(v.vote()))
                                    .count();

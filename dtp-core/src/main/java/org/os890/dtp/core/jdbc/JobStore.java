@@ -45,7 +45,7 @@ public class JobStore {
             + " r.trigger_asap, r.cron_expression, r.cron_zone, r.trigger_external, r.inbox_min_items,"
             + " r.concurrency_policy, r.takeover_policy, r.retry_max, r.retry_backoff, r.max_item_visits,"
             + " r.lease_duration, r.default_parameters, r.fallback_job_id, r.fallback_delay, r.cron_calendar_id,"
-            + " r.calendar_shift, r.cron_flow_instance"
+            + " r.calendar_shift, r.cron_flow_instance, r.item_limit, r.time_limit"
             + " FROM dtp_job j JOIN dtp_job_revision r ON r.job_id = j.id";
 
     /**
@@ -171,6 +171,7 @@ public class JobStore {
     private static JobDefinition map(ResultSet rs) throws SQLException {
         String lease = rs.getString("lease_duration");
         String fallbackDelay = rs.getString("fallback_delay");
+        String timeLimit = rs.getString("time_limit");
         return new JobDefinition(Sql.uuid(rs, "id"), rs.getString("namespace"), rs.getString("name"),
                 rs.getInt("revision"), rs.getBoolean("enabled"), rs.getString("handler_class"),
                 rs.getBoolean("trigger_asap"), rs.getString("cron_expression"), rs.getString("cron_zone"),
@@ -181,6 +182,7 @@ public class JobStore {
                 lease == null ? null : Duration.parse(lease), rs.getString("default_parameters"),
                 Sql.uuid(rs, "fallback_job_id"), fallbackDelay == null ? null : Duration.parse(fallbackDelay),
                 Sql.uuid(rs, "cron_calendar_id"), CalendarShift.valueOf(rs.getString("calendar_shift")),
-                rs.getBoolean("cron_flow_instance"), List.of(), List.of(), List.of());
+                rs.getBoolean("cron_flow_instance"), List.of(), rs.getObject("item_limit", Long.class),
+                timeLimit == null ? null : Duration.parse(timeLimit), List.of(), List.of());
     }
 }

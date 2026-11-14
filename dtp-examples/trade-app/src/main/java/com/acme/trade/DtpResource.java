@@ -39,6 +39,7 @@ import org.os890.dtp.core.engine.FlowInstances.InstanceView;
 import org.os890.dtp.core.query.DtpQueries;
 import org.os890.dtp.core.query.DtpQueries.ItemCount;
 import org.os890.dtp.core.query.DtpQueries.NodeView;
+import org.os890.dtp.core.query.DtpQueries.PackageView;
 import org.os890.dtp.core.query.DtpQueries.RunView;
 
 /** Read-only operator views of the cluster (the REST adapter of the design follows in a later slice). */
@@ -84,6 +85,18 @@ public class DtpResource {
     @Path("/items")
     public List<ItemCount> items() {
         return queries.itemCounts();
+    }
+
+    /**
+     * The latest work packages, e.g. of the settlement export.
+     *
+     * @param limit maximum number
+     * @return the packages, newest first
+     */
+    @GET
+    @Path("/packages")
+    public List<PackageView> packages(@QueryParam("limit") @DefaultValue("20") int limit) {
+        return queries.packages(limit);
     }
 
     /**

@@ -47,6 +47,9 @@ public class Trade {
 
     private long quantity;
 
+    /** Enriched (and approved if needed): released for settlement. */
+    private boolean released;
+
     protected Trade() {
     }
 
@@ -67,6 +70,14 @@ public class Trade {
 
     public String getTradeNumber() {
         return tradeNumber;
+    }
+
+    public boolean isReleased() {
+        return released;
+    }
+
+    public void setReleased(boolean released) {
+        this.released = released;
     }
 
     public String getIsin() {

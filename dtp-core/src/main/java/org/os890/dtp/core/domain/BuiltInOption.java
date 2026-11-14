@@ -19,11 +19,11 @@ import java.util.List;
 
 /** Options the framework offers and applies itself (02 §2.5). */
 public enum BuiltInOption {
-    /** Item: back into the requesting step's inbox, attempts reset. Run: planned again. */
+    /** Item: back into the requesting step's inbox, attempts reset. Run: planned again. Package: pending again. */
     RETRY("Retry"),
     /** Item: back into the requesting step's inbox with its visits of that step reset (loop limit). */
     RESET_VISITS("Reset the visits and retry"),
-    /** Item: ends its journey. */
+    /** Item: ends its journey. Package: discarded with its items. */
     DISCARD("Discard"),
     /** Run: finishes as failed. */
     FAIL("Fail the run"),
@@ -39,6 +39,9 @@ public enum BuiltInOption {
 
     /** Options of an item that exceeded the loop limit of a step. */
     public static final List<BuiltInOption> ITEM_LOOP = List.of(RESET_VISITS, RETRY, DISCARD);
+
+    /** Options of a work package whose retries are exhausted. */
+    public static final List<BuiltInOption> PACKAGE = List.of(RETRY, DISCARD);
 
     /** Options of an abandoned run (takeover policy ABANDON). */
     public static final List<BuiltInOption> RUN = List.of(RETRY, FAIL, SKIP);

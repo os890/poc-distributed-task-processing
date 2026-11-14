@@ -99,7 +99,7 @@ public class ItemProcessorDriver {
     private boolean nextBatch() {
         List<UUID> ids = new ArrayList<>();
         try {
-            return run.unitOfWork(false, () -> {
+            boolean found = run.unitOfWork(false, () -> {
                 List<InboxEntry> entries = lock();
                 if (entries.isEmpty()) {
                     return false;
@@ -110,6 +110,8 @@ public class ItemProcessorDriver {
                 }
                 return true;
             });
+            run.countItems(ids.size());
+            return found;
         } catch (LeaseLostException e) {
             throw e;
         } catch (RuntimeException e) {
@@ -117,6 +119,7 @@ public class ItemProcessorDriver {
                 throw e;
             }
             isolate(ids, e);
+            run.countItems(ids.size());
             return true;
         }
     }

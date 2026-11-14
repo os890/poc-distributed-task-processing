@@ -423,7 +423,8 @@ public class RunStore {
     }
 
     /**
-     * Number of journal entries of a run that count as issues (discarded or escalated items).
+     * Number of issues of a run: journal entries of discarded or escalated items, and work packages it left waiting
+     * for a decision.
      *
      * @param c     the connection
      * @param runId the run
@@ -431,8 +432,11 @@ public class RunStore {
      * @throws SQLException on DB errors
      */
     public int countIssues(Connection c, UUID runId) throws SQLException {
-        return Sql.queryOne(c, "SELECT COUNT(*) FROM dtp_item_event WHERE run_id = ? AND event_type IN"
+        int items = Sql.queryOne(c, "SELECT COUNT(*) FROM dtp_item_event WHERE run_id = ? AND event_type IN"
                 + " ('DISCARDED', 'ESCALATED', 'LOOP_LIMIT_EXCEEDED')", rs -> rs.getInt(1), runId).orElse(0);
+        int packages = Sql.queryOne(c, "SELECT COUNT(*) FROM dtp_work_package WHERE processed_by_run_id = ?"
+                + " AND state IN ('WAITING_FOR_DECISION', 'DISCARDED')", rs -> rs.getInt(1), runId).orElse(0);
+        return items + packages;
     }
 
     private static void endAttempt(Connection c, UUID runId, int attempt, String reason, Instant now)

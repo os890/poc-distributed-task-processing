@@ -88,6 +88,7 @@ public class RunClaimer {
 
     private Optional<ClaimedRun> tryClaim(Candidate candidate) {
         Duration leaseDuration = leaseDuration(candidate);
+        Duration timeLimit = ctx.catalog().byId(candidate.jobId()).timeLimit();
         return ctx.tx().withConnection(c -> {
             Instant now = ctx.clock().now(c);
             OptionalLong token = ctx.leases().acquire(c, candidate.jobId(), candidate.runId(), ctx.nodeId(),
@@ -101,7 +102,8 @@ public class RunClaimer {
             }
             RunRecord run = ctx.runs().load(c, candidate.runId());
             return Optional.of(new ClaimedRun(run.id(), run.jobId(), run.revision(), run.handlerClass(),
-                    token.getAsLong(), attempt.get(), leaseDuration, run.slotEnd()));
+                    token.getAsLong(), attempt.get(), leaseDuration, run.slotEnd(), timeLimit == null ? null
+                    : now.plus(timeLimit)));
         });
     }
 
