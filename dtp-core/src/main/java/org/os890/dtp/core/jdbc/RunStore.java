@@ -53,10 +53,11 @@ public class RunStore {
      * @param triggeredBy  details of the trigger
      * @param parameters   run parameters as JSON, or {@code null}
      * @param notBefore    earliest start, or {@code null}
+     * @param flowInstanceId the flow instance, or {@code null}
      */
     public record NewRun(UUID id, String namespace, String runKey, UUID jobId, int revision, String handlerClass,
                          RunState state, RunOutcome outcome, TriggerType triggerType, String triggeredBy,
-                         String parameters, Instant notBefore) {
+                         String parameters, Instant notBefore, UUID flowInstanceId) {
     }
 
     /**
@@ -79,9 +80,12 @@ public class RunStore {
      * @param stopReason   requested stop, if any
      * @param parameters   run parameters as JSON, or {@code null}
      * @param attempt      current attempt
+     * @param outcome      the outcome of a finished run, or {@code null}
+     * @param flowInstanceId the flow instance, or {@code null}
      */
     public record RunRecord(UUID id, UUID jobId, int revision, String handlerClass, RunState state,
-                            StopReason stopReason, String parameters, int attempt) {
+                            StopReason stopReason, String parameters, int attempt, RunOutcome outcome,
+                            UUID flowInstanceId) {
     }
 
     /**
@@ -95,11 +99,11 @@ public class RunStore {
      */
     public boolean insertIfAbsent(Connection c, NewRun run, Instant now) throws SQLException {
         String sql = "INSERT INTO dtp_run (id, namespace, run_key, job_id, job_revision, handler_class, state,"
-                + " outcome, trigger_type, triggered_by, parameters, not_before, created_at, finished_at)"
-                + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+                + " outcome, trigger_type, triggered_by, parameters, not_before, created_at, finished_at,"
+                + " flow_instance_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
         Object[] params = {run.id(), run.namespace(), run.runKey(), run.jobId(), run.revision(), run.handlerClass(),
             run.state(), run.outcome(), run.triggerType(), run.triggeredBy(), run.parameters(), run.notBefore(), now,
-            run.state() == RunState.FINISHED ? now : null};
+            run.state() == RunState.FINISHED ? now : null, run.flowInstanceId()};
         if (dialect.supportsOnConflictDoNothing()) {
             return Sql.update(c, sql + " ON CONFLICT (namespace, run_key) DO NOTHING", params) == 1;
         }
@@ -236,12 +240,14 @@ public class RunStore {
      */
     public RunRecord load(Connection c, UUID runId) throws SQLException {
         return Sql.queryOne(c, "SELECT id, job_id, job_revision, handler_class, state, stop_reason, parameters,"
-                + " attempt FROM dtp_run WHERE id = ?", rs -> {
+                + " attempt, outcome, flow_instance_id FROM dtp_run WHERE id = ?", rs -> {
                     String stop = rs.getString("stop_reason");
+                    String outcome = rs.getString("outcome");
                     return new RunRecord(Sql.uuid(rs, "id"), Sql.uuid(rs, "job_id"), rs.getInt("job_revision"),
                             rs.getString("handler_class"), RunState.valueOf(rs.getString("state")),
                             stop == null ? null : StopReason.valueOf(stop), rs.getString("parameters"),
-                            rs.getInt("attempt"));
+                            rs.getInt("attempt"), outcome == null ? null : RunOutcome.valueOf(outcome),
+                            Sql.uuid(rs, "flow_instance_id"));
                 }, runId).orElseThrow(() -> new SQLException("unknown run " + runId));
     }
 

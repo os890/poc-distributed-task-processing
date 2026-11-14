@@ -423,6 +423,7 @@ public class Decisions {
             if (!ctx.runs().decided(c, request.subjectId(), outcome, now)) {
                 throw new DtpException("run " + request.subjectId() + " doesn't wait for a decision");
             }
+            new FlowInstances(ctx).runEnded(c, request.subjectId(), now);
             return;
         }
         ItemRow item = ctx.items().load(c, request.subjectId());

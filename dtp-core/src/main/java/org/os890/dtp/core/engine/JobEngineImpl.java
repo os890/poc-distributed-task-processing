@@ -28,10 +28,12 @@ public class JobEngineImpl implements JobEngine {
 
     private final EngineContext ctx;
     private final RunPlanner planner;
+    private final FlowInstances instances;
 
     public JobEngineImpl(EngineContext ctx, RunPlanner planner) {
         this.ctx = ctx;
         this.planner = planner;
+        this.instances = new FlowInstances(ctx);
     }
 
     @Override
@@ -41,15 +43,31 @@ public class JobEngineImpl implements JobEngine {
 
     @Override
     public <P> RunHandle trigger(Class<? extends JobHandler<P, ?>> job, P parameters, String idempotencyKey) {
-        JobDefinition definition = ctx.catalog().byStep(job);
-        if (!definition.external()) {
-            throw new IllegalStateException("job " + definition.name() + " doesn't allow external triggers"
-                    + " (trigger_external)");
-        }
+        JobDefinition definition = external(job);
         String key = idempotencyKey != null ? idempotencyKey : UUID.randomUUID().toString();
         RunPlanner.Planned planned = ctx.tx().required(() -> ctx.tx().withConnection(c -> planner.plan(c, definition,
                 new RunPlanner.Trigger(TriggerType.EXTERNAL, "external:" + definition.id() + ":" + key, key,
                         ctx.json().write(parameters), null), ctx.clock().now(c))));
         return new RunHandle(planned.runId() == null ? null : planned.runId().toString(), planned.created());
+    }
+
+    @Override
+    public <P> RunHandle startFlowInstance(Class<? extends JobHandler<P, ?>> root, P parameters, String businessKey) {
+        JobDefinition definition = external(root);
+        if (businessKey == null || businessKey.isBlank()) {
+            throw new IllegalArgumentException("a flow instance needs a business key");
+        }
+        RunPlanner.Planned planned = ctx.tx().required(() -> ctx.tx().withConnection(c -> instances.start(c,
+                definition, businessKey, ctx.json().write(parameters), ctx.clock().now(c))));
+        return new RunHandle(planned.runId() == null ? null : planned.runId().toString(), planned.created());
+    }
+
+    private JobDefinition external(Class<? extends JobHandler<?, ?>> job) {
+        JobDefinition definition = ctx.catalog().byStep(job);
+        if (!definition.external()) {
+            throw new IllegalStateException("job " + definition.name() + " doesn't allow external triggers"
+                    + " (trigger_external)");
+        }
+        return definition;
     }
 }

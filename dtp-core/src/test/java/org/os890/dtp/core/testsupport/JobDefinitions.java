@@ -69,6 +69,7 @@ public class JobDefinitions {
         private String defaultParameters;
         private Class<? extends ProcessStep> fallbackJob;
         private Duration fallbackDelay;
+        private final List<Object[]> joinMembers = new ArrayList<>();
 
         Definition(Class<? extends ProcessStep> step) {
             this.step = step;
@@ -138,6 +139,19 @@ public class JobDefinitions {
             return this;
         }
 
+        /**
+         * Makes this job the target of a run join (the member jobs have to be saved first).
+         *
+         * @param member   a member job
+         * @param accepted the accepted outcomes of the member
+         * @return this definition
+         */
+        public Definition joinOf(Class<? extends ProcessStep> member, RunOutcome... accepted) {
+            joinMembers.add(new Object[] {member, String.join(",", java.util.Arrays.stream(accepted)
+                                                                                   .map(Enum::name).toList())});
+            return this;
+        }
+
         public Definition on(RunOutcome outcome, Class<? extends ProcessStep> target) {
             transitions.add(new Object[] {outcome.name(), null, target});
             return this;
@@ -171,6 +185,11 @@ public class JobDefinitions {
                     Sql.update(c, "UPDATE dtp_job_revision SET fallback_delay = ?, fallback_job_id = (SELECT id"
                             + " FROM dtp_job WHERE namespace = ? AND name = ?) WHERE job_id = ?",
                             fallbackDelay.toString(), namespace, fallbackJob.getSimpleName(), id);
+                }
+                for (Object[] m : joinMembers) {
+                    Sql.update(c, "INSERT INTO dtp_join_member (target_job_id, target_revision, member_job_id,"
+                            + " accepted_outcomes) SELECT ?, 1, id, ? FROM dtp_job WHERE namespace = ? AND name = ?",
+                            id, m[1], namespace, ((Class<?>) m[0]).getSimpleName());
                 }
                 for (Object[] t : transitions) {
                     Sql.update(c, "INSERT INTO dtp_transition (id, source_job_id, source_revision, on_outcome,"

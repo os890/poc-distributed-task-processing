@@ -20,15 +20,18 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 import org.os890.dtp.api.RunOutcome;
 import org.os890.dtp.core.domain.ConcurrencyPolicy;
 import org.os890.dtp.core.domain.JobDefinition;
+import org.os890.dtp.core.domain.JoinMember;
 import org.os890.dtp.core.domain.TakeoverPolicy;
 import org.os890.dtp.core.domain.TransitionDefinition;
 
@@ -58,8 +61,15 @@ public class JobStore {
                         + " AND j.current_revision = t.source_revision WHERE j.namespace = ?",
                 rs -> transitions.computeIfAbsent(key(Sql.uuid(rs, "source_job_id"), rs.getInt("source_revision")),
                         k -> new ArrayList<>()).add(transition(rs)), namespace);
+        Map<String, List<JoinMember>> members = new HashMap<>();
+        Sql.query(c, "SELECT m.target_job_id, m.target_revision, m.member_job_id, m.accepted_outcomes"
+                        + " FROM dtp_join_member m JOIN dtp_job j ON j.id = m.target_job_id"
+                        + " AND j.current_revision = m.target_revision WHERE j.namespace = ?",
+                rs -> members.computeIfAbsent(key(Sql.uuid(rs, "target_job_id"), rs.getInt("target_revision")),
+                        k -> new ArrayList<>()).add(member(rs)), namespace);
         return jobs.stream()
-                   .map(job -> job.withTransitions(transitions.getOrDefault(key(job.id(), job.revision()), List.of())))
+                   .map(job -> job.withTransitions(transitions.getOrDefault(key(job.id(), job.revision()), List.of()))
+                                  .withJoinMembers(members.getOrDefault(key(job.id(), job.revision()), List.of())))
                    .toList();
     }
 
@@ -81,7 +91,9 @@ public class JobStore {
         List<TransitionDefinition> transitions = Sql.query(c, "SELECT on_outcome, on_result_status, target_job_id"
                 + " FROM dtp_transition WHERE source_job_id = ? AND source_revision = ?", JobStore::transition,
                 jobId, revision);
-        return Optional.of(job.get().withTransitions(transitions));
+        List<JoinMember> members = Sql.query(c, "SELECT member_job_id, accepted_outcomes FROM dtp_join_member"
+                + " WHERE target_job_id = ? AND target_revision = ?", JobStore::member, jobId, revision);
+        return Optional.of(job.get().withTransitions(transitions).withJoinMembers(members));
     }
 
     /**
@@ -130,6 +142,14 @@ public class JobStore {
                 rs.getString("on_result_status"), Sql.uuid(rs, "target_job_id"));
     }
 
+    private static JoinMember member(ResultSet rs) throws SQLException {
+        Set<RunOutcome> accepted = EnumSet.noneOf(RunOutcome.class);
+        for (String outcome : rs.getString("accepted_outcomes").split(",")) {
+            accepted.add(RunOutcome.valueOf(outcome.trim()));
+        }
+        return new JoinMember(Sql.uuid(rs, "member_job_id"), accepted);
+    }
+
     private static JobDefinition map(ResultSet rs) throws SQLException {
         String lease = rs.getString("lease_duration");
         String fallbackDelay = rs.getString("fallback_delay");
@@ -142,6 +162,6 @@ public class JobStore {
                 Duration.parse(rs.getString("retry_backoff")), Sql.integer(rs, "max_item_visits"),
                 lease == null ? null : Duration.parse(lease), rs.getString("default_parameters"),
                 Sql.uuid(rs, "fallback_job_id"), fallbackDelay == null ? null : Duration.parse(fallbackDelay),
-                List.of());
+                List.of(), List.of());
     }
 }

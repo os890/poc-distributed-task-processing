@@ -57,8 +57,23 @@ public class RunPlanner {
      * @param triggeredBy details, e.g. the predecessor run
      * @param parameters  run parameters as JSON, or {@code null} for the job's defaults
      * @param notBefore   earliest start, or {@code null}
+     * @param flowInstanceId the flow instance of the new run, or {@code null}
      */
-    public record Trigger(TriggerType type, String runKey, String triggeredBy, String parameters, Instant notBefore) {
+    public record Trigger(TriggerType type, String runKey, String triggeredBy, String parameters, Instant notBefore,
+                          UUID flowInstanceId) {
+
+        /**
+         * A trigger outside a flow instance.
+         *
+         * @param type        what triggered
+         * @param runKey      idempotency key of the occurrence
+         * @param triggeredBy details
+         * @param parameters  run parameters as JSON, or {@code null}
+         * @param notBefore   earliest start, or {@code null}
+         */
+        public Trigger(TriggerType type, String runKey, String triggeredBy, String parameters, Instant notBefore) {
+            this(type, runKey, triggeredBy, parameters, notBefore, null);
+        }
     }
 
     /**
@@ -79,9 +94,10 @@ public class RunPlanner {
         List<RunState> open = runs.openRunStates(c, job.id());
         RunState state = RunState.PENDING;
         RunOutcome outcome = null;
-        // a fallback run belongs to one decision request: never skipped or coalesced, the job lease serializes them
-        ConcurrencyPolicy policy = trigger.type() == TriggerType.FALLBACK ? ConcurrencyPolicy.QUEUE_ALL
-                                                                          : job.concurrency();
+        // a fallback run belongs to one decision request, a run of a flow instance to its business key (e.g. the
+        // business date): never skipped or coalesced, the job lease runs them one after the other
+        ConcurrencyPolicy policy = trigger.type() == TriggerType.FALLBACK || trigger.flowInstanceId() != null
+                ? ConcurrencyPolicy.QUEUE_ALL : job.concurrency();
         if (!open.isEmpty()) {
             switch (policy) {
                 case SKIP -> {
@@ -103,7 +119,7 @@ public class RunPlanner {
         UUID id = UUID.randomUUID();
         boolean created = runs.insertIfAbsent(c, new RunStore.NewRun(id, ctx.namespace(), trigger.runKey(), job.id(),
                 job.revision(), job.handlerClass(), state, outcome, trigger.type(), trigger.triggeredBy(), parameters,
-                trigger.notBefore()), now);
+                trigger.notBefore(), trigger.flowInstanceId()), now);
         if (created) {
             return new Planned(id, true);
         }

@@ -26,4 +26,16 @@ public interface JobEngine {
 
     /** Same as {@link #trigger(Class, Object)} with an idempotency key, e.g. a delivery note number. */
     <P> RunHandle trigger(Class<? extends JobHandler<P, ?>> job, P parameters, String idempotencyKey);
+
+    /**
+     * Starts a flow instance: plans the run of the root job, whose successors (transitions, run joins) belong to the
+     * same instance. Idempotent per root job and business key: starting it again returns the existing root run.
+     *
+     * @param root        the root job
+     * @param parameters  the parameters of the root run
+     * @param businessKey the business key, e.g. the business date
+     * @param <P>         parameter type
+     * @return the root run, {@link RunHandle#newlyCreated()} is {@code false} if the instance existed
+     */
+    <P> RunHandle startFlowInstance(Class<? extends JobHandler<P, ?>> root, P parameters, String businessKey);
 }

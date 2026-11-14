@@ -47,6 +47,7 @@ import org.os890.dtp.core.engine.ClaimedRun;
 import org.os890.dtp.core.engine.Decisions;
 import org.os890.dtp.core.engine.EngineContext;
 import org.os890.dtp.core.engine.FlowAdmin;
+import org.os890.dtp.core.engine.FlowInstances;
 import org.os890.dtp.core.engine.FlowRegistrar;
 import org.os890.dtp.core.engine.FlowRouting;
 import org.os890.dtp.core.engine.Housekeeping;
@@ -112,6 +113,7 @@ public class DtpEngine {
     private FlowRouting flowRouting;
     private FlowAdmin flowAdmin;
     private Decisions decisions;
+    private FlowInstances flowInstances;
     private ScheduledExecutorService scheduler;
     private int idleRounds;
 
@@ -222,6 +224,7 @@ public class DtpEngine {
         routing.attach(flowRouting);
         flowAdmin = new FlowAdmin(ctx);
         decisions = routing.decisions();
+        flowInstances = new FlowInstances(ctx);
         Set<String> capabilities = steps.keySet().stream().map(Class::getName).collect(Collectors.toSet());
         leader = new LeaderElector(ctx);
         housekeeping = new Housekeeping(ctx, planner);
@@ -338,6 +341,15 @@ public class DtpEngine {
     }
 
     /**
+     * The flow instances and run joins, e.g. to show an end of day and to rerun a failed member.
+     *
+     * @return the flow instances
+     */
+    public FlowInstances flowInstances() {
+        return requireStarted(flowInstances);
+    }
+
+    /**
      * Handles a flow event: starts a flow or routes an item by a signal. Joins the caller's transaction (or the
      * unit of work of the current run).
      *
@@ -380,8 +392,12 @@ public class DtpEngine {
      * @return {@code true} if the run was pending or running
      */
     public boolean cancel(UUID runId) {
-        return requireStarted(ctx).tx().required(() -> tx.withConnection(c -> ctx.runs().cancel(c, runId,
-                ctx.clock().now(c))));
+        return requireStarted(ctx).tx().required(() -> tx.withConnection(c -> {
+            var now = ctx.clock().now(c);
+            boolean cancelled = ctx.runs().cancel(c, runId, now);
+            flowInstances.runEnded(c, runId, now);
+            return cancelled;
+        }));
     }
 
     private void heartbeat() {

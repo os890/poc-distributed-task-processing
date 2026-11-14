@@ -18,6 +18,7 @@ package com.acme.trade;
 import static io.restassured.RestAssured.given;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
+import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.hasItem;
@@ -176,6 +177,53 @@ class TradeFlowTest {
 
         await().atMost(Duration.ofSeconds(30)).until(() -> types(large).contains("COMPLETED"));
         assertThat(types(large)).containsSubsequence("ESCALATED", "VOTED", "VOTED", "DECIDED", "COMPLETED");
+    }
+
+    @Test
+    @Order(4)
+    void theEndOfDayIsSignedOffOnceBothReportsSucceeded() {
+        LocalDate date = LocalDate.of(2026, 11, 20);
+        String eod = "/eod/" + date;
+        given().contentType(ContentType.JSON).body(new ImportParams(date, 8))
+               .when().post("/trades/imports").then().statusCode(200);
+        await().atMost(Duration.ofSeconds(30)).until(() -> queries.isIdle()
+                && types("T-2026-11-20-4").contains("ROUTED_BACK"));
+
+        // trades 4 and 8 wait for their ISIN: the P&L report fails, the sign-off waits for it
+        given().header("X-User", "otto").when().post(eod).then().statusCode(200).body("newlyCreated", is(true));
+        given().when().post(eod).then().statusCode(200).body("newlyCreated", is(false));
+        await().atMost(Duration.ofSeconds(30)).until(() -> queries.isIdle());
+        given().when().get(eod).then().statusCode(200)
+               .body("name", equalTo("end-of-day"))
+               .body("state", equalTo("OPEN"))
+               .body("joins[0].target", equalTo("eod-sign-off"))
+               .body("joins[0].waitingFor", equalTo(List.of("pnl-report")))
+               .body("runs.find { it.job == 'pnl-report' }.outcome", equalTo("FAILED"));
+        String failed = given().when().get(eod).then().extract().path("runs.find { it.job == 'pnl-report' }.id");
+
+        // the next import completes the trades, then operations runs the report again
+        given().contentType(ContentType.JSON).body(new ImportParams(date, 0))
+               .when().post("/trades/imports").then().statusCode(200);
+        await().atMost(Duration.ofSeconds(30)).until(() -> queries.isIdle()
+                && types("T-2026-11-20-8").contains("COMPLETED"));
+        given().when().post("/dtp/runs/" + failed + "/reruns").then().statusCode(401);
+        given().header("X-User", "otto").when().post("/dtp/runs/" + failed + "/reruns").then().statusCode(200);
+        await().atMost(Duration.ofSeconds(30)).until(() -> "COMPLETED".equals(
+                given().when().get(eod).then().extract().path("state")));
+
+        assertThat(notifications.latest()).anySatisfy(m -> {
+            assertThat(m.audience()).isEqualTo("operations");
+            assertThat(m.subject()).isEqualTo("EOD 2026-11-20 signed off");
+        });
+        given().when().get(eod).then()
+               .body("runs.job", containsInAnyOrder("end-of-day", "position-report", "pnl-report", "pnl-report",
+                       "eod-sign-off"))
+               .body("runs[0].job", equalTo("end-of-day"))
+               .body("runs[-1].job", equalTo("eod-sign-off"))
+               .body("joins[0].fired", is(true));
+        given().header("X-User", "otto").when().post("/dtp/runs/" + failed + "/reruns").then().statusCode(409);
+        given().when().get("/dtp/flow-instances").then().statusCode(200).body("businessKey", hasItem("2026-11-20"));
+        given().when().get("/eod/2026-01-01").then().statusCode(404);
     }
 
     private static ValidatableResponse vote(String id, String user, String groups, String vote) {

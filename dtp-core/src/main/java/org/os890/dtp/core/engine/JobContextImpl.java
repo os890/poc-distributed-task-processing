@@ -15,6 +15,9 @@
  */
 package org.os890.dtp.core.engine;
 
+import java.util.Optional;
+
+import org.os890.dtp.api.FlowInstance;
 import org.os890.dtp.api.Inbox;
 import org.os890.dtp.api.ItemType;
 import org.os890.dtp.api.Items;
@@ -51,6 +54,11 @@ public class JobContextImpl<P> implements JobContext<P> {
     @Override
     public boolean shouldContinue() {
         return run.shouldContinue();
+    }
+
+    @Override
+    public Optional<FlowInstance> flowInstance() {
+        return new FlowInstances(run.engine()).ofRun(run.claimed().runId());
     }
 
     @Override

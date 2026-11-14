@@ -15,6 +15,8 @@
  */
 package org.os890.dtp.api;
 
+import java.util.Optional;
+
 /**
  * Everything a handler needs during a run. Only valid inside {@link JobHandler#execute(JobContext)}.
  *
@@ -32,6 +34,13 @@ public interface JobContext<P> {
 
     /** {@code false} once a soft stop was requested. Inbox iteration checks this automatically. */
     boolean shouldContinue();
+
+    /**
+     * The flow instance of this run, e.g. to read the business date of an end of day (empty outside an instance).
+     *
+     * @return the flow instance
+     */
+    Optional<FlowInstance> flowInstance();
 
     /** Tracks new items within this run. */
     Items items();

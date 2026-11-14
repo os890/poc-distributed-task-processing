@@ -64,7 +64,10 @@ public class RunExecutor {
         this.routing = routing;
         this.onFinished = onFinished;
         this.flows = flows;
+        this.instances = new FlowInstances(ctx);
     }
+
+    private final FlowInstances instances;
 
     private record Result(RunOutcome outcome, String resultType, String resultStatus, String error) {
     }
@@ -200,14 +203,17 @@ public class RunExecutor {
             if (!ctx.runs().finish(c, claimed.runId(), claimed.token(), claimed.attempt(), end, now)) {
                 throw new LeaseLostException(claimed.runId(), claimed.token());
             }
+            // successors belong to the flow instance of the run (DD-4)
+            UUID flowInstance = ctx.runs().load(c, claimed.runId()).flowInstanceId();
             for (TransitionDefinition transition : run.job().transitions()) {
                 if (transition.matches(result.outcome(), result.resultStatus())) {
                     JobDefinition target = ctx.catalog().byId(transition.targetJobId());
                     planner.plan(c, target, new RunPlanner.Trigger(TriggerType.TRANSITION,
                             "transition:" + claimed.runId() + ":" + target.id(), claimed.runId().toString(), null,
-                            null), now);
+                            null, flowInstance), now);
                 }
             }
+            instances.runEnded(c, claimed.runId(), now);
             boolean succeeded = result.outcome() == RunOutcome.SUCCEEDED
                     || result.outcome() == RunOutcome.COMPLETED_WITH_ISSUES;
             if (flows != null && succeeded && result.resultStatus() != null) {

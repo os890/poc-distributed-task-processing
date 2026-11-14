@@ -57,7 +57,8 @@
 
 Branch `poc-impl` contains a first implementation (slice 1) with a runtime demo on three Quarkus nodes, flows with
 signals, versions and overrides (slice 2), decision requests and approvals (slice 3), fork/join on item level
-(slice 4), and decision fallbacks with domain events (slice 5): see [IMPLEMENTATION.md](IMPLEMENTATION.md).
+(slice 4), decision fallbacks with domain events (slice 5), and flow instances with run joins (slice 6): see
+[IMPLEMENTATION.md](IMPLEMENTATION.md).
 
 ## License
 

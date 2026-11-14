@@ -17,6 +17,7 @@ package org.os890.dtp.core.domain;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -42,6 +43,7 @@ import java.util.UUID;
  * @param defaultParameters default run parameters as JSON, or {@code null}
  * @param fallbackJobId     job of the fallback run of decision requests that stay open, or {@code null} (D38)
  * @param fallbackDelay     how long a request stays open before its fallback run, or {@code null}
+ * @param joinMembers       members of the run join this job is the target of, empty without join (DD-9)
  * @param transitions       successors of the job
  */
 public record JobDefinition(UUID id, String namespace, String name, int revision, boolean enabled,
@@ -49,10 +51,12 @@ public record JobDefinition(UUID id, String namespace, String name, int revision
                             boolean external, Integer inboxMinItems, ConcurrencyPolicy concurrency,
                             TakeoverPolicy takeover, int retryMax, Duration retryBackoff, Integer maxItemVisits,
                             Duration leaseDuration, String defaultParameters, UUID fallbackJobId,
-                            Duration fallbackDelay, List<TransitionDefinition> transitions) {
+                            Duration fallbackDelay, List<JoinMember> joinMembers,
+                            List<TransitionDefinition> transitions) {
 
     public JobDefinition {
         transitions = List.copyOf(transitions);
+        joinMembers = List.copyOf(joinMembers);
         if ((fallbackJobId == null) != (fallbackDelay == null)) {
             throw new IllegalArgumentException("job " + name + ": a decision fallback needs a job and a delay");
         }
@@ -76,6 +80,28 @@ public record JobDefinition(UUID id, String namespace, String name, int revision
     public JobDefinition withTransitions(List<TransitionDefinition> newTransitions) {
         return new JobDefinition(id, namespace, name, revision, enabled, handlerClass, asap, cronExpression,
                 cronZone, external, inboxMinItems, concurrency, takeover, retryMax, retryBackoff, maxItemVisits,
-                leaseDuration, defaultParameters, fallbackJobId, fallbackDelay, newTransitions);
+                leaseDuration, defaultParameters, fallbackJobId, fallbackDelay, joinMembers, newTransitions);
+    }
+
+    /**
+     * Same definition with the given join members.
+     *
+     * @param members the members
+     * @return a copy
+     */
+    public JobDefinition withJoinMembers(List<JoinMember> members) {
+        return new JobDefinition(id, namespace, name, revision, enabled, handlerClass, asap, cronExpression,
+                cronZone, external, inboxMinItems, concurrency, takeover, retryMax, retryBackoff, maxItemVisits,
+                leaseDuration, defaultParameters, fallbackJobId, fallbackDelay, members, transitions);
+    }
+
+    /**
+     * The member entry of a job, if this job is the target of a join it is a member of.
+     *
+     * @param memberJobId the member job
+     * @return the member
+     */
+    public Optional<JoinMember> joinMember(UUID memberJobId) {
+        return joinMembers.stream().filter(m -> m.jobId().equals(memberJobId)).findFirst();
     }
 }
