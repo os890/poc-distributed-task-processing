@@ -23,7 +23,8 @@ import org.os890.dtp.core.spi.DomainEventPublisher;
 /**
  * Fires the domain events of dtp as CDI events, called by the engine after the commit: first synchronously
  * ({@code @Observes}), then asynchronously ({@code @ObservesAsync}). Failing observers are logged, they never affect
- * the engine.
+ * the engine. As always in CDI, a failing synchronous observer stops the remaining synchronous observers of the
+ * event; the asynchronous observers are notified anyway.
  */
 class CdiEventPublisher implements DomainEventPublisher {
 

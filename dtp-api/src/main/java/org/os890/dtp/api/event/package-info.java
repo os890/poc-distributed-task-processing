@@ -16,7 +16,9 @@
 /**
  * Domain events of dtp, fired as CDI events after the commit of the transaction that caused them: first to the
  * synchronous observers ({@code @Observes}, in the committing thread, without a transaction), then to the asynchronous
- * ones ({@code @ObservesAsync}). A rolled back transaction fires nothing. The framework never notifies people itself,
- * the application observes the events (docs/design/02-domain-model.md §2.6).
+ * ones ({@code @ObservesAsync}). A rolled back transaction fires nothing. A failing synchronous observer stops the
+ * remaining synchronous observers of the event (CDI), so long-running or risky work belongs into asynchronous ones.
+ * The framework never notifies people itself, the application observes the events (docs/design/02-domain-model.md
+ * §2.6).
  */
 package org.os890.dtp.api.event;

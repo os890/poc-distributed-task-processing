@@ -47,7 +47,9 @@ class CdiEventPublisherTest {
             notified.add("sync " + event.option());
         }
 
-        void failing(@Observes DecisionMade event) {
+        // a failing synchronous observer stops the other synchronous observers of the event (CDI), so it observes
+        // another event here
+        void failing(@Observes DecisionRequested event) {
             throw new IllegalStateException("a failing observer");
         }
 
@@ -71,8 +73,8 @@ class CdiEventPublisherTest {
             DecisionRequest request = new DecisionRequest(UUID.randomUUID(), DecisionRequest.Kind.CHOICE, "ITEM",
                     UUID.randomUUID(), "shipment", "S-1", "shipment-sorting", "unknown hub", null, 0, null,
                     Instant.now());
-            publisher.publish(new DecisionMade(request, "RETRY", "otto", null));
             publisher.publish(new DecisionRequested(request));
+            publisher.publish(new DecisionMade(request, "RETRY", "otto", null));
 
             Observer observer = container.select(Observer.class).get();
             await().atMost(Duration.ofSeconds(5)).until(() -> observer.notified().size() == 2);
