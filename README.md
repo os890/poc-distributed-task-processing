@@ -58,8 +58,8 @@
 Branch `poc-impl` contains a first implementation (slice 1) with a runtime demo on three Quarkus nodes, flows with
 signals, versions and overrides (slice 2), decision requests and approvals (slice 3), fork/join on item level
 (slice 4), decision fallbacks with domain events (slice 5), flow instances with run joins (slice 6), business
-calendars with processing slots (slice 7), work packages with item and time limits (slice 8), and collectors that
-hand their packages over to other jobs (slice 9): see
+calendars with processing slots (slice 7), work packages with item and time limits (slice 8), collectors that
+hand their packages over to other jobs (slice 9), and collection windows (slice 10): see
 [IMPLEMENTATION.md](IMPLEMENTATION.md).
 
 ## License

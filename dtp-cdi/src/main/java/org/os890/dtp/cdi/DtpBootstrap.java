@@ -38,6 +38,7 @@ import org.os890.dtp.api.Items;
 import org.os890.dtp.api.JobEngine;
 import org.os890.dtp.api.ProcessStep;
 import org.os890.dtp.core.DtpEngine;
+import org.os890.dtp.core.engine.CollectionWindows;
 import org.os890.dtp.core.engine.Decisions;
 import org.os890.dtp.core.engine.FlowAdmin;
 import org.os890.dtp.core.engine.FlowInstances;
@@ -165,5 +166,10 @@ public class DtpBootstrap {
     @Produces
     BusinessCalendars calendars() {
         return engine().calendars();
+    }
+
+    @Produces
+    CollectionWindows windows() {
+        return engine().windows();
     }
 }

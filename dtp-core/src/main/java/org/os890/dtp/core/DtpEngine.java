@@ -46,6 +46,7 @@ import org.os890.dtp.api.TrackedItem;
 import org.os890.dtp.core.domain.FlowModel;
 import org.os890.dtp.core.engine.BusinessCalendarsImpl;
 import org.os890.dtp.core.engine.ClaimedRun;
+import org.os890.dtp.core.engine.CollectionWindows;
 import org.os890.dtp.core.engine.Decisions;
 import org.os890.dtp.core.engine.EngineContext;
 import org.os890.dtp.core.engine.FlowAdmin;
@@ -116,6 +117,7 @@ public class DtpEngine {
     private FlowAdmin flowAdmin;
     private Decisions decisions;
     private FlowInstances flowInstances;
+    private CollectionWindows windows;
     private ScheduledExecutorService scheduler;
     private int idleRounds;
 
@@ -227,6 +229,7 @@ public class DtpEngine {
         flowAdmin = new FlowAdmin(ctx);
         decisions = routing.decisions();
         flowInstances = new FlowInstances(ctx);
+        windows = new CollectionWindows(ctx);
         Set<String> capabilities = steps.keySet().stream().map(Class::getName).collect(Collectors.toSet());
         leader = new LeaderElector(ctx);
         housekeeping = new Housekeeping(ctx, planner);
@@ -358,6 +361,15 @@ public class DtpEngine {
      */
     public FlowInstances flowInstances() {
         return requireStarted(flowInstances);
+    }
+
+    /**
+     * The collection windows, e.g. to start an occurrence now and to show the latest ones.
+     *
+     * @return the collection windows
+     */
+    public CollectionWindows windows() {
+        return requireStarted(windows);
     }
 
     /**

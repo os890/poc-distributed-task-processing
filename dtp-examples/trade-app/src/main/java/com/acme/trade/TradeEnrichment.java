@@ -15,6 +15,7 @@
  */
 package com.acme.trade;
 
+import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -44,11 +45,22 @@ public class TradeEnrichment implements ItemProcessor<Trade, UUID> {
     @Inject
     EntityManager em;
 
+    /**
+     * The time of the current transaction in the database. The trade report selects released trades by it: a
+     * transaction that commits before the cut-off of a collection window started before it, one that starts after
+     * the window closed gets a later time, so every trade falls into exactly one report (no node clock involved).
+     */
+    private Instant dbTime() {
+        return em.createQuery("select current_instant", Instant.class).getSingleResult();
+    }
+
     @Override
     public void process(TrackedItem<Trade, UUID> item) {
         Optional<ApprovalResult> approval = item.approval();
         if (approval.isPresent()) {
-            em.find(Trade.class, item.ref().id()).setReleased(approval.get().approved());
+            if (approval.get().approved()) {
+                em.find(Trade.class, item.ref().id()).release(dbTime());
+            }
             item.signal(approval.get().approved() ? EnrichmentSignal.ENRICHED : EnrichmentSignal.REJECTED,
                     (approval.get().approved() ? "approved by " + approval.get().approvers()
                                                : "rejected by " + approval.get().decidedBy()));
@@ -66,7 +78,7 @@ public class TradeEnrichment implements ItemProcessor<Trade, UUID> {
         if (limit.is(LimitSignal.ABOVE_LIMIT)) {
             item.requestApproval(Approval.quorum(2).assignedTo(Desk.RISK), limit.reason());
         } else {
-            trade.setReleased(true);
+            trade.release(dbTime());
             item.signal(EnrichmentSignal.ENRICHED);
         }
     }

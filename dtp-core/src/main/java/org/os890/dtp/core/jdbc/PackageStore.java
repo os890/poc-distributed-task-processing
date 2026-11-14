@@ -79,18 +79,20 @@ public class PackageStore {
     public void insert(Connection c, UUID id, String namespace, UUID jobId, String itemType, String groupKey,
                        Creator creator, Instant now) throws SQLException {
         Sql.update(c, "INSERT INTO dtp_work_package (id, namespace, job_id, item_type, group_key, seq, state,"
-                + " created_by_run_id, created_by_job_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, "
-                + dialect.nextValue("dtp_package_seq") + ", 'PENDING', ?, ?, ?, ?)", id, namespace, jobId, itemType,
-                groupKey, creator.runId(), creator.jobId(), now, now);
+                + " created_by_run_id, created_by_job_id, window_occurrence_id, created_at, updated_at)"
+                + " VALUES (?, ?, ?, ?, ?, " + dialect.nextValue("dtp_package_seq") + ", 'PENDING', ?, ?, ?, ?, ?)",
+                id, namespace, jobId, itemType, groupKey, creator.runId(), creator.jobId(),
+                creator.windowOccurrenceId(), now, now);
     }
 
     /**
-     * The run that creates packages, and its job.
+     * The run that creates packages, its job and the window occurrence it collects for.
      *
-     * @param runId the run
-     * @param jobId its job
+     * @param runId              the run
+     * @param jobId              its job
+     * @param windowOccurrenceId the window occurrence of a collector run, or {@code null}
      */
-    public record Creator(UUID runId, UUID jobId) {
+    public record Creator(UUID runId, UUID jobId, UUID windowOccurrenceId) {
     }
 
     /**

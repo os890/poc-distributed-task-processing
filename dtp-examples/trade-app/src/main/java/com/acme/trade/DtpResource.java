@@ -34,6 +34,8 @@ import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 
 import org.os890.dtp.core.DtpException;
+import org.os890.dtp.core.engine.CollectionWindows;
+import org.os890.dtp.core.engine.CollectionWindows.OccurrenceView;
 import org.os890.dtp.core.engine.FlowInstances;
 import org.os890.dtp.core.engine.FlowInstances.InstanceView;
 import org.os890.dtp.core.query.DtpQueries;
@@ -52,6 +54,9 @@ public class DtpResource {
 
     @Inject
     FlowInstances instances;
+
+    @Inject
+    CollectionWindows windows;
 
     /**
      * Nodes of the cluster.
@@ -109,6 +114,18 @@ public class DtpResource {
     @Path("/flow-instances")
     public List<InstanceView> flowInstances(@QueryParam("limit") @DefaultValue("20") int limit) {
         return instances.latest(limit);
+    }
+
+    /**
+     * The latest occurrences of the collection windows, e.g. of the trade report.
+     *
+     * @param limit at most this many
+     * @return the occurrences, newest first
+     */
+    @GET
+    @Path("/windows")
+    public List<OccurrenceView> windows(@QueryParam("limit") @DefaultValue("20") int limit) {
+        return windows.latest(limit);
     }
 
     /**

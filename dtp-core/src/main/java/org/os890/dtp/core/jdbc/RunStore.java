@@ -241,6 +241,10 @@ public class RunStore {
                 + " WHERE r.namespace = ? AND r.state = 'PENDING' AND l.run_id IS NULL"
                 + " AND (r.not_before IS NULL OR r.not_before <= ?) AND (r.slot_end IS NULL OR r.slot_end > ?)"
                 + " AND r.handler_class IN (" + in + ")"
+                // jobs paused by an active window occurrence aren't started (D35)
+                + " AND NOT EXISTS (SELECT 1 FROM dtp_window_paused_job wp JOIN dtp_window_occurrence wo"
+                + " ON wo.window_id = wp.window_id WHERE wp.job_id = r.job_id"
+                + " AND wo.state IN ('QUIESCING', 'OPEN', 'WAITING_FOR_DECISION'))"
                 + " ORDER BY r.priority DESC, r.created_at, r.id LIMIT ?",
                 rs -> new Candidate(Sql.uuid(rs, "id"), Sql.uuid(rs, "job_id")), params.toArray());
         List<Candidate> onePerJob = new ArrayList<>();

@@ -111,9 +111,11 @@ public class RunPlanner {
         List<RunState> open = runs.openRunStates(c, job.id());
         RunState state = RunState.PENDING;
         RunOutcome outcome = null;
-        // a fallback run belongs to one decision request, a run of a flow instance to its business key (e.g. the
-        // business date): never skipped or coalesced, the job lease runs them one after the other
-        ConcurrencyPolicy policy = trigger.type() == TriggerType.FALLBACK || trigger.flowInstanceId() != null
+        // a fallback run belongs to one decision request, a collector run to its window occurrence, a run of a flow
+        // instance to its business key (e.g. the business date): never skipped or coalesced, the job lease runs them
+        // one after the other
+        ConcurrencyPolicy policy = trigger.type() == TriggerType.FALLBACK || trigger.type() == TriggerType.WINDOW
+                || trigger.flowInstanceId() != null
                 ? ConcurrencyPolicy.QUEUE_ALL : job.concurrency();
         if (!open.isEmpty()) {
             switch (policy) {

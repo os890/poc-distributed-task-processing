@@ -78,6 +78,39 @@ public class JobDefinitions {
         return id;
     }
 
+    /**
+     * Saves a collection window; the collector and the paused jobs have to be defined already.
+     *
+     * @param name           the name
+     * @param cron           the schedule (UTC), or {@code null} for occurrences started by operators only
+     * @param quiesceTimeout how long to wait for the paused jobs
+     * @param collector      the collector
+     * @param paused         the paused jobs
+     * @return the window id
+     */
+    public UUID window(String name, String cron, Duration quiesceTimeout, Class<? extends ProcessStep> collector,
+                       List<Class<? extends ProcessStep>> paused) {
+        UUID id = UUID.randomUUID();
+        tx.required(() -> tx.withConnection(c -> {
+            Sql.update(c, "INSERT INTO dtp_window (id, namespace, name, schedule_cron, collector_job_id,"
+                    + " quiesce_timeout) VALUES (?, ?, ?, ?, ?, ?)", id, namespace, name, cron, jobId(c, collector),
+                    quiesceTimeout.toString());
+            for (Class<? extends ProcessStep> job : paused) {
+                Sql.update(c, "INSERT INTO dtp_window_paused_job (window_id, job_id) VALUES (?, ?)", id,
+                        jobId(c, job));
+            }
+            return null;
+        }));
+        return id;
+    }
+
+    private UUID jobId(java.sql.Connection c, Class<? extends ProcessStep> step) throws java.sql.SQLException {
+        return Sql.queryOne(c, "SELECT j.id FROM dtp_job j JOIN dtp_job_revision r ON r.job_id = j.id"
+                + " AND r.revision = j.current_revision WHERE j.namespace = ? AND r.handler_class = ?",
+                rs -> Sql.uuid(rs, "id"), namespace, step.getName())
+                  .orElseThrow(() -> new IllegalArgumentException("no job for " + step.getName()));
+    }
+
     /** A job definition under construction. */
     public class Definition {
 

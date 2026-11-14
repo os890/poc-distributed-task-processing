@@ -37,7 +37,7 @@ import org.os890.dtp.core.jdbc.RunStore;
 /**
  * The tasks of the housekeeping leader (DD-3): creating lease rows, planning time and inbox triggers (cron slots with
  * their business calendar) and decision fallbacks, moving runs that missed their processing slot, taking over expired
- * leases and marking dead nodes. Every action is idempotent (run keys) or conditional
+ * leases, marking dead nodes and coordinating collection windows. Every action is idempotent (run keys) or conditional
  * (tokens), so two leaders for a short moment do no harm.
  */
 public class Housekeeping {
@@ -53,6 +53,7 @@ public class Housekeeping {
     private final PackageStore packages;
     private final Map<String, CronExpression> crons = new ConcurrentHashMap<>();
     private final Map<UUID, Instant> examinedSlots = new ConcurrentHashMap<>();
+    private final WindowCoordinator windows;
 
     public Housekeeping(EngineContext ctx, RunPlanner planner) {
         this.ctx = ctx;
@@ -60,6 +61,7 @@ public class Housekeeping {
         this.decisions = new Decisions(ctx);
         this.instances = new FlowInstances(ctx);
         this.packages = new PackageStore(ctx.dialect());
+        this.windows = new WindowCoordinator(ctx, planner, decisions);
     }
 
     /** One housekeeping cycle. Each step runs in its own transaction, so one failure doesn't block the others. */
@@ -81,6 +83,7 @@ public class Housekeeping {
             }
         }
         guarded("decision fallbacks", () -> decisions.planFallbacks(planner));
+        guarded("collection windows", this::coordinateWindows);
         guarded("missed processing slots", this::moveMissedSlots);
         guarded("lease takeover", this::reapLeases);
         guarded("dead nodes", () -> ctx.tx().required(() -> ctx.tx().withConnection(c -> ctx.nodes().markDead(c,
@@ -118,6 +121,17 @@ public class Housekeeping {
         if (examined != null) {
             // only after the commit: a rolled back slot is planned again
             examinedSlots.merge(job.id(), examined, (a, b) -> a.isAfter(b) ? a : b);
+        }
+        return null;
+    }
+
+    /** Each window in its own transaction: one failing window doesn't block the others. */
+    private Object coordinateWindows() {
+        for (var window : windows.windows()) {
+            guarded("window " + window.name(), () -> {
+                windows.cycle(window);
+                return null;
+            });
         }
         return null;
     }

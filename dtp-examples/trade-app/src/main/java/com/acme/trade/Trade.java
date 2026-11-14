@@ -16,6 +16,7 @@
 package com.acme.trade;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.UUID;
 
@@ -50,6 +51,9 @@ public class Trade {
     /** Enriched (and approved if needed): released for settlement. */
     private boolean released;
 
+    /** When it was released (DB time of the releasing transaction): the trade report selects by it. */
+    private Instant releasedAt;
+
     protected Trade() {
     }
 
@@ -78,6 +82,20 @@ public class Trade {
 
     public void setReleased(boolean released) {
         this.released = released;
+    }
+
+    public Instant getReleasedAt() {
+        return releasedAt;
+    }
+
+    /**
+     * Releases the trade for settlement and reporting.
+     *
+     * @param at the DB time of the releasing transaction
+     */
+    public void release(Instant at) {
+        this.released = true;
+        this.releasedAt = at;
     }
 
     public String getIsin() {

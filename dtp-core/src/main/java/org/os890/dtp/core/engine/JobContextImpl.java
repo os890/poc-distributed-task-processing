@@ -23,7 +23,9 @@ import org.os890.dtp.api.ItemType;
 import org.os890.dtp.api.Items;
 import org.os890.dtp.api.JobContext;
 import org.os890.dtp.api.RunInfo;
+import org.os890.dtp.api.WindowOccurrence;
 import org.os890.dtp.api.WorkPackages;
+import org.os890.dtp.core.jdbc.WindowStore;
 
 /**
  * The context of a {@code JobHandler} run.
@@ -60,6 +62,12 @@ public class JobContextImpl<P> implements JobContext<P> {
     @Override
     public Optional<FlowInstance> flowInstance() {
         return new FlowInstances(run.engine()).ofRun(run.claimed().runId());
+    }
+
+    @Override
+    public Optional<WindowOccurrence> window() {
+        return run.engine().tx().withConnection(c -> new WindowStore().ofRun(c, run.claimed().runId()))
+                  .map(o -> new WindowOccurrence(o.id(), o.window(), o.seq(), o.from(), o.cutOff()));
     }
 
     @Override

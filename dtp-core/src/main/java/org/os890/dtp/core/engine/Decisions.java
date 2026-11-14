@@ -42,6 +42,7 @@ import org.os890.dtp.core.domain.DecisionKind;
 import org.os890.dtp.core.domain.ItemEventType;
 import org.os890.dtp.core.domain.ItemState;
 import org.os890.dtp.core.domain.JobDefinition;
+import org.os890.dtp.core.domain.OccurrenceState;
 import org.os890.dtp.core.domain.SubjectType;
 import org.os890.dtp.core.domain.TriggerType;
 import org.os890.dtp.core.jdbc.DecisionStore;
@@ -51,6 +52,7 @@ import org.os890.dtp.core.jdbc.ItemStore.ItemEvent;
 import org.os890.dtp.core.jdbc.ItemStore.ItemRow;
 import org.os890.dtp.core.jdbc.PackageStore;
 import org.os890.dtp.core.jdbc.PackageStore.PackageRow;
+import org.os890.dtp.core.jdbc.WindowStore;
 import org.os890.dtp.core.spi.Transactions;
 
 /**
@@ -432,6 +434,10 @@ public class Decisions {
             decidePackage(c, request, BuiltInOption.DISCARD.name().equals(option), reason, now);
             return;
         }
+        if (request.subjectType() == SubjectType.WINDOW_OCCURRENCE) {
+            decideOccurrence(c, request, BuiltInOption.valueOf(option), now);
+            return;
+        }
         ItemRow item = ctx.items().load(c, request.subjectId());
         boolean branch = item.state() == ItemState.FORKED;
         if (branch ? !waitingBranch(c, request) : item.state() != ItemState.WAITING_FOR_DECISION) {
@@ -474,6 +480,25 @@ public class Decisions {
                 ctx.items().append(c, new ItemEvent(item.id(), ctx.namespace(), ItemEventType.DISCARDED,
                         request.requestedByJobId(), null, null, null, ctx.nodeId(), reason, null, null, null), now);
             }
+        }
+    }
+
+    /**
+     * Applies a decision on a window occurrence; the window coordinator acts on the new state in its next cycle.
+     */
+    private void decideOccurrence(Connection c, RequestRow request, BuiltInOption option, Instant now)
+            throws SQLException {
+        WindowStore windows = new WindowStore();
+        boolean applied = switch (option) {
+            case KEEP_WAITING -> windows.decided(c, request.subjectId(), OccurrenceState.QUIESCING, false, false, now);
+            case FORCE_OPEN -> windows.decided(c, request.subjectId(), OccurrenceState.QUIESCING, true, false, now);
+            case RETRY -> windows.decided(c, request.subjectId(), OccurrenceState.OPEN, false, true, now);
+            case SKIP_OCCURRENCE -> windows.decided(c, request.subjectId(), OccurrenceState.SKIPPED, false, false,
+                    now);
+            default -> throw new DtpException("option " + option + " doesn't apply to a window occurrence");
+        };
+        if (!applied) {
+            throw new DtpException("window occurrence " + request.subjectId() + " doesn't wait for a decision");
         }
     }
 
@@ -520,6 +545,9 @@ public class Decisions {
             PackageRow pkg = new PackageStore(ctx.dialect()).load(c, row.subjectId());
             itemType = pkg.itemType();
             businessKey = "work package " + pkg.seq() + (pkg.groupKey() == null ? "" : " (" + pkg.groupKey() + ")");
+        } else if (row.subjectType() == SubjectType.WINDOW_OCCURRENCE) {
+            businessKey = new WindowStore().load(c, row.subjectId()).map(o -> "window " + o.window() + " #" + o.seq())
+                    .orElse(null);
         }
         List<VoteView> votes = store.votes(c, row.id()).stream()
                 .map(v -> new VoteView(v.voter(), v.vote(), v.comment(), v.votedAt())).toList();
@@ -540,6 +568,9 @@ public class Decisions {
             PackageRow pkg = new PackageStore(ctx.dialect()).load(c, row.subjectId());
             itemType = pkg.itemType();
             businessKey = "work package " + pkg.seq() + (pkg.groupKey() == null ? "" : " (" + pkg.groupKey() + ")");
+        } else if (row.subjectType() == SubjectType.WINDOW_OCCURRENCE) {
+            businessKey = new WindowStore().load(c, row.subjectId()).map(o -> "window " + o.window() + " #" + o.seq())
+                    .orElse(null);
         }
         int approvals = (int) store.votes(c, row.id()).stream().filter(v -> Vote.APPROVE.name().equals(v.vote()))
                                    .count();

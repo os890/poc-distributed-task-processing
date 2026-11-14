@@ -250,7 +250,11 @@ public class DtpQueries {
                     + " WHERE p.namespace = ? AND p.state = 'PENDING' AND r.inbox_min_items IS NOT NULL"
                     + " AND (p.next_attempt_at IS NULL OR p.next_attempt_at <= CURRENT_TIMESTAMP)",
                     rs -> rs.getInt(1), namespace).orElse(0);
-            return open == 0 && due == 0 && branches == 0 && fallbacks == 0 && packages == 0;
+            // a window occurrence that is quiescing or open moves on by itself (one waiting for a decision doesn't)
+            int windows = Sql.queryOne(c, "SELECT COUNT(*) FROM dtp_window_occurrence o JOIN dtp_window w"
+                    + " ON w.id = o.window_id WHERE w.namespace = ? AND o.state IN ('QUIESCING', 'OPEN')",
+                    rs -> rs.getInt(1), namespace).orElse(0);
+            return open == 0 && due == 0 && branches == 0 && fallbacks == 0 && packages == 0 && windows == 0;
         });
     }
 }

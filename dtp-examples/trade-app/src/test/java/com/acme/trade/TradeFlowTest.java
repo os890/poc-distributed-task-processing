@@ -317,6 +317,50 @@ class TradeFlowTest {
         });
     }
 
+    @Test
+    @Order(7)
+    void theTradeReportContainsTheTradesReleasedSinceTheLastReport() {
+        // the first report: all trades released so far (orders 1 to 6), one file per business date
+        await().atMost(Duration.ofSeconds(30)).until(() -> queries.isIdle());
+        long released = em.createQuery("SELECT COUNT(t) FROM Trade t WHERE t.released = TRUE", Long.class)
+                          .getSingleResult();
+        given().when().post("/reporting/occurrences").then().statusCode(401);
+        given().header("X-User", "otto").when().post("/reporting/occurrences").then().statusCode(200)
+               .body("window", equalTo("trade-reporting")).body("sequence", is(1)).body("triggeredBy", is("otto"));
+        await().atMost(Duration.ofSeconds(30)).until(() -> queries.isIdle() && "CLOSED".equals(
+                given().when().get("/dtp/windows").then().extract().path("[0].state")));
+        assertThat(reportedTrades(1)).isEqualTo(released);
+        given().when().get("/reporting/files").then()
+               .body("findAll { it.startsWith('trade-report-1-2026-11-23.csv') }.size()", is(1));
+
+        // three new trades of 2026-11-24: the second report contains only these
+        LocalDate date = LocalDate.of(2026, 11, 24);
+        given().contentType(ContentType.JSON).body(new ImportParams(date, 3))
+               .when().post("/trades/imports").then().statusCode(200);
+        await().atMost(Duration.ofSeconds(30)).until(() -> queries.isIdle()
+                && types("T-2026-11-24-3").contains("COMPLETED"));
+        given().header("X-User", "otto").when().post("/reporting/occurrences").then().statusCode(200)
+               .body("sequence", is(2));
+        await().atMost(Duration.ofSeconds(30)).until(() -> queries.isIdle() && "CLOSED".equals(
+                given().when().get("/dtp/windows").then().extract().path("[0].state")));
+        List<String> second = List.of("trade-report-2-2026-11-24.csv (3 trades)");
+        given().when().get("/reporting/files").then().body("findAll { it.startsWith('trade-report-2-') }",
+                equalTo(second));
+        // the second occurrence starts at the cut-off of the first, the collector ran alone in the window
+        ValidatableResponse windows = given().when().get("/dtp/windows").then().statusCode(200);
+        assertThat(windows.extract().<String>path("[0].from")).isEqualTo(windows.extract().path("[1].cutOff"));
+        given().when().get("/dtp/runs").then().body("job", hasItem("trade-reporting"));
+        List<JourneyEntry> reported = queries.journey(TradeReporting.REPORTED.name(),
+                trade("T-2026-11-24-1").getId().toString());
+        assertThat(reported).extracting(JourneyEntry::type).containsSubsequence("TRACKED", "PACKAGED", "COMPLETED");
+    }
+
+    private long reportedTrades(long sequence) {
+        List<String> files = given().when().get("/reporting/files").then().statusCode(200).extract().path(".");
+        return files.stream().filter(f -> f.startsWith("trade-report-" + sequence + "-"))
+                    .mapToLong(f -> Long.parseLong(f.replaceAll(".*\\((\\d+) trades\\)", "$1"))).sum();
+    }
+
     private Trade trade(String number) {
         return em.createQuery("SELECT t FROM Trade t WHERE t.tradeNumber = :n", Trade.class)
                  .setParameter("n", number).getSingleResult();

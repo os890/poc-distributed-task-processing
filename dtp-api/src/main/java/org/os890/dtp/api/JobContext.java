@@ -20,8 +20,6 @@ import java.util.Optional;
 /**
  * Everything a handler needs during a run. Only valid inside {@link JobHandler#execute(JobContext)}.
  *
- * <p>Collection windows are not implemented yet.
- *
  * @param <P> type of the run parameters
  */
 public interface JobContext<P> {
@@ -41,6 +39,14 @@ public interface JobContext<P> {
      * @return the flow instance
      */
     Optional<FlowInstance> flowInstance();
+
+    /**
+     * The window occurrence this run collects for, e.g. to select the changes up to its cut-off (empty for runs that
+     * aren't collector runs of a collection window).
+     *
+     * @return the window occurrence
+     */
+    Optional<WindowOccurrence> window();
 
     /** Tracks new items within this run. */
     Items items();

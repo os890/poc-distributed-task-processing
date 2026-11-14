@@ -24,6 +24,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -54,6 +55,7 @@ import org.os890.dtp.core.jdbc.ItemStore.ItemRow;
 import org.os890.dtp.core.jdbc.PackageStore;
 import org.os890.dtp.core.jdbc.PackageStore.Creator;
 import org.os890.dtp.core.jdbc.PackageStore.PackageRow;
+import org.os890.dtp.core.jdbc.WindowStore;
 
 /**
  * The work packages of the current job for one item type (docs/design/04-lifecycles.md §4.4). Creating packages and
@@ -82,6 +84,7 @@ public class WorkPackagesImpl<E, ID> implements WorkPackages<E, ID> {
     /** The job handler of a group's packages, {@code null}: the current job. */
     private final Function<String, Class<? extends JobHandler<?, ?>>> stepOfGroup;
     private final Map<String, UUID> targets = new HashMap<>();
+    private Optional<UUID> windowOccurrence;
 
     public WorkPackagesImpl(RunContext run, ItemRouting routing, ItemType<E, ID> type) {
         this(run, routing, type, null);
@@ -122,6 +125,14 @@ public class WorkPackagesImpl<E, ID> implements WorkPackages<E, ID> {
     @Override
     public PackageCollector<E, ID> forSteps(Function<String, Class<? extends JobHandler<?, ?>>> stepOfGroup) {
         return new WorkPackagesImpl<>(run, routing, type, Objects.requireNonNull(stepOfGroup, "stepOfGroup"));
+    }
+
+    /** The window occurrence of a collector run: its packages belong to it. */
+    private UUID windowOccurrence(Connection c) throws SQLException {
+        if (windowOccurrence == null) {
+            windowOccurrence = new WindowStore().ofRun(c, run.claimed().runId()).map(WindowStore.OccurrenceRow::id);
+        }
+        return windowOccurrence.orElse(null);
     }
 
     /** The job that processes the packages of a group. */
@@ -297,7 +308,7 @@ public class WorkPackagesImpl<E, ID> implements WorkPackages<E, ID> {
             UUID id = UUID.randomUUID();
             UUID target = targetOf(key);
             store.insert(c, id, ctx.namespace(), target, type.name(), key, new Creator(run.claimed().runId(),
-                    jobId()), now);
+                    jobId(), windowOccurrence(c)), now);
             pkg = new Filling(id, store.load(c, id).seq(), target);
             filling.put(key, pkg);
             created[0]++;

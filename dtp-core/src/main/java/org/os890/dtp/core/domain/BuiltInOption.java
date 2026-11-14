@@ -29,6 +29,12 @@ public enum BuiltInOption {
     FAIL("Fail the run"),
     /** Run: finishes as skipped. */
     SKIP("Skip the run"),
+    /** Window occurrence: keep waiting for the paused jobs, the quiesce timeout starts again. */
+    KEEP_WAITING("Keep waiting"),
+    /** Window occurrence: open without waiting for the paused jobs any longer. */
+    FORCE_OPEN("Open the window now"),
+    /** Window occurrence: skipped, its changes fall into the next occurrence. */
+    SKIP_OCCURRENCE("Skip this occurrence"),
     /** Approval: quorum reached. */
     APPROVED("Approved"),
     /** Approval: a user rejected. */
@@ -45,6 +51,12 @@ public enum BuiltInOption {
 
     /** Options of an abandoned run (takeover policy ABANDON). */
     public static final List<BuiltInOption> RUN = List.of(RETRY, FAIL, SKIP);
+
+    /** Options of a window occurrence whose paused jobs didn't stop within the quiesce timeout. */
+    public static final List<BuiltInOption> WINDOW_QUIESCE = List.of(KEEP_WAITING, FORCE_OPEN, SKIP_OCCURRENCE);
+
+    /** Options of a window occurrence whose collector run failed: a new collector run, or skip. */
+    public static final List<BuiltInOption> WINDOW_COLLECTOR = List.of(RETRY, SKIP_OCCURRENCE);
 
     private final String label;
 
