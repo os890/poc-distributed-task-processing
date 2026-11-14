@@ -24,6 +24,7 @@ import java.util.UUID;
 import org.os890.dtp.api.RunOutcome;
 import org.os890.dtp.core.domain.ConcurrencyPolicy;
 import org.os890.dtp.core.domain.JobDefinition;
+import org.os890.dtp.core.domain.ProcessingSlots;
 import org.os890.dtp.core.domain.RunState;
 import org.os890.dtp.core.domain.TriggerType;
 import org.os890.dtp.core.jdbc.RunStore;
@@ -58,9 +59,25 @@ public class RunPlanner {
      * @param parameters  run parameters as JSON, or {@code null} for the job's defaults
      * @param notBefore   earliest start, or {@code null}
      * @param flowInstanceId the flow instance of the new run, or {@code null}
+     * @param cronSlot    the cron slot of a cron trigger (before a calendar shift), or {@code null}
      */
     public record Trigger(TriggerType type, String runKey, String triggeredBy, String parameters, Instant notBefore,
-                          UUID flowInstanceId) {
+                          UUID flowInstanceId, Instant cronSlot) {
+
+        /**
+         * A trigger that isn't a cron slot.
+         *
+         * @param type           what triggered
+         * @param runKey         idempotency key of the occurrence
+         * @param triggeredBy    details
+         * @param parameters     run parameters as JSON, or {@code null}
+         * @param notBefore      earliest start, or {@code null}
+         * @param flowInstanceId the flow instance of the new run, or {@code null}
+         */
+        public Trigger(TriggerType type, String runKey, String triggeredBy, String parameters, Instant notBefore,
+                       UUID flowInstanceId) {
+            this(type, runKey, triggeredBy, parameters, notBefore, flowInstanceId, null);
+        }
 
         /**
          * A trigger outside a flow instance.
@@ -72,7 +89,7 @@ public class RunPlanner {
          * @param notBefore   earliest start, or {@code null}
          */
         public Trigger(TriggerType type, String runKey, String triggeredBy, String parameters, Instant notBefore) {
-            this(type, runKey, triggeredBy, parameters, notBefore, null);
+            this(type, runKey, triggeredBy, parameters, notBefore, null, null);
         }
     }
 
@@ -116,13 +133,37 @@ public class RunPlanner {
             }
         }
         String parameters = trigger.parameters() != null ? trigger.parameters() : job.defaultParameters();
+        Instant notBefore = trigger.notBefore();
+        Instant slotEnd = null;
+        if (state == RunState.PENDING && job.hasSlots()) {
+            // the run starts within a processing slot and is asked to stop at its end (§5.1, D39)
+            Instant earliest = notBefore != null && notBefore.isAfter(now) ? notBefore : now;
+            ProcessingSlots.Window window = slotWindow(job, earliest);
+            notBefore = window.start().isAfter(earliest) ? window.start() : notBefore;
+            slotEnd = window.end();
+        }
         UUID id = UUID.randomUUID();
         boolean created = runs.insertIfAbsent(c, new RunStore.NewRun(id, ctx.namespace(), trigger.runKey(), job.id(),
                 job.revision(), job.handlerClass(), state, outcome, trigger.type(), trigger.triggeredBy(), parameters,
-                trigger.notBefore(), trigger.flowInstanceId()), now);
+                notBefore, trigger.flowInstanceId(), trigger.cronSlot(), slotEnd), now);
         if (created) {
             return new Planned(id, true);
         }
         return new Planned(runs.findByKey(c, ctx.namespace(), trigger.runKey()).orElse(null), false);
+    }
+
+    /**
+     * The processing slot window of a job that is open at the given point in time, or else the next one.
+     *
+     * @param job the job, with slots
+     * @param at  the point in time
+     * @return the window
+     * @throws IllegalStateException if no slot opens within {@link ProcessingSlots#HORIZON}
+     */
+    public ProcessingSlots.Window slotWindow(JobDefinition job, Instant at) {
+        return ProcessingSlots.window(job.slots(), ctx.catalog()::calendar, job.zone(), at)
+                              .orElseThrow(() -> new IllegalStateException("job " + job.name()
+                                      + " has no processing slot within " + ProcessingSlots.HORIZON.toDays()
+                                      + " days after " + at));
     }
 }

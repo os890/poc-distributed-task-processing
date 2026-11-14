@@ -31,6 +31,7 @@ import jakarta.transaction.TransactionManager;
 
 import org.eclipse.microprofile.config.Config;
 import org.eclipse.microprofile.config.ConfigProvider;
+import org.os890.dtp.api.BusinessCalendars;
 import org.os890.dtp.api.FlowDefinition;
 import org.os890.dtp.api.FlowEvent;
 import org.os890.dtp.api.Items;
@@ -159,5 +160,10 @@ public class DtpBootstrap {
     @Produces
     FlowInstances flowInstances() {
         return engine().flowInstances();
+    }
+
+    @Produces
+    BusinessCalendars calendars() {
+        return engine().calendars();
     }
 }

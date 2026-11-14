@@ -16,6 +16,8 @@
 package org.os890.dtp.core.domain;
 
 import java.time.Duration;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -43,6 +45,10 @@ import java.util.UUID;
  * @param defaultParameters default run parameters as JSON, or {@code null}
  * @param fallbackJobId     job of the fallback run of decision requests that stay open, or {@code null} (D38)
  * @param fallbackDelay     how long a request stays open before its fallback run, or {@code null}
+ * @param cronCalendarId    the business calendar of the cron trigger, or {@code null} for every day
+ * @param calendarShift     what happens to a cron slot on a day that isn't a business day
+ * @param cronFlowInstance  every cron slot starts a flow instance, business key: the business date of the slot
+ * @param slots             processing slots, empty if runs may start any time
  * @param joinMembers       members of the run join this job is the target of, empty without join (DD-9)
  * @param transitions       successors of the job
  */
@@ -51,12 +57,17 @@ public record JobDefinition(UUID id, String namespace, String name, int revision
                             boolean external, Integer inboxMinItems, ConcurrencyPolicy concurrency,
                             TakeoverPolicy takeover, int retryMax, Duration retryBackoff, Integer maxItemVisits,
                             Duration leaseDuration, String defaultParameters, UUID fallbackJobId,
-                            Duration fallbackDelay, List<JoinMember> joinMembers,
+                            Duration fallbackDelay, UUID cronCalendarId, CalendarShift calendarShift,
+                            boolean cronFlowInstance, List<ProcessingSlot> slots, List<JoinMember> joinMembers,
                             List<TransitionDefinition> transitions) {
 
     public JobDefinition {
         transitions = List.copyOf(transitions);
         joinMembers = List.copyOf(joinMembers);
+        slots = List.copyOf(slots);
+        if (cronFlowInstance && cronExpression == null) {
+            throw new IllegalArgumentException("job " + name + ": cron_flow_instance needs a cron expression");
+        }
         if ((fallbackJobId == null) != (fallbackDelay == null)) {
             throw new IllegalArgumentException("job " + name + ": a decision fallback needs a job and a delay");
         }
@@ -72,6 +83,24 @@ public record JobDefinition(UUID id, String namespace, String name, int revision
     }
 
     /**
+     * Whether runs of this job may only start within processing slots.
+     *
+     * @return {@code true} with slots
+     */
+    public boolean hasSlots() {
+        return !slots.isEmpty();
+    }
+
+    /**
+     * The zone of the cron expression, also used for slots without a calendar.
+     *
+     * @return the zone, UTC by default
+     */
+    public ZoneId zone() {
+        return cronZone == null ? ZoneOffset.UTC : ZoneId.of(cronZone);
+    }
+
+    /**
      * Same definition with the given transitions.
      *
      * @param newTransitions the transitions
@@ -80,7 +109,8 @@ public record JobDefinition(UUID id, String namespace, String name, int revision
     public JobDefinition withTransitions(List<TransitionDefinition> newTransitions) {
         return new JobDefinition(id, namespace, name, revision, enabled, handlerClass, asap, cronExpression,
                 cronZone, external, inboxMinItems, concurrency, takeover, retryMax, retryBackoff, maxItemVisits,
-                leaseDuration, defaultParameters, fallbackJobId, fallbackDelay, joinMembers, newTransitions);
+                leaseDuration, defaultParameters, fallbackJobId, fallbackDelay, cronCalendarId, calendarShift,
+                cronFlowInstance, slots, joinMembers, newTransitions);
     }
 
     /**
@@ -92,7 +122,21 @@ public record JobDefinition(UUID id, String namespace, String name, int revision
     public JobDefinition withJoinMembers(List<JoinMember> members) {
         return new JobDefinition(id, namespace, name, revision, enabled, handlerClass, asap, cronExpression,
                 cronZone, external, inboxMinItems, concurrency, takeover, retryMax, retryBackoff, maxItemVisits,
-                leaseDuration, defaultParameters, fallbackJobId, fallbackDelay, members, transitions);
+                leaseDuration, defaultParameters, fallbackJobId, fallbackDelay, cronCalendarId, calendarShift,
+                cronFlowInstance, slots, members, transitions);
+    }
+
+    /**
+     * Same definition with the given processing slots.
+     *
+     * @param newSlots the slots
+     * @return a copy
+     */
+    public JobDefinition withSlots(List<ProcessingSlot> newSlots) {
+        return new JobDefinition(id, namespace, name, revision, enabled, handlerClass, asap, cronExpression,
+                cronZone, external, inboxMinItems, concurrency, takeover, retryMax, retryBackoff, maxItemVisits,
+                leaseDuration, defaultParameters, fallbackJobId, fallbackDelay, cronCalendarId, calendarShift,
+                cronFlowInstance, newSlots, joinMembers, transitions);
     }
 
     /**

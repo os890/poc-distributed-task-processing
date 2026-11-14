@@ -28,6 +28,7 @@ import org.os890.dtp.api.event.FlowInstanceCompleted;
 import org.os890.dtp.api.event.FlowInstanceStarted;
 import org.os890.dtp.api.event.JoinFired;
 import org.os890.dtp.core.DtpException;
+import org.os890.dtp.core.domain.CronSchedule;
 import org.os890.dtp.core.domain.JobDefinition;
 import org.os890.dtp.core.domain.JoinMember;
 import org.os890.dtp.core.domain.RunState;
@@ -128,6 +129,32 @@ public class FlowInstances {
      */
     RunPlanner.Planned start(Connection c, JobDefinition root, String businessKey, String parameters, Instant now)
             throws SQLException {
+        return start(c, root, businessKey, new RunPlanner.Trigger(TriggerType.EXTERNAL, null,
+                "flow instance " + root.name() + " " + businessKey, parameters, null, null), now);
+    }
+
+    /**
+     * Starts the instance of a cron slot of a root job with {@code cron_flow_instance} in the caller's transaction:
+     * the business key is the business date of the slot, the root run gets the job's default parameters. Further
+     * slots of the same business date find the existing instance.
+     *
+     * @param c          the connection
+     * @param root       the root job
+     * @param occurrence the due cron slot
+     * @param now        the DB time
+     * @return the root run, {@code created} only for a new instance
+     * @throws SQLException on DB errors
+     */
+    RunPlanner.Planned startScheduled(Connection c, JobDefinition root, CronSchedule.Occurrence occurrence,
+                                      Instant now) throws SQLException {
+        String businessKey = occurrence.businessDate().toString();
+        return start(c, root, businessKey, new RunPlanner.Trigger(TriggerType.CRON, null, "cron slot "
+                + occurrence.at() + ", flow instance " + root.name() + " " + businessKey, null, occurrence.at(), null,
+                occurrence.slot()), now);
+    }
+
+    private RunPlanner.Planned start(Connection c, JobDefinition root, String businessKey, RunPlanner.Trigger trigger,
+                                     Instant now) throws SQLException {
         if (!root.enabled()) {
             throw new IllegalStateException("job " + root.name() + " is disabled");
         }
@@ -135,9 +162,9 @@ public class FlowInstances {
                 "OPEN", now, null);
         boolean created = store.insertIfAbsent(c, row);
         InstanceRow instance = created ? row : store.find(c, ctx.namespace(), root.name(), businessKey).orElseThrow();
-        RunPlanner.Planned run = planner.plan(c, root, new RunPlanner.Trigger(TriggerType.EXTERNAL,
-                "flow:" + instance.id() + ":root", "flow instance " + root.name() + " " + businessKey, parameters,
-                null, instance.id()), now);
+        RunPlanner.Planned run = planner.plan(c, root, new RunPlanner.Trigger(trigger.type(),
+                "flow:" + instance.id() + ":root", trigger.triggeredBy(), trigger.parameters(), trigger.notBefore(),
+                instance.id(), trigger.cronSlot()), now);
         if (created) {
             ctx.publishAfterCommit(new FlowInstanceStarted(api(instance)));
         }

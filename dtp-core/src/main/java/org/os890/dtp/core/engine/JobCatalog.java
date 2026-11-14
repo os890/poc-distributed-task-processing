@@ -23,13 +23,15 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import org.os890.dtp.api.ProcessStep;
+import org.os890.dtp.core.domain.CalendarDefinition;
 import org.os890.dtp.core.domain.JobDefinition;
+import org.os890.dtp.core.jdbc.CalendarStore;
 import org.os890.dtp.core.jdbc.JobStore;
 import org.os890.dtp.core.spi.Transactions;
 
 /**
- * Cached current job definitions of the namespace. Definitions live in the DB (D1), so they are reloaded
- * periodically and on a miss.
+ * Cached current job definitions and business calendars of the namespace. Definitions live in the DB (D1), so they
+ * are reloaded periodically and on a miss.
  */
 public class JobCatalog {
 
@@ -38,7 +40,9 @@ public class JobCatalog {
     private final String namespace;
     private final long refreshNanos;
 
-    private volatile Snapshot snapshot = new Snapshot(List.of(), 0);
+    private final CalendarStore calendarStore = new CalendarStore();
+
+    private volatile Snapshot snapshot = new Snapshot(List.of(), List.of(), 0);
 
     public JobCatalog(Transactions tx, JobStore store, String namespace, long refreshNanos) {
         this.tx = tx;
@@ -47,7 +51,7 @@ public class JobCatalog {
         this.refreshNanos = refreshNanos;
     }
 
-    private record Snapshot(List<JobDefinition> jobs, long loadedAt) {
+    private record Snapshot(List<JobDefinition> jobs, List<CalendarDefinition> calendars, long loadedAt) {
 
         Map<UUID, JobDefinition> byId() {
             return jobs.stream().collect(Collectors.toMap(JobDefinition::id, Function.identity()));
@@ -98,9 +102,38 @@ public class JobCatalog {
                  .orElseThrow(() -> new IllegalArgumentException("unknown job " + jobId + " revision " + revision));
     }
 
+    /** All business calendars of the namespace. */
+    public List<CalendarDefinition> calendars() {
+        return current().calendars();
+    }
+
+    /**
+     * A business calendar by id.
+     *
+     * @param calendarId the calendar
+     * @return the calendar
+     * @throws IllegalArgumentException if it doesn't exist
+     */
+    public CalendarDefinition calendar(UUID calendarId) {
+        java.util.function.Predicate<CalendarDefinition> filter = calendar -> calendar.id().equals(calendarId);
+        return current().calendars().stream().filter(filter).findFirst()
+                        .or(() -> reload().calendars().stream().filter(filter).findFirst())
+                        .orElseThrow(() -> new IllegalArgumentException("unknown business calendar " + calendarId));
+    }
+
+    /**
+     * A business calendar by name.
+     *
+     * @param name the name
+     * @return the calendar, if it exists
+     */
+    public Optional<CalendarDefinition> calendar(String name) {
+        return current().calendars().stream().filter(calendar -> calendar.name().equals(name)).findFirst();
+    }
+
     /** Forces a reload on the next access. */
     public void invalidate() {
-        snapshot = new Snapshot(snapshot.jobs(), 0);
+        snapshot = new Snapshot(snapshot.jobs(), snapshot.calendars(), 0);
     }
 
     private Optional<JobDefinition> find(java.util.function.Predicate<JobDefinition> filter) {
@@ -120,8 +153,8 @@ public class JobCatalog {
     }
 
     private Snapshot reload() {
-        List<JobDefinition> jobs = tx.withConnection(c -> store.loadCurrent(c, namespace));
-        Snapshot s = new Snapshot(jobs, System.nanoTime());
+        Snapshot s = tx.withConnection(c -> new Snapshot(store.loadCurrent(c, namespace),
+                calendarStore.loadAll(c, namespace), System.nanoTime()));
         snapshot = s;
         return s;
     }

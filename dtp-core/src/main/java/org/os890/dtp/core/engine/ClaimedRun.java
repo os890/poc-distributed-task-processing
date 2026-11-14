@@ -16,6 +16,7 @@
 package org.os890.dtp.core.engine;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.UUID;
 
 /**
@@ -28,7 +29,8 @@ import java.util.UUID;
  * @param token         the fencing token
  * @param attempt       the attempt number
  * @param leaseDuration the lease duration
+ * @param slotEnd       end of the processing slot of the run, or {@code null}
  */
 public record ClaimedRun(UUID runId, UUID jobId, int revision, String handlerClass, long token, int attempt,
-                         Duration leaseDuration) {
+                         Duration leaseDuration, Instant slotEnd) {
 }

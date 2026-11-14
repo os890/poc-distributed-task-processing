@@ -16,25 +16,27 @@
 package org.os890.dtp.core.engine;
 
 import java.time.Instant;
-import java.time.ZoneId;
-import java.time.ZoneOffset;
-import java.time.ZonedDateTime;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 import org.os890.dtp.core.domain.BuiltInOption;
+import org.os890.dtp.core.domain.CalendarDefinition;
 import org.os890.dtp.core.domain.CronExpression;
+import org.os890.dtp.core.domain.CronSchedule;
 import org.os890.dtp.core.domain.DecisionKind;
 import org.os890.dtp.core.domain.JobDefinition;
+import org.os890.dtp.core.domain.ProcessingSlots;
 import org.os890.dtp.core.domain.SubjectType;
 import org.os890.dtp.core.domain.TakeoverPolicy;
 import org.os890.dtp.core.domain.TriggerType;
 import org.os890.dtp.core.jdbc.LeaseStore.ExpiredLease;
+import org.os890.dtp.core.jdbc.RunStore;
 
 /**
- * The tasks of the housekeeping leader (DD-3): creating lease rows, planning time and inbox triggers and decision
- * fallbacks, taking over expired leases and marking dead nodes. Every action is idempotent (run keys) or conditional
+ * The tasks of the housekeeping leader (DD-3): creating lease rows, planning time and inbox triggers (cron slots with
+ * their business calendar) and decision fallbacks, moving runs that missed their processing slot, taking over expired
+ * leases and marking dead nodes. Every action is idempotent (run keys) or conditional
  * (tokens), so two leaders for a short moment do no harm.
  */
 public class Housekeeping {
@@ -46,12 +48,15 @@ public class Housekeeping {
     private final EngineContext ctx;
     private final RunPlanner planner;
     private final Decisions decisions;
+    private final FlowInstances instances;
     private final Map<String, CronExpression> crons = new ConcurrentHashMap<>();
+    private final Map<UUID, Instant> examinedSlots = new ConcurrentHashMap<>();
 
     public Housekeeping(EngineContext ctx, RunPlanner planner) {
         this.ctx = ctx;
         this.planner = planner;
         this.decisions = new Decisions(ctx);
+        this.instances = new FlowInstances(ctx);
     }
 
     /** One housekeeping cycle. Each step runs in its own transaction, so one failure doesn't block the others. */
@@ -73,6 +78,7 @@ public class Housekeeping {
             }
         }
         guarded("decision fallbacks", () -> decisions.planFallbacks(planner));
+        guarded("missed processing slots", this::moveMissedSlots);
         guarded("lease takeover", this::reapLeases);
         guarded("dead nodes", () -> ctx.tx().required(() -> ctx.tx().withConnection(c -> ctx.nodes().markDead(c,
                 ctx.namespace(), ctx.clock().now(c).minus(ctx.config().deadAfter())))));
@@ -80,19 +86,52 @@ public class Housekeeping {
 
     private Object planCron(JobDefinition job) {
         CronExpression cron = crons.computeIfAbsent(job.cronExpression(), CronExpression::parse);
-        ZoneId zone = job.cronZone() == null ? ZoneOffset.UTC : ZoneId.of(job.cronZone());
+        CalendarDefinition calendar = job.cronCalendarId() == null ? null
+                : ctx.catalog().calendar(job.cronCalendarId());
+        Instant examined = ctx.tx().required(() -> ctx.tx().withConnection(c -> {
+            Instant now = ctx.clock().now(c);
+            // a new job starts with its first slot after its creation; slots already examined by this leader (e.g.
+            // skipped or collapsed by the calendar) aren't examined again
+            Instant last = ctx.runs().lastCronSlot(c, job.id()).orElseGet(() -> createdAt(job));
+            Instant seen = examinedSlots.get(job.id());
+            if (seen != null && seen.isAfter(last)) {
+                last = seen;
+            }
+            Instant lower = CronSchedule.lowerBound(calendar, job.calendarShift(), now, ctx.config().misfireGrace());
+            CronSchedule.Due due = CronSchedule.due(cron, job.zone(), calendar, job.calendarShift(),
+                    last.isAfter(lower) ? last : lower, now, ctx.config().misfireGrace(), MAX_CRON_SLOTS_PER_TICK);
+            for (CronSchedule.Occurrence occurrence : due.occurrences()) {
+                if (job.cronFlowInstance()) {
+                    instances.startScheduled(c, job, occurrence, now);
+                } else {
+                    planner.plan(c, job, new RunPlanner.Trigger(TriggerType.CRON,
+                            "cron:" + job.id() + ":" + occurrence.at().getEpochSecond(), "cron slot " + occurrence.at()
+                            + (occurrence.at().equals(occurrence.slot()) ? "" : " (moved from " + occurrence.slot()
+                            + ")"), null, occurrence.at(), null, occurrence.slot()), now);
+                }
+            }
+            return due.examined();
+        }));
+        if (examined != null) {
+            // only after the commit: a rolled back slot is planned again
+            examinedSlots.merge(job.id(), examined, (a, b) -> a.isAfter(b) ? a : b);
+        }
+        return null;
+    }
+
+    private Object moveMissedSlots() {
         return ctx.tx().required(() -> ctx.tx().withConnection(c -> {
             Instant now = ctx.clock().now(c);
-            // a new job starts with its first slot after its creation, missed slots are planned within the grace period
-            Instant last = ctx.runs().lastCronSlot(c, job.id()).orElseGet(() -> createdAt(job));
-            Instant grace = now.minus(ctx.config().misfireGrace());
-            Instant from = last.isAfter(grace) ? last : grace;
-            ZonedDateTime next = cron.next(from.atZone(zone));
-            for (int i = 0; i < MAX_CRON_SLOTS_PER_TICK && !next.toInstant().isAfter(now); i++) {
-                planner.plan(c, job, new RunPlanner.Trigger(TriggerType.CRON,
-                        "cron:" + job.id() + ":" + next.toEpochSecond(), "cron slot " + next, null,
-                        next.toInstant()), now);
-                next = cron.next(next);
+            for (RunStore.MissedSlot missed : ctx.runs().missedSlots(c, ctx.namespace(), now)) {
+                JobDefinition job = ctx.catalog().revision(missed.jobId(), missed.revision());
+                if (!job.hasSlots()) {
+                    continue;
+                }
+                ProcessingSlots.Window window = planner.slotWindow(job, now);
+                if (ctx.runs().moveToSlot(c, missed.runId(), window.start(), window.end(), now)) {
+                    LOG.log(System.Logger.Level.INFO, "run {0} of job {1} missed its processing slot, moved to {2}",
+                            missed.runId(), job.name(), window.start());
+                }
             }
             return null;
         }));

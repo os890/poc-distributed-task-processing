@@ -18,6 +18,7 @@ package com.acme.trade;
 import java.time.LocalDate;
 
 import jakarta.inject.Inject;
+import jakarta.ws.rs.ClientErrorException;
 import jakarta.ws.rs.DefaultValue;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.HeaderParam;
@@ -27,13 +28,19 @@ import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.core.MediaType;
+import jakarta.ws.rs.core.Response;
 
+import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.os890.dtp.api.BusinessCalendars;
 import org.os890.dtp.api.JobEngine;
 import org.os890.dtp.api.RunHandle;
 import org.os890.dtp.core.engine.FlowInstances;
 import org.os890.dtp.core.engine.FlowInstances.InstanceView;
 
-/** The end of day per business date: a flow instance of the job {@code end-of-day}. */
+/**
+ * The end of day per business date: a flow instance of the job {@code end-of-day}, started at 18:00 on each business
+ * day or via REST.
+ */
 @Path("/eod")
 @Produces(MediaType.APPLICATION_JSON)
 public class EodResource {
@@ -46,16 +53,26 @@ public class EodResource {
     @Inject
     FlowInstances instances;
 
+    @Inject
+    BusinessCalendars calendars;
+
+    @ConfigProperty(name = "trade.eod.calendar")
+    String calendar;
+
     /**
-     * Starts the end of day of a business date (idempotent).
+     * Starts the end of day of a business date (idempotent), e.g. after a failure of the scheduled start.
      *
      * @param date the business date
      * @param user who starts it (demo: a header instead of a JWT)
      * @return the root run
+     * @throws ClientErrorException 409 if the date isn't a business day
      */
     @POST
     @Path("/{date}")
     public RunHandle start(@PathParam("date") LocalDate date, @HeaderParam("X-User") @DefaultValue("ops") String user) {
+        if (!calendars.get(calendar).isBusinessDay(date)) {
+            throw new ClientErrorException(date + " is no business day of " + calendar, Response.Status.CONFLICT);
+        }
         return jobs.startFlowInstance(EndOfDay.class, new EodParams(user), date.toString());
     }
 

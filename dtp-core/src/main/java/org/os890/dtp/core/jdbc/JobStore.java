@@ -19,6 +19,7 @@ import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Duration;
+import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.HashMap;
@@ -29,19 +30,22 @@ import java.util.Set;
 import java.util.UUID;
 
 import org.os890.dtp.api.RunOutcome;
+import org.os890.dtp.core.domain.CalendarShift;
 import org.os890.dtp.core.domain.ConcurrencyPolicy;
 import org.os890.dtp.core.domain.JobDefinition;
 import org.os890.dtp.core.domain.JoinMember;
+import org.os890.dtp.core.domain.ProcessingSlot;
 import org.os890.dtp.core.domain.TakeoverPolicy;
 import org.os890.dtp.core.domain.TransitionDefinition;
 
-/** Reads job definitions ({@code dtp_job}, {@code dtp_job_revision}, {@code dtp_transition}). */
+/** Reads job definitions ({@code dtp_job}, {@code dtp_job_revision}, {@code dtp_transition}, {@code dtp_job_slot}). */
 public class JobStore {
 
     private static final String SELECT = "SELECT j.id, j.namespace, j.name, j.enabled, r.revision, r.handler_class,"
             + " r.trigger_asap, r.cron_expression, r.cron_zone, r.trigger_external, r.inbox_min_items,"
             + " r.concurrency_policy, r.takeover_policy, r.retry_max, r.retry_backoff, r.max_item_visits,"
-            + " r.lease_duration, r.default_parameters, r.fallback_job_id, r.fallback_delay"
+            + " r.lease_duration, r.default_parameters, r.fallback_job_id, r.fallback_delay, r.cron_calendar_id,"
+            + " r.calendar_shift, r.cron_flow_instance"
             + " FROM dtp_job j JOIN dtp_job_revision r ON r.job_id = j.id";
 
     /**
@@ -67,9 +71,16 @@ public class JobStore {
                         + " AND j.current_revision = m.target_revision WHERE j.namespace = ?",
                 rs -> members.computeIfAbsent(key(Sql.uuid(rs, "target_job_id"), rs.getInt("target_revision")),
                         k -> new ArrayList<>()).add(member(rs)), namespace);
+        Map<String, List<ProcessingSlot>> slots = new HashMap<>();
+        Sql.query(c, "SELECT s.job_id, s.revision, s.calendar_id, s.from_time, s.to_time FROM dtp_job_slot s"
+                        + " JOIN dtp_job j ON j.id = s.job_id AND j.current_revision = s.revision WHERE j.namespace = ?"
+                        + " ORDER BY s.from_time",
+                rs -> slots.computeIfAbsent(key(Sql.uuid(rs, "job_id"), rs.getInt("revision")),
+                        k -> new ArrayList<>()).add(slot(rs)), namespace);
         return jobs.stream()
                    .map(job -> job.withTransitions(transitions.getOrDefault(key(job.id(), job.revision()), List.of()))
-                                  .withJoinMembers(members.getOrDefault(key(job.id(), job.revision()), List.of())))
+                                  .withJoinMembers(members.getOrDefault(key(job.id(), job.revision()), List.of()))
+                                  .withSlots(slots.getOrDefault(key(job.id(), job.revision()), List.of())))
                    .toList();
     }
 
@@ -93,7 +104,9 @@ public class JobStore {
                 jobId, revision);
         List<JoinMember> members = Sql.query(c, "SELECT member_job_id, accepted_outcomes FROM dtp_join_member"
                 + " WHERE target_job_id = ? AND target_revision = ?", JobStore::member, jobId, revision);
-        return Optional.of(job.get().withTransitions(transitions).withJoinMembers(members));
+        List<ProcessingSlot> slots = Sql.query(c, "SELECT calendar_id, from_time, to_time FROM dtp_job_slot"
+                + " WHERE job_id = ? AND revision = ? ORDER BY from_time", JobStore::slot, jobId, revision);
+        return Optional.of(job.get().withTransitions(transitions).withJoinMembers(members).withSlots(slots));
     }
 
     /**
@@ -150,6 +163,11 @@ public class JobStore {
         return new JoinMember(Sql.uuid(rs, "member_job_id"), accepted);
     }
 
+    private static ProcessingSlot slot(ResultSet rs) throws SQLException {
+        return new ProcessingSlot(Sql.uuid(rs, "calendar_id"), rs.getObject("from_time", LocalTime.class),
+                rs.getObject("to_time", LocalTime.class));
+    }
+
     private static JobDefinition map(ResultSet rs) throws SQLException {
         String lease = rs.getString("lease_duration");
         String fallbackDelay = rs.getString("fallback_delay");
@@ -162,6 +180,7 @@ public class JobStore {
                 Duration.parse(rs.getString("retry_backoff")), Sql.integer(rs, "max_item_visits"),
                 lease == null ? null : Duration.parse(lease), rs.getString("default_parameters"),
                 Sql.uuid(rs, "fallback_job_id"), fallbackDelay == null ? null : Duration.parse(fallbackDelay),
-                List.of(), List.of());
+                Sql.uuid(rs, "cron_calendar_id"), CalendarShift.valueOf(rs.getString("calendar_shift")),
+                rs.getBoolean("cron_flow_instance"), List.of(), List.of(), List.of());
     }
 }

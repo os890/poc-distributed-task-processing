@@ -12,7 +12,8 @@
 
 # Starts an H2 server (localhost only) and N instances of the trade app on it, ports 8081..808N.
 # Build first: mvn install (from the repository root). Stop with ./stop-cluster.sh.
-# Usage: ./run-cluster.sh [nodes]
+# Usage: [JAVA_OPTS="-D..."] ./run-cluster.sh [nodes]
+#   JAVA_OPTS: extra system properties of all nodes, e.g. placeholders of the job definitions (applied on a new DB)
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -32,7 +33,8 @@ echo "H2 server on port 9092 (data in $DATA)"
 
 for i in $(seq 1 "$NODES"); do
   port=$((8080 + i))
-  java -Dquarkus.profile=cluster -Dquarkus.http.port="$port" -Ddtp.node-name="node-$i" -jar "$APP" \
+  # shellcheck disable=SC2086
+  java ${JAVA_OPTS:-} -Dquarkus.profile=cluster -Dquarkus.http.port="$port" -Ddtp.node-name="node-$i" -jar "$APP" \
     > "$DATA/node-$i.log" 2>&1 &
   echo $! > "$DATA/node-$i.pid"
   # start the nodes one after the other, so the schema is created once

@@ -199,7 +199,7 @@ public class RunExecutor {
         ctx.tx().required(() -> ctx.tx().withConnection(c -> {
             var now = ctx.clock().now(c);
             RunStore.RunEnd end = new RunStore.RunEnd(result.outcome(), result.resultStatus(),
-                    run.runInfo().toJson(), result.error());
+                    run.runInfo().toJson(), result.error(), run.stopReason());
             if (!ctx.runs().finish(c, claimed.runId(), claimed.token(), claimed.attempt(), end, now)) {
                 throw new LeaseLostException(claimed.runId(), claimed.token());
             }

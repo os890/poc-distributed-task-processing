@@ -35,6 +35,7 @@ import java.util.stream.Collectors;
 
 import javax.sql.DataSource;
 
+import org.os890.dtp.api.BusinessCalendars;
 import org.os890.dtp.api.FlowDefinition;
 import org.os890.dtp.api.FlowEvent;
 import org.os890.dtp.api.Items;
@@ -43,6 +44,7 @@ import org.os890.dtp.api.ProcessStep;
 import org.os890.dtp.api.StopReason;
 import org.os890.dtp.api.TrackedItem;
 import org.os890.dtp.core.domain.FlowModel;
+import org.os890.dtp.core.engine.BusinessCalendarsImpl;
 import org.os890.dtp.core.engine.ClaimedRun;
 import org.os890.dtp.core.engine.Decisions;
 import org.os890.dtp.core.engine.EngineContext;
@@ -341,6 +343,15 @@ public class DtpEngine {
     }
 
     /**
+     * The business calendars of the namespace.
+     *
+     * @return the calendars
+     */
+    public BusinessCalendars calendars() {
+        return new BusinessCalendarsImpl(requireStarted(ctx).catalog());
+    }
+
+    /**
      * The flow instances and run joins, e.g. to show an end of day and to rerun a failed member.
      *
      * @return the flow instances
@@ -410,9 +421,22 @@ public class DtpEngine {
                 ClaimedRun claimed = run.claimed();
                 boolean renewed = tx.required(() -> tx.withConnection(c -> ctx.leases().renew(c, claimed.jobId(),
                         claimed.runId(), claimed.token(), ctx.clock().now(c).plus(claimed.leaseDuration()))));
-                if (!renewed) {
+                // a run that finished between the snapshot and the renewal released its lease itself
+                if (!renewed && !tx.withConnection(c -> ctx.runs().finishedWith(c, claimed.runId(),
+                        claimed.token()))) {
                     LOG.log(System.Logger.Level.WARNING, "run {0} lost its lease", claimed.runId());
                     run.requestStop(StopReason.LEASE_LOST);
+                }
+            }
+            // processing slots: a run is asked to stop at the end of its slot, the running unit of work is finished
+            var slotted = executor.active().stream().filter(run -> run.claimed().slotEnd() != null).toList();
+            var now = slotted.isEmpty() ? null : tx.withConnection(c -> ctx.clock().now(c));
+            for (RunContext run : slotted) {
+                var slotEnd = run.claimed().slotEnd();
+                if (!now.isBefore(slotEnd) && run.shouldContinue()) {
+                    LOG.log(System.Logger.Level.INFO, "run {0} of job {1}: its processing slot ended",
+                            run.claimed().runId(), run.job().name());
+                    run.requestStop(StopReason.SLOT_END);
                 }
             }
             var ids = executor.active().stream().map(run -> run.claimed().runId()).toList();

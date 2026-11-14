@@ -54,10 +54,23 @@ public class RunStore {
      * @param parameters   run parameters as JSON, or {@code null}
      * @param notBefore    earliest start, or {@code null}
      * @param flowInstanceId the flow instance, or {@code null}
+     * @param cronSlot     the cron slot of a run planned by a cron trigger, or {@code null}
+     * @param slotEnd      end of the processing slot, or {@code null}
      */
     public record NewRun(UUID id, String namespace, String runKey, UUID jobId, int revision, String handlerClass,
                          RunState state, RunOutcome outcome, TriggerType triggerType, String triggeredBy,
-                         String parameters, Instant notBefore, UUID flowInstanceId) {
+                         String parameters, Instant notBefore, UUID flowInstanceId, Instant cronSlot,
+                         Instant slotEnd) {
+    }
+
+    /**
+     * A pending run whose processing slot ended before it started.
+     *
+     * @param runId    the run
+     * @param jobId    its job
+     * @param revision its job revision
+     */
+    public record MissedSlot(UUID runId, UUID jobId, int revision) {
     }
 
     /**
@@ -82,10 +95,11 @@ public class RunStore {
      * @param attempt      current attempt
      * @param outcome      the outcome of a finished run, or {@code null}
      * @param flowInstanceId the flow instance, or {@code null}
+     * @param slotEnd      end of the processing slot, or {@code null}
      */
     public record RunRecord(UUID id, UUID jobId, int revision, String handlerClass, RunState state,
                             StopReason stopReason, String parameters, int attempt, RunOutcome outcome,
-                            UUID flowInstanceId) {
+                            UUID flowInstanceId, Instant slotEnd) {
     }
 
     /**
@@ -100,10 +114,10 @@ public class RunStore {
     public boolean insertIfAbsent(Connection c, NewRun run, Instant now) throws SQLException {
         String sql = "INSERT INTO dtp_run (id, namespace, run_key, job_id, job_revision, handler_class, state,"
                 + " outcome, trigger_type, triggered_by, parameters, not_before, created_at, finished_at,"
-                + " flow_instance_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+                + " flow_instance_id, cron_slot, slot_end) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
         Object[] params = {run.id(), run.namespace(), run.runKey(), run.jobId(), run.revision(), run.handlerClass(),
             run.state(), run.outcome(), run.triggerType(), run.triggeredBy(), run.parameters(), run.notBefore(), now,
-            run.state() == RunState.FINISHED ? now : null, run.flowInstanceId()};
+            run.state() == RunState.FINISHED ? now : null, run.flowInstanceId(), run.cronSlot(), run.slotEnd()};
         if (dialect.supportsOnConflictDoNothing()) {
             return Sql.update(c, sql + " ON CONFLICT (namespace, run_key) DO NOTHING", params) == 1;
         }
@@ -158,7 +172,7 @@ public class RunStore {
     }
 
     /**
-     * Latest planned cron slot of a job.
+     * Latest planned cron slot of a job (before a calendar shift).
      *
      * @param c     the connection
      * @param jobId the job
@@ -166,8 +180,40 @@ public class RunStore {
      * @throws SQLException on DB errors
      */
     public Optional<Instant> lastCronSlot(Connection c, UUID jobId) throws SQLException {
-        return Sql.queryOne(c, "SELECT MAX(not_before) AS slot FROM dtp_run WHERE job_id = ? AND trigger_type = ?",
-                rs -> Sql.instant(rs, "slot"), jobId, TriggerType.CRON);
+        return Sql.queryOne(c, "SELECT MAX(cron_slot) AS slot FROM dtp_run WHERE job_id = ?",
+                rs -> Sql.instant(rs, "slot"), jobId);
+    }
+
+    /**
+     * Pending runs whose processing slot ended before they started, e.g. because the cluster was down or busy.
+     *
+     * @param c         the connection
+     * @param namespace the namespace
+     * @param now       the DB time
+     * @return the runs
+     * @throws SQLException on DB errors
+     */
+    public List<MissedSlot> missedSlots(Connection c, String namespace, Instant now) throws SQLException {
+        return Sql.query(c, "SELECT id, job_id, job_revision FROM dtp_run WHERE namespace = ? AND state = 'PENDING'"
+                + " AND slot_end <= ?", rs -> new MissedSlot(Sql.uuid(rs, "id"), Sql.uuid(rs, "job_id"),
+                        rs.getInt("job_revision")), namespace, now);
+    }
+
+    /**
+     * Moves a pending run whose slot ended to the next slot.
+     *
+     * @param c         the connection
+     * @param runId     the run
+     * @param notBefore start of the next slot
+     * @param slotEnd   end of the next slot
+     * @param now       the DB time
+     * @return {@code false} if the run started or its slot was moved meanwhile
+     * @throws SQLException on DB errors
+     */
+    public boolean moveToSlot(Connection c, UUID runId, Instant notBefore, Instant slotEnd, Instant now)
+            throws SQLException {
+        return Sql.update(c, "UPDATE dtp_run SET not_before = ?, slot_end = ? WHERE id = ? AND state = 'PENDING'"
+                + " AND slot_end <= ?", notBefore, slotEnd, runId, now) == 1;
     }
 
     /**
@@ -187,13 +233,14 @@ public class RunStore {
             return List.of();
         }
         String in = String.join(", ", handlerClasses.stream().map(h -> "?").toList());
-        List<Object> params = new ArrayList<>(List.of(namespace, now));
+        List<Object> params = new ArrayList<>(List.of(namespace, now, now));
         params.addAll(handlerClasses);
         params.add(limit);
         List<Candidate> rows = Sql.query(c, "SELECT r.id, r.job_id FROM dtp_run r"
                 + " JOIN dtp_job_lease l ON l.job_id = r.job_id"
                 + " WHERE r.namespace = ? AND r.state = 'PENDING' AND l.run_id IS NULL"
-                + " AND (r.not_before IS NULL OR r.not_before <= ?) AND r.handler_class IN (" + in + ")"
+                + " AND (r.not_before IS NULL OR r.not_before <= ?) AND (r.slot_end IS NULL OR r.slot_end > ?)"
+                + " AND r.handler_class IN (" + in + ")"
                 + " ORDER BY r.priority DESC, r.created_at, r.id LIMIT ?",
                 rs -> new Candidate(Sql.uuid(rs, "id"), Sql.uuid(rs, "job_id")), params.toArray());
         List<Candidate> onePerJob = new ArrayList<>();
@@ -240,14 +287,14 @@ public class RunStore {
      */
     public RunRecord load(Connection c, UUID runId) throws SQLException {
         return Sql.queryOne(c, "SELECT id, job_id, job_revision, handler_class, state, stop_reason, parameters,"
-                + " attempt, outcome, flow_instance_id FROM dtp_run WHERE id = ?", rs -> {
+                + " attempt, outcome, flow_instance_id, slot_end FROM dtp_run WHERE id = ?", rs -> {
                     String stop = rs.getString("stop_reason");
                     String outcome = rs.getString("outcome");
                     return new RunRecord(Sql.uuid(rs, "id"), Sql.uuid(rs, "job_id"), rs.getInt("job_revision"),
                             rs.getString("handler_class"), RunState.valueOf(rs.getString("state")),
                             stop == null ? null : StopReason.valueOf(stop), rs.getString("parameters"),
                             rs.getInt("attempt"), outcome == null ? null : RunOutcome.valueOf(outcome),
-                            Sql.uuid(rs, "flow_instance_id"));
+                            Sql.uuid(rs, "flow_instance_id"), Sql.instant(rs, "slot_end"));
                 }, runId).orElseThrow(() -> new SQLException("unknown run " + runId));
     }
 
@@ -258,8 +305,9 @@ public class RunStore {
      * @param resultStatus the typed result status, or {@code null}
      * @param info         custom run info as JSON, or {@code null}
      * @param error        error as JSON, or {@code null}
+     * @param stopReason   why the run stopped early, e.g. {@code SLOT_END}, or {@code null}
      */
-    public record RunEnd(RunOutcome outcome, String resultStatus, String info, String error) {
+    public record RunEnd(RunOutcome outcome, String resultStatus, String info, String error, StopReason stopReason) {
     }
 
     /**
@@ -277,11 +325,25 @@ public class RunStore {
     public boolean finish(Connection c, UUID runId, long token, int attempt, RunEnd end, Instant now)
             throws SQLException {
         int updated = Sql.update(c, "UPDATE dtp_run SET state = 'FINISHED', outcome = ?, result_status = ?,"
-                + " info = ?, error = ?, finished_at = ? WHERE id = ? AND fencing_token = ?"
-                + " AND state IN ('RUNNING', 'STOPPING')", end.outcome(), end.resultStatus(), end.info(), end.error(),
-                now, runId, token);
+                + " info = ?, error = ?, finished_at = ?, stop_reason = COALESCE(?, stop_reason) WHERE id = ?"
+                + " AND fencing_token = ? AND state IN ('RUNNING', 'STOPPING')", end.outcome(), end.resultStatus(),
+                end.info(), end.error(), now, end.stopReason(), runId, token);
         endAttempt(c, runId, attempt, "FINISHED", now);
         return updated == 1;
+    }
+
+    /**
+     * Whether the attempt with the given fencing token finished the run itself (not a takeover or a decision).
+     *
+     * @param c     the connection
+     * @param runId the run
+     * @param token the fencing token of the attempt
+     * @return {@code true} if that attempt finished the run
+     * @throws SQLException on DB errors
+     */
+    public boolean finishedWith(Connection c, UUID runId, long token) throws SQLException {
+        return Sql.queryOne(c, "SELECT COUNT(*) FROM dtp_run_attempt WHERE run_id = ? AND fencing_token = ?"
+                + " AND end_reason = 'FINISHED'", rs -> rs.getInt(1), runId, token).orElse(0) == 1;
     }
 
     /**

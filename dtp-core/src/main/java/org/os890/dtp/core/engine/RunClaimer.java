@@ -101,7 +101,7 @@ public class RunClaimer {
             }
             RunRecord run = ctx.runs().load(c, candidate.runId());
             return Optional.of(new ClaimedRun(run.id(), run.jobId(), run.revision(), run.handlerClass(),
-                    token.getAsLong(), attempt.get(), leaseDuration));
+                    token.getAsLong(), attempt.get(), leaseDuration, run.slotEnd()));
         });
     }
 

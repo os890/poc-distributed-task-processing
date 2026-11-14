@@ -16,12 +16,16 @@
 package org.os890.dtp.core.testsupport;
 
 import java.time.Duration;
+import java.time.LocalDate;
+import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import org.os890.dtp.api.ProcessStep;
 import org.os890.dtp.api.RunOutcome;
+import org.os890.dtp.core.domain.CalendarShift;
 import org.os890.dtp.core.domain.ConcurrencyPolicy;
 import org.os890.dtp.core.domain.TakeoverPolicy;
 import org.os890.dtp.core.jdbc.Sql;
@@ -51,6 +55,29 @@ public class JobDefinitions {
         return new Definition(step);
     }
 
+    /**
+     * Saves a business calendar.
+     *
+     * @param name       the name
+     * @param zone       the zone
+     * @param weekdays   the business weekdays, e.g. {@code MON-FRI}
+     * @param exceptions days that differ from their weekday: {@code false} for a holiday
+     * @return the calendar id
+     */
+    public UUID calendar(String name, String zone, String weekdays, Map<LocalDate, Boolean> exceptions) {
+        UUID id = UUID.randomUUID();
+        tx.required(() -> tx.withConnection(c -> {
+            Sql.update(c, "INSERT INTO dtp_calendar (id, namespace, name, zone, business_weekdays)"
+                    + " VALUES (?, ?, ?, ?, ?)", id, namespace, name, zone, weekdays);
+            for (Map.Entry<LocalDate, Boolean> exception : exceptions.entrySet()) {
+                Sql.update(c, "INSERT INTO dtp_calendar_exception (calendar_id, calendar_day, business_day,"
+                        + " description) VALUES (?, ?, ?, 'test')", id, exception.getKey(), exception.getValue());
+            }
+            return null;
+        }));
+        return id;
+    }
+
     /** A job definition under construction. */
     public class Definition {
 
@@ -70,6 +97,10 @@ public class JobDefinitions {
         private Class<? extends ProcessStep> fallbackJob;
         private Duration fallbackDelay;
         private final List<Object[]> joinMembers = new ArrayList<>();
+        private final List<Object[]> slots = new ArrayList<>();
+        private String calendar;
+        private CalendarShift shift = CalendarShift.SKIP;
+        private boolean cronFlowInstance;
 
         Definition(Class<? extends ProcessStep> step) {
             this.step = step;
@@ -82,6 +113,38 @@ public class JobDefinitions {
 
         public Definition cron(String expression) {
             cron = expression;
+            return this;
+        }
+
+        /**
+         * The business calendar of the cron trigger (the calendar has to be saved first).
+         *
+         * @param name  the calendar
+         * @param value what happens on other days
+         * @return this definition
+         */
+        public Definition calendar(String name, CalendarShift value) {
+            calendar = name;
+            shift = value;
+            return this;
+        }
+
+        /** Every cron slot starts a flow instance for its business date. */
+        public Definition cronFlowInstance() {
+            cronFlowInstance = true;
+            return this;
+        }
+
+        /**
+         * A processing slot (UTC without calendar).
+         *
+         * @param calendarName the calendar, or {@code null} for every day
+         * @param from         start time of day
+         * @param to           end time of day
+         * @return this definition
+         */
+        public Definition slot(String calendarName, LocalTime from, LocalTime to) {
+            slots.add(new Object[] {calendarName, from, to});
             return this;
         }
 
@@ -181,6 +244,14 @@ public class JobDefinitions {
                         id, step.getName(), asap, cron, external, inboxMinItems, concurrency, takeover, retryMax,
                         retryBackoff.toString(), maxItemVisits, leaseDuration == null ? null : leaseDuration.toString(),
                         defaultParameters);
+                Sql.update(c, "UPDATE dtp_job_revision SET calendar_shift = ?, cron_flow_instance = ?,"
+                        + " cron_calendar_id = (SELECT id FROM dtp_calendar WHERE namespace = ? AND name = ?)"
+                        + " WHERE job_id = ?", shift, cronFlowInstance, namespace, calendar, id);
+                for (Object[] slot : slots) {
+                    Sql.update(c, "INSERT INTO dtp_job_slot (id, job_id, revision, calendar_id, from_time, to_time)"
+                            + " VALUES (?, ?, 1, (SELECT id FROM dtp_calendar WHERE namespace = ? AND name = ?), ?, ?)",
+                            UUID.randomUUID(), id, namespace, slot[0], slot[1], slot[2]);
+                }
                 if (fallbackJob != null) {
                     Sql.update(c, "UPDATE dtp_job_revision SET fallback_delay = ?, fallback_job_id = (SELECT id"
                             + " FROM dtp_job WHERE namespace = ? AND name = ?) WHERE job_id = ?",

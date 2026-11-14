@@ -26,11 +26,16 @@ import static org.hamcrest.Matchers.is;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.sql.Connection;
+import java.sql.ResultSet;
+import java.sql.Statement;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+
+import javax.sql.DataSource;
 
 import jakarta.inject.Inject;
 
@@ -38,6 +43,7 @@ import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestMethodOrder;
+import org.os890.dtp.api.BusinessCalendars;
 import org.os890.dtp.core.query.DtpQueries;
 import org.os890.dtp.core.query.DtpQueries.JourneyEntry;
 
@@ -57,6 +63,12 @@ class TradeFlowTest {
 
     @Inject
     TeamNotifications notifications;
+
+    @Inject
+    BusinessCalendars calendars;
+
+    @Inject
+    DataSource dataSource;
 
     @Test
     @Order(1)
@@ -224,6 +236,25 @@ class TradeFlowTest {
         given().header("X-User", "otto").when().post("/dtp/runs/" + failed + "/reruns").then().statusCode(409);
         given().when().get("/dtp/flow-instances").then().statusCode(200).body("businessKey", hasItem("2026-11-20"));
         given().when().get("/eod/2026-01-01").then().statusCode(404);
+    }
+
+    @Test
+    @Order(5)
+    void theEndOfDayIsOnlyForBusinessDaysAndTheEnrichmentRunsInItsSlot() throws Exception {
+        given().when().post("/eod/2026-11-21").then().statusCode(409);
+        given().when().post("/eod/2026-12-08").then().statusCode(409);
+        assertThat(calendars.get("AT-BANKING").previousBusinessDay(LocalDate.of(2027, 1, 4)))
+                .isEqualTo(LocalDate.of(2026, 12, 30));
+        assertThat(calendars.names()).containsExactly("AT-BANKING");
+
+        // revision 2 of the enrichment has a processing slot (the whole day in tests): its runs know its end
+        String sql = "SELECT COUNT(*), COUNT(r.slot_end) FROM dtp_run r JOIN dtp_job j ON j.id = r.job_id"
+                + " WHERE j.name = 'trade-enrichment' AND r.job_revision = 2";
+        try (Connection c = dataSource.getConnection(); Statement s = c.createStatement()) {
+            ResultSet rs = s.executeQuery(sql);
+            assertThat(rs.next()).isTrue();
+            assertThat(rs.getInt(1)).isPositive().isEqualTo(rs.getInt(2));
+        }
     }
 
     private static ValidatableResponse vote(String id, String user, String groups, String vote) {
