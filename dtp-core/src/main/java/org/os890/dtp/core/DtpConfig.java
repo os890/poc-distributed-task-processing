@@ -40,14 +40,16 @@ import java.util.Objects;
  * @param flowExport          export of the flows after the start
  * @param flowExportPath      file of the export
  * @param definitionPlaceholders Flyway placeholders of the application's job definitions, e.g. a fallback delay
+ * @param monitoring          the monitoring read model ({@code dtp.monitoring.*})
  */
 public record DtpConfig(String namespace, String nodeName, Duration pollInterval, Duration housekeepingInterval,
                         Duration heartbeatInterval, Duration leaseDuration, Duration leaderLeaseDuration,
                         Duration deadAfter, Duration misfireGrace, Duration definitionRefresh, Duration drainTimeout,
                         int maxConcurrentRuns, boolean migrateSchema, Long randomSeed, FlowExport flowExport,
-                        Path flowExportPath, Map<String, String> definitionPlaceholders) {
+                        Path flowExportPath, Map<String, String> definitionPlaceholders, Monitoring monitoring) {
 
     public DtpConfig {
+        Objects.requireNonNull(monitoring, "monitoring");
         definitionPlaceholders = Map.copyOf(definitionPlaceholders);
         Objects.requireNonNull(namespace, "namespace");
         Objects.requireNonNull(nodeName, "nodeName");
@@ -56,6 +58,110 @@ public record DtpConfig(String namespace, String nodeName, Duration pollInterval
         }
         if (heartbeatInterval.multipliedBy(2).compareTo(leaseDuration) > 0) {
             throw new IllegalArgumentException("leaseDuration must be at least twice the heartbeatInterval");
+        }
+    }
+
+    /**
+     * Settings of the monitoring read model (docs/design/09-monitoring-heatmap.md).
+     *
+     * @param enabled             project the views on the leader of the role {@code projection}
+     * @param interval            interval of the projection cycle
+     * @param jamThreshold        jam score (0 to 100) from which a step counts as congested
+     * @param failureThreshold    technical failures within the failure window from which a step counts as failing
+     * @param failureWindow       window of the technical failures; a failing step recovers after this calm period
+     * @param expectedMaxQueueAge default age of the oldest queued item that counts as a jam (per job:
+     *                            {@code expected_max_queue_age})
+     * @param retention           how long the minute buckets are kept
+     * @param feedInterval        how often the live feed checks for a new projection
+     */
+    public record Monitoring(boolean enabled, Duration interval, int jamThreshold, int failureThreshold,
+                             Duration failureWindow, Duration expectedMaxQueueAge, Duration retention,
+                             Duration feedInterval) {
+
+        public Monitoring {
+            if (jamThreshold < 1 || jamThreshold > 100) {
+                throw new IllegalArgumentException("jamThreshold must be between 1 and 100");
+            }
+            if (failureThreshold < 1) {
+                throw new IllegalArgumentException("failureThreshold must be at least 1");
+            }
+        }
+
+        /**
+         * The defaults: a cycle every 10 s, congested from a jam score of 70, failing from 10 technical failures in
+         * 5 minutes, a queue age of 10 minutes counts as a jam, minute buckets kept for 48 hours.
+         *
+         * @return the defaults
+         */
+        public static Monitoring defaults() {
+            return builder().build();
+        }
+
+        /**
+         * A builder that starts with the defaults.
+         *
+         * @return the builder
+         */
+        public static MonitoringBuilder builder() {
+            return new MonitoringBuilder();
+        }
+    }
+
+    /** Builder of {@link Monitoring}, starting with the defaults. */
+    public static class MonitoringBuilder {
+
+        private boolean enabled = true;
+        private Duration interval = Duration.ofSeconds(10);
+        private int jamThreshold = 70;
+        private int failureThreshold = 10;
+        private Duration failureWindow = Duration.ofMinutes(5);
+        private Duration expectedMaxQueueAge = Duration.ofMinutes(10);
+        private Duration retention = Duration.ofHours(48);
+        private Duration feedInterval = Duration.ofSeconds(2);
+
+        public MonitoringBuilder enabled(boolean value) {
+            enabled = value;
+            return this;
+        }
+
+        public MonitoringBuilder interval(Duration value) {
+            interval = Objects.requireNonNull(value, "interval");
+            return this;
+        }
+
+        public MonitoringBuilder jamThreshold(int value) {
+            jamThreshold = value;
+            return this;
+        }
+
+        public MonitoringBuilder failureThreshold(int value) {
+            failureThreshold = value;
+            return this;
+        }
+
+        public MonitoringBuilder failureWindow(Duration value) {
+            failureWindow = Objects.requireNonNull(value, "failureWindow");
+            return this;
+        }
+
+        public MonitoringBuilder expectedMaxQueueAge(Duration value) {
+            expectedMaxQueueAge = Objects.requireNonNull(value, "expectedMaxQueueAge");
+            return this;
+        }
+
+        public MonitoringBuilder retention(Duration value) {
+            retention = Objects.requireNonNull(value, "retention");
+            return this;
+        }
+
+        public MonitoringBuilder feedInterval(Duration value) {
+            feedInterval = Objects.requireNonNull(value, "feedInterval");
+            return this;
+        }
+
+        public Monitoring build() {
+            return new Monitoring(enabled, interval, jamThreshold, failureThreshold, failureWindow,
+                    expectedMaxQueueAge, retention, feedInterval);
         }
     }
 
@@ -96,6 +202,7 @@ public record DtpConfig(String namespace, String nodeName, Duration pollInterval
         private FlowExport flowExport = FlowExport.NONE;
         private Path flowExportPath = Path.of("target", "dtp-flows.md");
         private Map<String, String> definitionPlaceholders = Map.of();
+        private Monitoring monitoring = Monitoring.defaults();
 
         public Builder namespace(String value) {
             namespace = value;
@@ -201,10 +308,22 @@ public record DtpConfig(String namespace, String nodeName, Duration pollInterval
             return this;
         }
 
+        /**
+         * Settings of the monitoring read model.
+         *
+         * @param value the settings, e.g. {@code Monitoring.defaults()} with other values
+         * @return this builder
+         */
+        public Builder monitoring(Monitoring value) {
+            monitoring = Objects.requireNonNull(value, "monitoring");
+            return this;
+        }
+
         public DtpConfig build() {
             return new DtpConfig(namespace, nodeName, pollInterval, housekeepingInterval, heartbeatInterval,
                     leaseDuration, leaderLeaseDuration, deadAfter, misfireGrace, definitionRefresh, drainTimeout,
-                    maxConcurrentRuns, migrateSchema, randomSeed, flowExport, flowExportPath, definitionPlaceholders);
+                    maxConcurrentRuns, migrateSchema, randomSeed, flowExport, flowExportPath, definitionPlaceholders,
+                    monitoring);
         }
 
         private static String defaultNodeName() {

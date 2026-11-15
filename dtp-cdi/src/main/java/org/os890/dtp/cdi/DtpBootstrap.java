@@ -45,6 +45,8 @@ import org.os890.dtp.core.engine.FlowInstances;
 import org.os890.dtp.core.jdbc.JdbcTransactions;
 import org.os890.dtp.core.query.DtpQueries;
 import org.os890.dtp.core.query.FlowQueries;
+import org.os890.dtp.core.query.MonitoringFeed;
+import org.os890.dtp.core.query.MonitoringQueries;
 import org.os890.dtp.core.spi.Transactions;
 
 /**
@@ -171,5 +173,15 @@ public class DtpBootstrap {
     @Produces
     CollectionWindows windows() {
         return engine().windows();
+    }
+
+    @Produces
+    MonitoringQueries monitoring() {
+        return engine().monitoring();
+    }
+
+    @Produces
+    MonitoringFeed monitoringFeed() {
+        return engine().monitoringFeed();
     }
 }

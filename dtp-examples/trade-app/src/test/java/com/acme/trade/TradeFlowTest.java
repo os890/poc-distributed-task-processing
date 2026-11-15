@@ -22,10 +22,15 @@ import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.everyItem;
+import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.hasItem;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.not;
 
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
@@ -36,6 +41,8 @@ import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 import javax.sql.DataSource;
 
@@ -51,6 +58,7 @@ import org.os890.dtp.core.query.DtpQueries;
 import org.os890.dtp.core.query.DtpQueries.JourneyEntry;
 
 import io.quarkus.test.junit.QuarkusTest;
+import io.restassured.RestAssured;
 import io.restassured.http.ContentType;
 import io.restassured.response.ValidatableResponse;
 
@@ -353,6 +361,67 @@ class TradeFlowTest {
         List<JourneyEntry> reported = queries.journey(TradeReporting.REPORTED.name(),
                 trade("T-2026-11-24-1").getId().toString());
         assertThat(reported).extracting(JourneyEntry::type).containsSubsequence("TRACKED", "PACKAGED", "COMPLETED");
+    }
+
+    @Test
+    @Order(8)
+    void theHeatMapShowsTheFlowAndOperatorsHearOfTechnicalFailures() throws Exception {
+        // the views of the flows so far (orders 1 to 7), as JSON and as a diagram of the trade flow
+        await().atMost(Duration.ofSeconds(30)).until(() -> queries.isIdle() && given().when()
+                .get("/dtp/monitor/heatmap").then().extract().<Integer>path(
+                        "steps.find { it.step == 'trade-enrichment' }.totals.departed") > 0);
+        given().when().get("/dtp/monitor/heatmap?range=1h").then().statusCode(200)
+                .body("version", greaterThan(0))
+                .body("steps.find { it.step == 'trade-validation' }.statusReason", equalTo("IDLE"))
+                .body("edges.find { it.from == 'trade-validation' && it.to == 'trade-import' }.backRoute",
+                       is(true));
+        given().when().get("/dtp/monitor/heatmap/diagram").then().statusCode(200)
+                .body(containsString("classDef fail"), containsString("trade-enrichment"),
+                       containsString("queued"));
+        given().when().get("/dtp/monitor/heatmap/diagram?flow=unknown").then().statusCode(404);
+        given().when().get("/dtp/monitor/heatmap?range=forever").then().statusCode(400);
+        given().when().get("/dtp/monitor/steps/trade-enrichment?range=1h").then().statusCode(200)
+               .body("size()", greaterThan(0));
+
+        // the live feed sends the changed steps while a client is connected
+        List<String> lines = new CopyOnWriteArrayList<>();
+        HttpClient http = HttpClient.newHttpClient();
+        CompletableFuture<?> stream = http.sendAsync(HttpRequest.newBuilder(URI.create("http://localhost:"
+                + RestAssured.port + "/dtp/monitor/stream")).build(), HttpResponse.BodyHandlers.ofLines())
+                .thenAccept(response -> response.body().forEach(lines::add));
+        try {
+            await().atMost(Duration.ofSeconds(10)).until(() -> lines.contains("event:connected"));
+            // an outage of the market data service: the enrichment fails technically
+            given().when().post("/market-data/outage").then().statusCode(204);
+            LocalDate date = LocalDate.of(2026, 11, 25);
+            given().contentType(ContentType.JSON).body(new ImportParams(date, 3))
+                   .when().post("/trades/imports").then().statusCode(200);
+            await().atMost(Duration.ofSeconds(30)).until(() -> notifications.latest().stream()
+                    .anyMatch(m -> m.subject().equals("Technical failures: trade-enrichment")));
+            await().atMost(Duration.ofSeconds(10)).until(() -> lines.contains("event:heatmap-update")
+                    && lines.contains("event:alert"));
+        } finally {
+            stream.cancel(true);
+        }
+        given().when().get("/dtp/monitor/heatmap").then()
+               .body("steps.find { it.step == 'trade-enrichment' }.alertState", equalTo("FAILING"));
+        given().when().get("/dtp/monitor/steps/trade-enrichment/failures").then().statusCode(403);
+        given().header("X-Groups", "dtp-operator").when().get("/dtp/monitor/steps/trade-enrichment/failures")
+               .then().statusCode(200)
+               .body("[0].errorType", equalTo(IllegalStateException.class.getName()))
+               .body("[0].occurrences", greaterThan(2))
+               .body("[0].sampleMessage", containsString("market data service unavailable"));
+
+        // the service is back: the retry policy of the enrichment (3 retries, 10 s backoff) completes the trades,
+        // the step recovers after the calm period and isn't counted as stuck when the retries become due
+        given().when().delete("/market-data/outage").then().statusCode(204);
+        await().atMost(Duration.ofSeconds(30)).until(() -> types("T-2026-11-25-1").contains("COMPLETED")
+                && notifications.latest().stream()
+                        .anyMatch(m -> m.subject().equals("Step recovered: trade-enrichment")));
+        await().atMost(Duration.ofSeconds(10)).until(() -> queries.isIdle());
+        given().when().get("/dtp/monitor/heatmap").then()
+               .body("steps.find { it.step == 'trade-enrichment' }.alertState", equalTo("OK"));
+        assertThat(notifications.latest()).noneMatch(m -> m.subject().equals("Step congested: trade-enrichment"));
     }
 
     private long reportedTrades(long sequence) {

@@ -68,6 +68,17 @@ public class DtpSettings {
             }
         }
         builder.definitionPlaceholders(placeholders);
+        DtpConfig.MonitoringBuilder monitoring = DtpConfig.Monitoring.builder();
+        string(config, "dtp.monitoring.enabled").map(Boolean::valueOf).ifPresent(monitoring::enabled);
+        duration(config, "dtp.monitoring.interval", monitoring::interval);
+        string(config, "dtp.monitoring.jam-threshold").map(Integer::valueOf).ifPresent(monitoring::jamThreshold);
+        string(config, "dtp.monitoring.failure-threshold").map(Integer::valueOf)
+                                                           .ifPresent(monitoring::failureThreshold);
+        duration(config, "dtp.monitoring.failure-window", monitoring::failureWindow);
+        duration(config, "dtp.monitoring.expected-max-queue-age", monitoring::expectedMaxQueueAge);
+        duration(config, "dtp.monitoring.retention", monitoring::retention);
+        duration(config, "dtp.monitoring.feed-interval", monitoring::feedInterval);
+        builder.monitoring(monitoring.build());
         return builder.build();
     }
 

@@ -29,12 +29,18 @@ public class MarketData {
     @ConfigProperty(name = "trade.enrichment.delay", defaultValue = "PT0S")
     Duration delay;
 
+    private volatile boolean outage;
+
     /**
      * Sets the price of a trade.
      *
      * @param trade the trade
+     * @throws IllegalStateException during a simulated outage (a technical failure of the enrichment)
      */
     public void enrich(Trade trade) {
+        if (outage) {
+            throw new IllegalStateException("market data service unavailable");
+        }
         if (!delay.isZero()) {
             try {
                 Thread.sleep(delay);
@@ -43,5 +49,14 @@ public class MarketData {
             }
         }
         trade.setPrice(BigDecimal.valueOf(100 + Math.abs(trade.getIsin().hashCode() % 900), 2));
+    }
+
+    /**
+     * Simulates an outage of the market data service on this node (demo of the heat map).
+     *
+     * @param value {@code true} while it is unavailable
+     */
+    public void setOutage(boolean value) {
+        outage = value;
     }
 }

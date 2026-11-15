@@ -60,6 +60,7 @@ import org.os890.dtp.core.engine.JobCatalog;
 import org.os890.dtp.core.engine.JobEngineImpl;
 import org.os890.dtp.core.engine.JsonCodec;
 import org.os890.dtp.core.engine.LeaderElector;
+import org.os890.dtp.core.engine.MonitoringProjector;
 import org.os890.dtp.core.engine.RunClaimer;
 import org.os890.dtp.core.engine.RunContext;
 import org.os890.dtp.core.engine.RunExecutor;
@@ -78,6 +79,8 @@ import org.os890.dtp.core.jdbc.SchemaMigrator;
 import org.os890.dtp.core.jdbc.SqlDialect;
 import org.os890.dtp.core.query.DtpQueries;
 import org.os890.dtp.core.query.FlowQueries;
+import org.os890.dtp.core.query.MonitoringFeed;
+import org.os890.dtp.core.query.MonitoringQueries;
 import org.os890.dtp.core.spi.DomainEventPublisher;
 import org.os890.dtp.core.spi.StepRegistry;
 import org.os890.dtp.core.spi.Transactions;
@@ -118,7 +121,11 @@ public class DtpEngine {
     private Decisions decisions;
     private FlowInstances flowInstances;
     private CollectionWindows windows;
+    private MonitoringQueries monitoring;
+    private MonitoringFeed monitoringFeed;
+    private LeaderElector projectionLeader;
     private ScheduledExecutorService scheduler;
+    private ScheduledExecutorService projectionScheduler;
     private int idleRounds;
 
     private volatile boolean running;
@@ -239,6 +246,8 @@ public class DtpEngine {
         items = new ItemsImpl(ctx, routing, null);
         queries = new DtpQueries(tx, config.namespace());
         flowQueries = new FlowQueries(tx, config.namespace());
+        monitoring = new MonitoringQueries(tx, config.namespace(), flowQueries);
+        monitoringFeed = new MonitoringFeed(monitoring, config.monitoring().feedInterval());
 
         tx.required(() -> tx.withConnection(c -> {
             ctx.nodes().register(c, nodeId, config.namespace(), config.nodeName(), hostName(),
@@ -257,6 +266,9 @@ public class DtpEngine {
         scheduler.scheduleWithFixedDelay(leader::tick, jitter(leaderTick / 4), leaderTick, TimeUnit.MILLISECONDS);
         scheduler.scheduleWithFixedDelay(this::housekeeping, jitter(config.housekeepingInterval().toMillis()),
                 config.housekeepingInterval().toMillis(), TimeUnit.MILLISECONDS);
+        if (config.monitoring().enabled()) {
+            startProjection(leaderTick);
+        }
         running = true;
         scheduler.schedule(this::claimLoop, jitter(config.pollInterval().toMillis()), TimeUnit.MILLISECONDS);
         LOG.log(System.Logger.Level.INFO, "dtp node {0} ({1}) started in namespace {2} with {3} process steps",
@@ -276,6 +288,11 @@ public class DtpEngine {
         executor.stopAll(StopReason.DRAIN, config.drainTimeout().toMillis());
         running = false;
         scheduler.shutdownNow();
+        monitoringFeed.close();
+        if (projectionScheduler != null) {
+            projectionScheduler.shutdownNow();
+            projectionLeader.resign();
+        }
         leader.resign();
         try {
             tx.required(() -> tx.withConnection(c -> {
@@ -297,6 +314,12 @@ public class DtpEngine {
         running = false;
         if (scheduler != null) {
             scheduler.shutdownNow();
+        }
+        if (projectionScheduler != null) {
+            projectionScheduler.shutdownNow();
+        }
+        if (monitoringFeed != null) {
+            monitoringFeed.close();
         }
         if (executor != null) {
             executor.abandon();
@@ -370,6 +393,33 @@ public class DtpEngine {
      */
     public CollectionWindows windows() {
         return requireStarted(windows);
+    }
+
+    /**
+     * The monitoring read model: heat map, minute series, failures, heat map diagram.
+     *
+     * @return the queries
+     */
+    public MonitoringQueries monitoring() {
+        return requireStarted(monitoring);
+    }
+
+    /**
+     * The live feed of the heat map.
+     *
+     * @return the feed of this node
+     */
+    public MonitoringFeed monitoringFeed() {
+        return requireStarted(monitoringFeed);
+    }
+
+    /**
+     * {@code true} while this node leads the monitoring projection.
+     *
+     * @return whether it projects
+     */
+    public boolean isProjectionLeader() {
+        return running && projectionLeader != null && projectionLeader.isLeader();
     }
 
     /**
@@ -468,6 +518,20 @@ public class DtpEngine {
         } catch (RuntimeException e) {
             LOG.log(System.Logger.Level.WARNING, "heartbeat failed", e);
         }
+    }
+
+    /** The projector runs on its own thread, so a long cycle never delays heartbeats or claims. */
+    private void startProjection(long leaderTick) {
+        projectionLeader = new LeaderElector(ctx, LeaderElector.PROJECTION);
+        projectionLeader.init();
+        MonitoringProjector projector = new MonitoringProjector(ctx, projectionLeader);
+        projectionScheduler = Executors.newSingleThreadScheduledExecutor(Thread.ofPlatform().daemon()
+                .name("dtp-" + config.nodeName() + "-projection").factory());
+        long interval = config.monitoring().interval().toMillis();
+        projectionScheduler.scheduleWithFixedDelay(() -> {
+            projectionLeader.tick();
+            projector.cycle();
+        }, jitter(leaderTick / 4), Math.min(leaderTick, interval), TimeUnit.MILLISECONDS);
     }
 
     private void housekeeping() {

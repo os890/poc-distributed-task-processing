@@ -59,7 +59,8 @@ Branch `poc-impl` contains a first implementation (slice 1) with a runtime demo 
 signals, versions and overrides (slice 2), decision requests and approvals (slice 3), fork/join on item level
 (slice 4), decision fallbacks with domain events (slice 5), flow instances with run joins (slice 6), business
 calendars with processing slots (slice 7), work packages with item and time limits (slice 8), collectors that
-hand their packages over to other jobs (slice 9), and collection windows (slice 10): see
+hand their packages over to other jobs (slice 9), collection windows (slice 10), and the monitoring read model
+with heat map, jam detection, alerts and a live feed (slice 11): see
 [IMPLEMENTATION.md](IMPLEMENTATION.md).
 
 ## License

@@ -218,11 +218,39 @@ public class FlowQueries {
      * @return the diagram source
      */
     public String mermaid(String flow, String hash) {
+        return mermaid(flow, hash, Map.of(), List.of());
+    }
+
+    /**
+     * Extra lines and a style of a step in a diagram, e.g. its state in the heat map.
+     *
+     * @param lines    lines below the name of the step (escaped here)
+     * @param cssClass a class defined by the caller ({@code classDef}), or {@code null}
+     */
+    public record StepDecoration(List<String> lines, String cssClass) {
+
+        public StepDecoration {
+            lines = List.copyOf(lines);
+        }
+    }
+
+    /**
+     * The diagram of a flow version with decorated steps.
+     *
+     * @param flow        the flow name
+     * @param hash        the version, or {@code null} for the active one
+     * @param decorations the decorations by job id
+     * @param extraLines  lines appended to the diagram, e.g. {@code classDef}s
+     * @return the diagram source
+     */
+    public String mermaid(String flow, String hash, Map<UUID, StepDecoration> decorations, List<String> extraLines) {
         return tx.withConnection(c -> {
             Instant now = clock.now(c);
             FlowRow row = flow(c, flow);
             VersionRow version = version(c, row, hash, now);
-            return mermaid(c, row, version, now);
+            StringBuilder out = new StringBuilder(mermaid(c, row, version, now, decorations));
+            extraLines.forEach(line -> out.append("  ").append(line).append("\n"));
+            return out.toString();
         });
     }
 
@@ -290,6 +318,11 @@ public class FlowQueries {
     }
 
     private String mermaid(Connection c, FlowRow flow, VersionRow version, Instant now) throws SQLException {
+        return mermaid(c, flow, version, now, Map.of());
+    }
+
+    private String mermaid(Connection c, FlowRow flow, VersionRow version, Instant now,
+                           Map<UUID, StepDecoration> decorations) throws SQLException {
         Map<UUID, JobDefinition> jobById = jobs(c);
         List<UUID> steps = orderedSteps(c, version);
         Map<UUID, String> ids = new LinkedHashMap<>();
@@ -300,7 +333,12 @@ public class FlowQueries {
         for (UUID step : steps) {
             JobDefinition job = jobById.get(step);
             out.append("  ").append(ids.get(step)).append("[\"").append(escape(simpleName(job.handlerClass())))
-               .append("<br/><small>").append(escape(job.name())).append("</small>\"]\n");
+               .append("<br/><small>").append(escape(job.name())).append("</small>");
+            StepDecoration decoration = decorations.get(step);
+            if (decoration != null) {
+                decoration.lines().forEach(line -> out.append("<br/>").append(escape(line)));
+            }
+            out.append("\"]\n");
         }
         List<String> links = new ArrayList<>();
         List<Integer> overruled = new ArrayList<>();
@@ -326,6 +364,12 @@ public class FlowQueries {
         links.forEach(link -> out.append("  ").append(link).append("\n"));
         overruled.forEach(i -> out.append("  linkStyle ").append(i).append(" stroke:#999,stroke-dasharray:4\n"));
         overriding.forEach(i -> out.append("  linkStyle ").append(i).append(" stroke:#d9480f,stroke-width:2px\n"));
+        for (UUID step : steps) {
+            StepDecoration decoration = decorations.get(step);
+            if (decoration != null && decoration.cssClass() != null) {
+                out.append("  class ").append(ids.get(step)).append(' ').append(decoration.cssClass()).append('\n');
+            }
+        }
         return out.toString();
     }
 

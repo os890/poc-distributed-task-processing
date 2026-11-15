@@ -19,7 +19,8 @@ import java.time.Instant;
 import java.util.OptionalLong;
 
 /**
- * JDBC leader election of the role {@code housekeeping} (DD-3). The leader only acts within a local safety deadline,
+ * JDBC leader election of a role (DD-3): {@code housekeeping} (planner, reaper, windows) or {@code projection} (the
+ * monitoring read model, DD-30), each with its own leader. The leader only acts within a local safety deadline,
  * shorter than its lease, so it stops before another node can be elected. Correctness never depends on the leader:
  * all its actions are idempotent or conditional.
  */
@@ -28,21 +29,32 @@ public class LeaderElector {
     /** The role of the planner and reaper. */
     public static final String ROLE = "housekeeping";
 
+    /** The role of the monitoring projector. */
+    public static final String PROJECTION = "projection";
+
     private static final System.Logger LOG = System.getLogger(LeaderElector.class.getName());
 
     private final EngineContext ctx;
+    private final String role;
+    private final String title;
 
     private volatile long term = -1;
     private volatile long validUntilNanos;
 
     public LeaderElector(EngineContext ctx) {
+        this(ctx, ROLE);
+    }
+
+    public LeaderElector(EngineContext ctx, String role) {
         this.ctx = ctx;
+        this.role = role;
+        this.title = ROLE.equals(role) ? "the leader" : "the leader of " + role;
     }
 
     /** Creates the row of the role if needed. */
     public void init() {
         ctx.tx().required(() -> ctx.tx().withConnection(c -> {
-            ctx.leaders().ensureRole(c, ctx.namespace(), ROLE);
+            ctx.leaders().ensureRole(c, ctx.namespace(), role);
             return null;
         }));
     }
@@ -56,32 +68,41 @@ public class LeaderElector {
                 long current = term;
                 boolean renewed = ctx.tx().required(() -> ctx.tx().withConnection(c -> {
                     Instant now = ctx.clock().now(c);
-                    return ctx.leaders().renew(c, ctx.namespace(), ROLE, ctx.nodeId(), current,
+                    return ctx.leaders().renew(c, ctx.namespace(), role, ctx.nodeId(), current,
                             now.plus(ctx.config().leaderLeaseDuration()));
                 }));
                 if (renewed) {
                     validUntilNanos = started + duration * 2 / 3;
                 } else {
                     term = -1;
-                    LOG.log(System.Logger.Level.INFO, "node {0} lost the leadership (term {1})",
-                            ctx.config().nodeName(), current);
+                    LOG.log(System.Logger.Level.INFO, "node {0} lost the leadership of {1} (term {2})",
+                            ctx.config().nodeName(), role, current);
                 }
                 return;
             }
             OptionalLong elected = ctx.tx().required(() -> ctx.tx().withConnection(c -> {
                 Instant now = ctx.clock().now(c);
-                return ctx.leaders().tryAcquire(c, ctx.namespace(), ROLE, ctx.nodeId(),
+                return ctx.leaders().tryAcquire(c, ctx.namespace(), role, ctx.nodeId(),
                         now.plus(ctx.config().leaderLeaseDuration()), now);
             }));
             if (elected.isPresent()) {
                 validUntilNanos = started + duration * 2 / 3;
                 term = elected.getAsLong();
-                LOG.log(System.Logger.Level.INFO, "node {0} is the leader (term {1})", ctx.config().nodeName(),
+                LOG.log(System.Logger.Level.INFO, "node {0} is {1} (term {2})", ctx.config().nodeName(), title,
                         term);
             }
         } catch (RuntimeException e) {
             LOG.log(System.Logger.Level.WARNING, "leader election failed", e);
         }
+    }
+
+    /**
+     * The term of the current leadership.
+     *
+     * @return the term, or -1 if this node doesn't lead
+     */
+    public long term() {
+        return term;
     }
 
     /** {@code true} while this node leads and its local safety deadline isn't over. */
@@ -98,7 +119,7 @@ public class LeaderElector {
         term = -1;
         try {
             ctx.tx().required(() -> ctx.tx().withConnection(c -> {
-                ctx.leaders().resign(c, ctx.namespace(), ROLE, ctx.nodeId(), current);
+                ctx.leaders().resign(c, ctx.namespace(), role, ctx.nodeId(), current);
                 return null;
             }));
         } catch (RuntimeException e) {
