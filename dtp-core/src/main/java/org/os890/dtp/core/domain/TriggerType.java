@@ -15,7 +15,10 @@
  */
 package org.os890.dtp.core.domain;
 
-/** What created a run. */
+/**
+ * What created a run. {@code CONTINUATION} continues a run of a flow instance that stopped early with work left
+ * ({@code DEFERRED}), e.g. at the end of its processing slot or its time limit.
+ */
 public enum TriggerType {
-    CRON, ASAP, INBOX, EXTERNAL, TRANSITION, FALLBACK, JOIN, RERUN, WINDOW
+    CRON, ASAP, INBOX, EXTERNAL, TRANSITION, FALLBACK, JOIN, RERUN, WINDOW, CONTINUATION
 }

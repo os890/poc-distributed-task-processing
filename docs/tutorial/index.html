@@ -851,8 +851,11 @@ so the sign-off runs exactly once. If a member fails, the join waits and the ins
 fixed, run the failed run again. The new run replaces the failed one at the join:</p>
 <figure class="code"><pre><code class="language-bash">curl localhost:8080/eod/2026-11-20            # runs, the join, waitingFor: [&quot;pnl-report&quot;]
 curl -X POST localhost:8080/dtp/runs/&lt;id of the failed run&gt;/reruns -H &#x27;X-User: otto&#x27;</code></pre></figure>
-<p>An instance completes when none of its runs is pending or active, no join waits and no failed run is left
-without a rerun. The runs of an instance are never skipped by the concurrency policy of a job: each belongs to its
+<p>A run of an instance that stops early with work left (outcome <code>DEFERRED</code>: the end of its processing slot,
+its item or time limit, a drain) is continued by a new run of the same job with the same parameters in the same
+instance (trigger <code>CONTINUATION</code>); only the run that finishes the work arrives at the join. An instance
+completes when none of its runs is pending or active, no join waits and no failed or deferred run is left without a
+rerun or continuation. The runs of an instance are never skipped by the concurrency policy of a job: each belongs to its
 business date. The events <code>FlowInstanceStarted</code>, <code>JoinFired</code> and <code>FlowInstanceCompleted</code> follow
 the commits.</p>
 </section>
@@ -1308,7 +1311,7 @@ The core's own tests run three such engines in one JVM on a shared in-memory H2 
 <thead><tr><th>Outcome</th><th>When</th></tr></thead>
 <tbody><tr><td><code>SUCCEEDED</code></td><td>The run finished without issues</td></tr>
 <tr><td><code>COMPLETED_WITH_ISSUES</code></td><td>Items of the run were discarded or are waiting for a decision</td></tr>
-<tr><td><code>DEFERRED</code></td><td>The run stopped softly (e.g. drain) with work left; it continues later</td></tr>
+<tr><td><code>DEFERRED</code></td><td>The run stopped softly (slot end, limit, window, drain) with work left; it continues later, in a flow instance by a continuation run</td></tr>
 <tr><td><code>FAILED</code></td><td>The handler threw an exception</td></tr>
 <tr><td><code>CANCELLED</code></td><td>The run was cancelled</td></tr>
 <tr><td><code>SKIPPED</code></td><td>A trigger arrived while the job was busy and the policy is SKIP</td></tr></tbody></table></div>

@@ -24,6 +24,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 import org.os890.dtp.api.FlowInstance;
+import org.os890.dtp.api.RunOutcome;
 import org.os890.dtp.api.event.FlowInstanceCompleted;
 import org.os890.dtp.api.event.FlowInstanceStarted;
 import org.os890.dtp.api.event.JoinFired;
@@ -175,7 +176,10 @@ public class FlowInstances {
      * Called in the transaction that finished a run (also when a decision or a cancel finished it): records the
      * arrival at the run joins the job is a member of, fires the joins whose members all arrived, and completes the
      * instance when nothing is left: no pending or active run, no waiting join and no failed run that wasn't run again.
-     * An instance with a failed run stays open for an operator ({@link #rerun}).
+     * An instance with a failed run stays open for an operator ({@link #rerun}). A run that stopped early with work
+     * left ({@code DEFERRED}: end of its slot, its limit, a drain) doesn't arrive at its joins: it's continued by a
+     * new run of the same job with the same parameters in the same instance ({@code continue:<run>}), which arrives
+     * once it finishes. If the job is disabled, the deferred run keeps the instance open like a failed one.
      *
      * @param c     the connection
      * @param runId the finished run
@@ -193,14 +197,33 @@ public class FlowInstances {
                     instance.id());
             return;
         }
-        for (JobDefinition target : ctx.catalog().all()) {
-            if (target.joinMember(run.jobId()).isPresent()) {
-                arrive(c, instance, target, run, now);
+        if (run.outcome() == RunOutcome.DEFERRED) {
+            continueDeferred(c, instance, run, now);
+        } else {
+            for (JobDefinition target : ctx.catalog().all()) {
+                if (target.joinMember(run.jobId()).isPresent()) {
+                    arrive(c, instance, target, run, now);
+                }
             }
         }
         if (store.countOpenRuns(c, instance.id()) == 0 && store.countWaitingJoins(c, instance.id()) == 0
-                && store.countUnresolvedFailures(c, instance.id()) == 0 && store.complete(c, instance.id(), now)) {
+                && store.countUnresolvedRuns(c, instance.id()) == 0 && store.complete(c, instance.id(), now)) {
             ctx.publishAfterCommit(new FlowInstanceCompleted(api(instance)));
+        }
+    }
+
+    private void continueDeferred(Connection c, InstanceRow instance, RunRecord run, Instant now)
+            throws SQLException {
+        JobDefinition job = ctx.catalog().byId(run.jobId());
+        String why = run.stopReason() == null ? "" : " (" + run.stopReason() + ")";
+        // a job with processing slots continues in its next slot: the planner places the run there
+        RunPlanner.Planned planned = planner.plan(c, job, new RunPlanner.Trigger(TriggerType.CONTINUATION,
+                "continue:" + run.id(), "continuation of " + run.id() + why, run.parameters(), null, instance.id()),
+                now);
+        if (planned.runId() == null) {
+            LOG.log(System.Logger.Level.WARNING, "run {0} of the disabled job {1} deferred work of flow instance {2}"
+                    + " {3}: the instance stays open until the run is run again", run.id(), job.name(),
+                    instance.flowName(), instance.businessKey());
         }
     }
 

@@ -219,17 +219,21 @@ public class FlowInstanceStore {
     }
 
     /**
-     * Number of failed runs of an instance that weren't run again ({@code rerun:<run>}): they keep it open.
+     * Number of runs of an instance that ended without their work and weren't followed up: failed or deferred runs
+     * without a rerun ({@code rerun:<run>}) or a continuation ({@code continue:<run>}). They keep the instance open.
      *
      * @param c  the connection
      * @param id the instance
      * @return the count
      * @throws SQLException on DB errors
      */
-    public int countUnresolvedFailures(Connection c, UUID id) throws SQLException {
-        return Sql.queryOne(c, "SELECT COUNT(*) FROM dtp_run r WHERE r.flow_instance_id = ? AND r.outcome = 'FAILED'"
+    public int countUnresolvedRuns(Connection c, UUID id) throws SQLException {
+        return Sql.queryOne(c, "SELECT COUNT(*) FROM dtp_run r WHERE r.flow_instance_id = ?"
+                + " AND r.outcome IN ('FAILED', 'DEFERRED')"
                 + " AND NOT EXISTS (SELECT 1 FROM dtp_run x WHERE x.namespace = r.namespace"
-                + " AND x.run_key = 'rerun:' || CAST(r.id AS VARCHAR(36)))", rs -> rs.getInt(1), id).orElse(0);
+                + " AND x.run_key IN ('rerun:' || CAST(r.id AS VARCHAR(36)),"
+                + " 'continue:' || CAST(r.id AS VARCHAR(36))))",
+                rs -> rs.getInt(1), id).orElse(0);
     }
 
     /**

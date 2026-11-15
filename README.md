@@ -62,8 +62,9 @@ calendars with processing slots (slice 7), work packages with item and time limi
 hand their packages over to other jobs (slice 9), collection windows (slice 10), the monitoring read model with
 heat map, jam detection, alerts and a live feed (slice 11), the journey diagram per item (slice 12), telemetry
 metrics and traces with OpenTelemetry (slice 13), acknowledgements of sent work packages (slice 14), lane weights
-with flow versions per lane (slice 15), the REST adapter with MP OpenAPI and MP JWT roles (slice 16), and the tests
-of the engine on PostgreSQL 17 (slice 17): see [IMPLEMENTATION.md](IMPLEMENTATION.md).
+with flow versions per lane (slice 15), the REST adapter with MP OpenAPI and MP JWT roles (slice 16), the tests
+of the engine on PostgreSQL 17 (slice 17), and continued deferred runs in flow instances (slice 18): see
+[IMPLEMENTATION.md](IMPLEMENTATION.md).
 
 ## License
 
