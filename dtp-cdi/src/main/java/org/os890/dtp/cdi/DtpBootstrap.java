@@ -38,6 +38,7 @@ import org.os890.dtp.api.Items;
 import org.os890.dtp.api.JobEngine;
 import org.os890.dtp.api.ProcessStep;
 import org.os890.dtp.core.DtpEngine;
+import org.os890.dtp.core.engine.Acknowledgements;
 import org.os890.dtp.core.engine.CollectionWindows;
 import org.os890.dtp.core.engine.Decisions;
 import org.os890.dtp.core.engine.FlowAdmin;
@@ -185,6 +186,11 @@ public class DtpBootstrap {
     @Produces
     MonitoringQueries monitoring() {
         return engine().monitoring();
+    }
+
+    @Produces
+    Acknowledgements acknowledgements() {
+        return engine().acknowledgements();
     }
 
     @Produces

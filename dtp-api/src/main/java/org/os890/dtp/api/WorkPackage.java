@@ -53,6 +53,17 @@ public interface WorkPackage<E, ID> {
     void done();
 
     /**
+     * The package was handed over to another system, e.g. a file sent to a custodian. If the job requires an
+     * acknowledgement ({@code ack_required}), the package waits for it ({@code SENT}) with its items: the receiver's
+     * acknowledgement completes them, a rejection or no acknowledgement within {@code ack_timeout} is a failed attempt
+     * (retry policy, then a decision), and the package is sent again. Don't route the items before. Without
+     * acknowledgement, the package is done, like {@link #done()}.
+     *
+     * @param reference the reference the receiver answers with, e.g. the file name or a message id
+     */
+    void sent(String reference);
+
+    /**
      * A business failure of the package as a whole, e.g. the receiver rejected it: retried with the job's retry
      * policy, then a decision ({@code RETRY} or {@code DISCARD}). Its items stay in the package.
      *

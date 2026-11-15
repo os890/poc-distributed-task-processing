@@ -142,7 +142,7 @@ figure.diagram img { display: block; max-width: 100%; height: auto; margin: 0 au
 
 <div class="wrap">
   <header class="intro">
-    <span class="eyebrow">dtp · distributed task processing · slices 1 to 13</span>
+    <span class="eyebrow">dtp · distributed task processing · slices 1 to 14</span>
     <h1>From one job to a cluster in <span class="tok">25</span> steps</h1>
     <p class="lede">How to write process steps, define them in SQL, trigger and follow runs, track items through a
     flow defined in Java, change that flow while it runs, let people decide and approve, remind them, run checks in parallel, run an end of day per business date, plan around business days, send files in work packages, and run several deployments on one database: on Quarkus with CDI, or with the plain Java engine.</p>
@@ -880,8 +880,9 @@ public class SettlementSender implements JobHandler&lt;NoParams, DefaultOutcome&
                 pkg.fail(pkg.groupKey() + &quot; rejected the file&quot;);
                 return;
             }
-            pkg.info().put(FILE, gateway.send(pkg.groupKey(), pkg.sequence(), tradeNumbers(pkg.items())));
-            pkg.done();
+            String file = gateway.send(pkg.groupKey(), pkg.sequence(), tradeNumbers(pkg.items()));
+            pkg.info().put(FILE, file);
+            pkg.sent(file);          // waits for the custodian&#x27;s acknowledgement (ack_required)
         });
         return JobResult.success();
     }
@@ -907,6 +908,24 @@ VALUES (&#x27;&lt;settlement-sender&gt;&#x27;, 1, &#x27;com.acme.trade.Settlemen
 reads the business date from it. The end of day completes once the files are created; sending them is the business
 of the sender. <code>GET /dtp/packages</code> lists the packages with the collector, the job that processes them, their
 state, items, attempts and the file each one was sent in.</p>
+<h3>Wait for the acknowledgement</h3>
+<p>A file sent isn't a file accepted. With <code>ack_required</code> on the sender, <code>pkg.sent(file)</code> leaves the
+package <code>SENT</code> with its items until the custodian answers, later and on any node, with the file name:</p>
+<figure class="code"><pre><code class="language-java">@Inject
+Acknowledgements acknowledgements;
+
+// the custodian&#x27;s callback
+acknowledgements.acknowledge(SettlementSender.class, &quot;settlement-OEKB-CSD-5.xml&quot;, &quot;OEKB-CSD&quot;);   // DONE
+acknowledgements.reject(SettlementSender.class, &quot;settlement-OEKB-CSD-5.xml&quot;, &quot;unknown safekeeping account&quot;);</code></pre></figure>
+<figure class="code"><figcaption>db/dtp-definitions/V8__settlement_acknowledgements.sql</figcaption><pre><code class="language-sql">-- revision 2 of the sender: a file without answer within the timeout counts as rejected
+INSERT INTO dtp_job_revision (job_id, revision, handler_class, inbox_min_items, retry_max, retry_backoff,
+                              ack_required, ack_timeout, changed_by, changed_at)
+VALUES (&#x27;&lt;settlement-sender&gt;&#x27;, 2, &#x27;com.acme.trade.SettlementSender&#x27;, 1, 1, &#x27;${settlement-retry-backoff}&#x27;,
+        TRUE, &#x27;${settlement-ack-timeout}&#x27;, &#x27;flyway&#x27;, CURRENT_TIMESTAMP);</code></pre></figure>
+<p>The acknowledgement completes the package and its items. A rejection is a failed attempt like <code>fail</code>: the
+file goes out again after the backoff, and once the retries are used up a person decides. No answer within
+<code>ack_timeout</code> counts as a technical failure, so an answer that got lost, e.g. with a crashed node, simply leads
+to a resend. A duplicate or late answer changes nothing: the call tells you it was <code>NOT_WAITING</code>.</p>
 </section>
 <section class="step" id="windows" aria-labelledby="windows-h"><h2 id="windows-h"><span class="n">Step 20</span>Collect in a window</h2>
 <p>Some collectors need data that doesn't change while they read it: the regulatory trade report contains every
@@ -1219,9 +1238,9 @@ The core's own tests run three such engines in one JVM on a shared in-memory H2 
 <tr><td><code>CANCELLED</code></td><td>The run was cancelled</td></tr>
 <tr><td><code>SKIPPED</code></td><td>A trigger arrived while the job was busy and the policy is SKIP</td></tr></tbody></table></div>
 <h3 id="ref-scope">Not implemented yet</h3>
-<p>Sending work packages with an acknowledgement, lane weights, the REST adapter, activations of a flow version per
-lane or tenant, and the red/green switch of whole deployments. PostgreSQL has its own migrations and SQL dialect but
-hasn't been run yet; slices 1 to 13 were tested on H2.</p>
+<p>Lane weights, the REST adapter, activations of a flow version per lane or tenant, and the red/green switch of
+whole deployments. PostgreSQL has its own migrations and SQL dialect but hasn't been run yet; slices 1 to 14 were
+tested on H2.</p>
 </section>
 
   </main>

@@ -136,6 +136,8 @@ public class JobDefinitions {
         private boolean cronFlowInstance;
         private Long itemLimit;
         private Duration timeLimit;
+        private boolean ackRequired;
+        private Duration ackTimeout;
 
         Definition(Class<? extends ProcessStep> step) {
             this.step = step;
@@ -166,6 +168,18 @@ public class JobDefinitions {
 
         public Definition itemLimit(long value) {
             itemLimit = value;
+            return this;
+        }
+
+        /**
+         * Sent work packages wait for the acknowledgement of the receiver.
+         *
+         * @param timeout the time to wait, or {@code null} without limit
+         * @return this definition
+         */
+        public Definition acknowledged(Duration timeout) {
+            ackRequired = true;
+            ackTimeout = timeout;
             return this;
         }
 
@@ -290,10 +304,11 @@ public class JobDefinitions {
                         retryBackoff.toString(), maxItemVisits, leaseDuration == null ? null : leaseDuration.toString(),
                         defaultParameters);
                 Sql.update(c, "UPDATE dtp_job_revision SET calendar_shift = ?, cron_flow_instance = ?,"
-                        + " item_limit = ?, time_limit = ?,"
+                        + " item_limit = ?, time_limit = ?, ack_required = ?, ack_timeout = ?,"
                         + " cron_calendar_id = (SELECT id FROM dtp_calendar WHERE namespace = ? AND name = ?)"
                         + " WHERE job_id = ?", shift, cronFlowInstance, itemLimit,
-                        timeLimit == null ? null : timeLimit.toString(), namespace, calendar, id);
+                        timeLimit == null ? null : timeLimit.toString(), ackRequired,
+                        ackTimeout == null ? null : ackTimeout.toString(), namespace, calendar, id);
                 for (Object[] slot : slots) {
                     Sql.update(c, "INSERT INTO dtp_job_slot (id, job_id, revision, calendar_id, from_time, to_time)"
                             + " VALUES (?, ?, 1, (SELECT id FROM dtp_calendar WHERE namespace = ? AND name = ?), ?, ?)",

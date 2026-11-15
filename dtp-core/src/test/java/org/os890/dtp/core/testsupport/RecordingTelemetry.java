@@ -66,6 +66,9 @@ public class RecordingTelemetry implements Telemetry {
     public final List<String> lost = new CopyOnWriteArrayList<>();
     public final List<String> takeovers = new CopyOnWriteArrayList<>();
     public final List<String> elections = new CopyOnWriteArrayList<>();
+    public final List<String> acknowledged = new CopyOnWriteArrayList<>();
+    /** Rejected packages as {@code step:reason}. */
+    public final List<String> rejected = new CopyOnWriteArrayList<>();
     public final List<Decision> created = new CopyOnWriteArrayList<>();
     public final List<Decision> decided = new CopyOnWriteArrayList<>();
     public final List<SpanRecord> spans = new CopyOnWriteArrayList<>();
@@ -165,6 +168,16 @@ public class RecordingTelemetry implements Telemetry {
     @Override
     public void leaderElected(String role) {
         elections.add(role);
+    }
+
+    @Override
+    public void packageAcknowledged(String step, Duration sinceSent) {
+        acknowledged.add(step);
+    }
+
+    @Override
+    public void packageRejected(String step, String reason) {
+        rejected.add(step + ":" + reason);
     }
 
     @Override

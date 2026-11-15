@@ -89,7 +89,7 @@ public class DtpQueries {
      * @param seq           its number
      * @param groupKey      the group key
      * @param itemType      the type of its items
-     * @param state         PENDING, DONE, WAITING_FOR_DECISION or DISCARDED
+     * @param state         PENDING, SENT, DONE, WAITING_FOR_DECISION or DISCARDED
      * @param itemCount     number of items
      * @param attempts      failed attempts
      * @param lastError     reason of the last failure
@@ -99,10 +99,14 @@ public class DtpQueries {
      * @param info          custom information as JSON, e.g. a file name
      * @param createdAt     creation time
      * @param updatedAt     last change
+     * @param reference     the reference it was sent with, or {@code null}
+     * @param sentAt        when it was sent last, or {@code null}
+     * @param ackDueAt      until when its acknowledgement is expected, or {@code null}
      */
     public record PackageView(UUID id, String job, String collector, long seq, String groupKey, String itemType,
                               String state, int itemCount, int attempts, String lastError, Instant nextAttemptAt,
-                              UUID createdBy, UUID processedBy, String info, Instant createdAt, Instant updatedAt) {
+                              UUID createdBy, UUID processedBy, String info, Instant createdAt, Instant updatedAt,
+                              String reference, Instant sentAt, Instant ackDueAt) {
     }
 
     /**
@@ -193,7 +197,8 @@ public class DtpQueries {
     public List<PackageView> packages(int limit) {
         return tx.withConnection(c -> Sql.query(c, "SELECT p.id, j.name AS job, cj.name AS collector, p.seq,"
                 + " p.group_key, p.item_type, p.state, p.item_count, p.attempts, p.last_error, p.next_attempt_at,"
-                + " p.created_by_run_id, p.processed_by_run_id, p.info, p.created_at, p.updated_at"
+                + " p.created_by_run_id, p.processed_by_run_id, p.info, p.created_at, p.updated_at, p.ack_reference,"
+                + " p.sent_at, p.ack_due_at"
                 + " FROM dtp_work_package p JOIN dtp_job j ON j.id = p.job_id"
                 + " JOIN dtp_job cj ON cj.id = p.created_by_job_id WHERE p.namespace = ? ORDER BY p.seq DESC LIMIT ?",
                 rs -> new PackageView(Sql.uuid(rs, "id"), rs.getString("job"), rs.getString("collector"),
@@ -202,7 +207,8 @@ public class DtpQueries {
                         rs.getInt("item_count"), rs.getInt("attempts"), rs.getString("last_error"),
                         Sql.instant(rs, "next_attempt_at"), Sql.uuid(rs, "created_by_run_id"),
                         Sql.uuid(rs, "processed_by_run_id"), rs.getString("info"), Sql.instant(rs, "created_at"),
-                        Sql.instant(rs, "updated_at")), namespace, limit));
+                        Sql.instant(rs, "updated_at"), rs.getString("ack_reference"), Sql.instant(rs, "sent_at"),
+                        Sql.instant(rs, "ack_due_at")), namespace, limit));
     }
 
     /**

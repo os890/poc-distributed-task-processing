@@ -44,6 +44,7 @@ import org.os890.dtp.api.ProcessStep;
 import org.os890.dtp.api.StopReason;
 import org.os890.dtp.api.TrackedItem;
 import org.os890.dtp.core.domain.FlowModel;
+import org.os890.dtp.core.engine.Acknowledgements;
 import org.os890.dtp.core.engine.BusinessCalendarsImpl;
 import org.os890.dtp.core.engine.ClaimedRun;
 import org.os890.dtp.core.engine.CollectionWindows;
@@ -126,6 +127,7 @@ public class DtpEngine {
     private CollectionWindows windows;
     private MonitoringQueries monitoring;
     private JourneyQueries journeys;
+    private Acknowledgements acknowledgements;
     private MonitoringFeed monitoringFeed;
     private LeaderElector projectionLeader;
     private ScheduledExecutorService scheduler;
@@ -253,6 +255,7 @@ public class DtpEngine {
         routing.attach(flowRouting);
         flowAdmin = new FlowAdmin(ctx);
         decisions = routing.decisions();
+        acknowledgements = new Acknowledgements(ctx, routing);
         flowInstances = new FlowInstances(ctx);
         windows = new CollectionWindows(ctx);
         Set<String> capabilities = steps.keySet().stream().map(Class::getName).collect(Collectors.toSet());
@@ -422,6 +425,15 @@ public class DtpEngine {
      */
     public MonitoringQueries monitoring() {
         return requireStarted(monitoring);
+    }
+
+    /**
+     * The acknowledgements of sent work packages, e.g. for the callback of a receiver.
+     *
+     * @return the acknowledgements
+     */
+    public Acknowledgements acknowledgements() {
+        return requireStarted(acknowledgements);
     }
 
     /**

@@ -17,6 +17,7 @@ package org.os890.dtp.core.engine;
 
 import java.sql.Connection;
 import java.sql.SQLException;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -40,14 +41,10 @@ import org.os890.dtp.api.RunInfo;
 import org.os890.dtp.api.TrackedItem;
 import org.os890.dtp.api.WorkPackage;
 import org.os890.dtp.api.WorkPackages;
-import org.os890.dtp.core.domain.BuiltInOption;
-import org.os890.dtp.core.domain.DecisionKind;
 import org.os890.dtp.core.domain.FailureKind;
 import org.os890.dtp.core.domain.ItemEventType;
 import org.os890.dtp.core.domain.ItemState;
-import org.os890.dtp.core.domain.JobDefinition;
 import org.os890.dtp.core.domain.LeaseLostException;
-import org.os890.dtp.core.domain.SubjectType;
 import org.os890.dtp.core.jdbc.ItemStore.InboxEntry;
 import org.os890.dtp.core.jdbc.ItemStore.InboxQuery;
 import org.os890.dtp.core.jdbc.ItemStore.ItemEvent;
@@ -282,20 +279,8 @@ public class WorkPackagesImpl<E, ID> implements WorkPackages<E, ID> {
      */
     private void failed(Connection c, PackageRow row, FailureKind kind, String reason, Instant now)
             throws SQLException {
-        JobDefinition job = run.job();
-        int attempts = row.attempts() + 1;
-        UUID runId = run.claimed().runId();
-        if (attempts <= job.retryMax()) {
-            store.failed(c, row.id(), runId, attempts, now.plus(job.retryBackoff().multipliedBy(attempts)), reason,
-                    now);
-            return;
-        }
-        store.failed(c, row.id(), runId, attempts, null, reason, now);
-        String why = "work package " + row.seq() + " (" + row.groupKey() + "): retries exhausted (" + job.retryMax()
-                + ")" + (reason == null ? "" : ": " + reason);
-        routing.decisions().request(c, new Decisions.NewRequest(DecisionKind.CHOICE, SubjectType.WORK_PACKAGE,
-                row.id(), job.id(), runId, why, Decisions.builtIn(BuiltInOption.PACKAGE), null, null,
-                kind == FailureKind.TECHNICAL ? Decisions.OPERATORS : null), now);
+        new PackageFailures(routing.decisions(), store).failed(c, row, run.job(), run.claimed().runId(), kind,
+                reason, now);
     }
 
     private Filling filling(Connection c, Map<String, Filling> filling, String key, int maxSize, int[] created,
@@ -354,7 +339,7 @@ public class WorkPackagesImpl<E, ID> implements WorkPackages<E, ID> {
         }
     }
 
-    /** A package handed over to the handler: exactly one of {@code done} or {@code fail}. */
+    /** A package handed over to the handler: exactly one of {@code done}, {@code sent} or {@code fail}. */
     private class PackageHandle implements WorkPackage<E, ID> {
 
         private final PackageRow row;
@@ -362,6 +347,7 @@ public class WorkPackagesImpl<E, ID> implements WorkPackages<E, ID> {
         private final RunInfoImpl info;
         private String failure;
         private boolean done;
+        private String reference;
 
         PackageHandle(PackageRow row, List<TrackedItemImpl<E, ID>> items) {
             this.row = row;
@@ -406,6 +392,18 @@ public class WorkPackagesImpl<E, ID> implements WorkPackages<E, ID> {
         }
 
         @Override
+        public void sent(String ackReference) {
+            ended();
+            reference = Objects.requireNonNull(ackReference, "reference");
+            if (run.job().ackRequired() && items.stream().anyMatch(TrackedItemImpl::isHandled)) {
+                // a rejection retries the package with its items: they can only move on once it is acknowledged
+                throw new IllegalStateException("work package " + row.seq() + ": items were routed already, it can't"
+                        + " wait for an acknowledgement");
+            }
+            done = true;
+        }
+
+        @Override
         public void fail(String reason) {
             ended();
             if (items.stream().anyMatch(TrackedItemImpl::isHandled)) {
@@ -430,12 +428,22 @@ public class WorkPackagesImpl<E, ID> implements WorkPackages<E, ID> {
                 throw new IllegalStateException("work package " + row.seq() + " of job " + run.job().name()
                         + " ended without done() or fail()");
             }
+            if (reference != null && run.job().ackRequired()) {
+                // waits for the receiver: the items stay in the package until it is acknowledged
+                Duration timeout = run.job().ackTimeout();
+                store.sent(c, row.id(), run.claimed().runId(), info.toJson(), reference,
+                        timeout == null ? null : now.plus(timeout), now);
+                for (TrackedItemImpl<E, ID> item : items) {
+                    journal(c, item.row(), ItemEventType.SENT, null, reference, row.id(), now);
+                }
+                return;
+            }
             for (TrackedItemImpl<E, ID> item : items) {
                 if (!item.isHandled()) {
                     item.complete();
                 }
             }
-            store.done(c, row.id(), run.claimed().runId(), info.toJson(), now);
+            store.done(c, row.id(), run.claimed().runId(), info.toJson(), reference, now);
         }
     }
 }

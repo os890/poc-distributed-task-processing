@@ -19,6 +19,7 @@ import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -27,7 +28,7 @@ public class PackageStore {
 
     private static final String COLUMNS = "id, namespace, job_id, item_type, group_key, seq, state, attempts,"
             + " item_count, created_by_run_id, created_by_job_id, processed_by_run_id, next_attempt_at, last_error,"
-            + " info, created_at, updated_at";
+            + " info, created_at, updated_at, ack_reference, sent_at, ack_due_at";
 
     private final SqlDialect dialect;
 
@@ -44,7 +45,7 @@ public class PackageStore {
      * @param itemType         the type of its items
      * @param groupKey         the group key, or {@code null}
      * @param seq              increasing number, the order of processing
-     * @param state            PENDING, DONE, WAITING_FOR_DECISION or DISCARDED
+     * @param state            PENDING, SENT, DONE, WAITING_FOR_DECISION or DISCARDED
      * @param attempts         failed attempts
      * @param itemCount        number of items
      * @param createdByRunId   the run that created it
@@ -55,12 +56,15 @@ public class PackageStore {
      * @param info             custom information as JSON, or {@code null}
      * @param createdAt        creation time
      * @param updatedAt        last change
+     * @param ackReference     the reference the receiver acknowledges, or {@code null}
+     * @param sentAt           when it was sent last, or {@code null}
+     * @param ackDueAt         until when the acknowledgement is expected, or {@code null}
      */
     public record PackageRow(UUID id, String namespace, UUID jobId, String itemType, String groupKey, long seq,
                              String state, int attempts, int itemCount, UUID createdByRunId, UUID createdByJobId,
                              UUID processedByRunId,
                              Instant nextAttemptAt, String lastError, String info, Instant createdAt,
-                             Instant updatedAt) {
+                             Instant updatedAt, String ackReference, Instant sentAt, Instant ackDueAt) {
     }
 
     /**
@@ -161,8 +165,107 @@ public class PackageStore {
      * @throws SQLException on DB errors
      */
     public void done(Connection c, UUID id, UUID runId, String info, Instant now) throws SQLException {
-        Sql.update(c, "UPDATE dtp_work_package SET state = 'DONE', processed_by_run_id = ?, info = ?,"
-                + " next_attempt_at = NULL, updated_at = ? WHERE id = ?", runId, info, now, id);
+        done(c, id, runId, info, null, now);
+    }
+
+    /**
+     * Marks a package as done, sent with a reference (without acknowledgement).
+     *
+     * @param c         the connection
+     * @param id        the package
+     * @param runId     the processing run
+     * @param info      custom information as JSON, or {@code null}
+     * @param reference the reference of the sent package, or {@code null}
+     * @param now       the DB time
+     * @throws SQLException on DB errors
+     */
+    public void done(Connection c, UUID id, UUID runId, String info, String reference, Instant now)
+            throws SQLException {
+        if (reference == null) {
+            Sql.update(c, "UPDATE dtp_work_package SET state = 'DONE', processed_by_run_id = ?, info = ?,"
+                    + " next_attempt_at = NULL, updated_at = ? WHERE id = ?", runId, info, now, id);
+        } else {
+            Sql.update(c, "UPDATE dtp_work_package SET state = 'DONE', processed_by_run_id = ?, info = ?,"
+                    + " ack_reference = ?, sent_at = ?, next_attempt_at = NULL, updated_at = ? WHERE id = ?", runId,
+                    info, reference, now, now, id);
+        }
+    }
+
+    /**
+     * Marks a package as sent: it waits for the acknowledgement of the receiver.
+     *
+     * @param c         the connection
+     * @param id        the package
+     * @param runId     the processing run
+     * @param info      custom information as JSON, or {@code null}
+     * @param reference the reference the receiver acknowledges
+     * @param ackDueAt  until when the acknowledgement is expected, or {@code null}
+     * @param now       the DB time
+     * @throws SQLException on DB errors
+     */
+    public void sent(Connection c, UUID id, UUID runId, String info, String reference, Instant ackDueAt,
+                     Instant now) throws SQLException {
+        Sql.update(c, "UPDATE dtp_work_package SET state = 'SENT', processed_by_run_id = ?, info = ?,"
+                + " ack_reference = ?, sent_at = ?, ack_due_at = ?, next_attempt_at = NULL, updated_at = ?"
+                + " WHERE id = ?", runId, info, reference, now, ackDueAt, now, id);
+    }
+
+    /**
+     * Locks the sent package of a job with a reference (the most recent one if a reference was reused).
+     *
+     * @param c         the connection
+     * @param jobId     the job
+     * @param reference the reference
+     * @return the package, if one waits for its acknowledgement
+     * @throws SQLException on DB errors
+     */
+    public Optional<PackageRow> lockSent(Connection c, UUID jobId, String reference) throws SQLException {
+        return Sql.queryOne(c, "SELECT " + COLUMNS + " FROM dtp_work_package WHERE job_id = ? AND ack_reference = ?"
+                + " AND state = 'SENT' ORDER BY seq DESC LIMIT 1 FOR UPDATE", PackageStore::map, jobId, reference);
+    }
+
+    /**
+     * Whether a job has a package with a reference, in any state.
+     *
+     * @param c         the connection
+     * @param jobId     the job
+     * @param reference the reference
+     * @return {@code true} if it has one
+     * @throws SQLException on DB errors
+     */
+    public boolean exists(Connection c, UUID jobId, String reference) throws SQLException {
+        return Sql.queryOne(c, "SELECT COUNT(*) FROM dtp_work_package WHERE job_id = ? AND ack_reference = ?",
+                rs -> rs.getInt(1), jobId, reference).orElse(0) > 0;
+    }
+
+    /**
+     * Marks a sent package as acknowledged (done).
+     *
+     * @param c   the connection
+     * @param id  the package
+     * @param by  who acknowledged it, or {@code null}
+     * @param now the DB time
+     * @return {@code false} if it isn't sent (any more)
+     * @throws SQLException on DB errors
+     */
+    public boolean acknowledged(Connection c, UUID id, String by, Instant now) throws SQLException {
+        return Sql.update(c, "UPDATE dtp_work_package SET state = 'DONE', acknowledged_at = ?, acknowledged_by = ?,"
+                + " ack_due_at = NULL, updated_at = ? WHERE id = ? AND state = 'SENT'", now, by, now, id) == 1;
+    }
+
+    /**
+     * The sent packages whose acknowledgement is overdue.
+     *
+     * @param c         the connection
+     * @param namespace the namespace
+     * @param now       the DB time
+     * @param limit     maximum number
+     * @return the package ids
+     * @throws SQLException on DB errors
+     */
+    public List<UUID> overdue(Connection c, String namespace, Instant now, int limit) throws SQLException {
+        return Sql.query(c, "SELECT id FROM dtp_work_package WHERE namespace = ? AND state = 'SENT'"
+                + " AND ack_due_at <= ? ORDER BY ack_due_at LIMIT ?", rs -> Sql.uuid(rs, "id"), namespace, now, limit);
     }
 
     /**
@@ -170,7 +273,7 @@ public class PackageStore {
      *
      * @param c             the connection
      * @param id            the package
-     * @param runId         the processing run
+     * @param runId         the processing run, or {@code null} outside of runs (a rejection)
      * @param attempts      failed attempts including this one
      * @param nextAttemptAt the next attempt, or {@code null} if it waits for a decision
      * @param error         the reason
@@ -179,8 +282,9 @@ public class PackageStore {
      */
     public void failed(Connection c, UUID id, UUID runId, int attempts, Instant nextAttemptAt, String error,
                        Instant now) throws SQLException {
-        Sql.update(c, "UPDATE dtp_work_package SET state = ?, attempts = ?, processed_by_run_id = ?,"
-                + " next_attempt_at = ?, last_error = ?, updated_at = ? WHERE id = ?",
+        Sql.update(c, "UPDATE dtp_work_package SET state = ?, attempts = ?,"
+                + " processed_by_run_id = COALESCE(?, processed_by_run_id), next_attempt_at = ?, last_error = ?,"
+                + " ack_due_at = NULL, updated_at = ? WHERE id = ?",
                 nextAttemptAt == null ? "WAITING_FOR_DECISION" : "PENDING", attempts, runId, nextAttemptAt,
                 truncate(error), now, id);
     }
@@ -225,6 +329,7 @@ public class PackageStore {
                 rs.getInt("attempts"), rs.getInt("item_count"), Sql.uuid(rs, "created_by_run_id"),
                 Sql.uuid(rs, "created_by_job_id"),
                 Sql.uuid(rs, "processed_by_run_id"), Sql.instant(rs, "next_attempt_at"), rs.getString("last_error"),
-                rs.getString("info"), Sql.instant(rs, "created_at"), Sql.instant(rs, "updated_at"));
+                rs.getString("info"), Sql.instant(rs, "created_at"), Sql.instant(rs, "updated_at"),
+                rs.getString("ack_reference"), Sql.instant(rs, "sent_at"), Sql.instant(rs, "ack_due_at"));
     }
 }

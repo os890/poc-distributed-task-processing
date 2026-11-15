@@ -60,8 +60,9 @@ signals, versions and overrides (slice 2), decision requests and approvals (slic
 (slice 4), decision fallbacks with domain events (slice 5), flow instances with run joins (slice 6), business
 calendars with processing slots (slice 7), work packages with item and time limits (slice 8), collectors that
 hand their packages over to other jobs (slice 9), collection windows (slice 10), the monitoring read model with
-heat map, jam detection, alerts and a live feed (slice 11), the journey diagram per item (slice 12), and telemetry
-metrics and traces with OpenTelemetry (slice 13): see [IMPLEMENTATION.md](IMPLEMENTATION.md).
+heat map, jam detection, alerts and a live feed (slice 11), the journey diagram per item (slice 12), telemetry
+metrics and traces with OpenTelemetry (slice 13), and acknowledgements of sent work packages (slice 14): see
+[IMPLEMENTATION.md](IMPLEMENTATION.md).
 
 ## License
 

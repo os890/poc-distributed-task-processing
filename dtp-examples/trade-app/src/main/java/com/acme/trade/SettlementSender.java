@@ -61,9 +61,11 @@ public class SettlementSender implements JobHandler<NoParams, DefaultOutcome> {
             EndOfDay.simulateWork(sendDelay);
             List<String> trades = pkg.items().stream().map(item -> em.find(Trade.class, item.ref().id()))
                                      .map(Trade::getTradeNumber).toList();
-            pkg.info().put(FILE, gateway.send(pkg.groupKey(), pkg.sequence(), trades));
+            String file = gateway.send(pkg.groupKey(), pkg.sequence(), trades);
+            pkg.info().put(FILE, file);
             ctx.runInfo().increment(SENT, 1);
-            pkg.done();
+            // the custodian acknowledges the file later (ack_required): until then the package is SENT
+            pkg.sent(file);
         });
         return JobResult.success();
     }

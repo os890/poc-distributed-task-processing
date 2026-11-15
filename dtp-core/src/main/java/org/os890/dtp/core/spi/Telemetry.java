@@ -46,7 +46,8 @@ public interface Telemetry {
      *
      * @param step        the job name
      * @param lane        the lane, or {@code null}
-     * @param result      {@code routed}, {@code routed_back}, {@code forked}, {@code packaged}, {@code completed},
+     * @param result      {@code routed}, {@code routed_back}, {@code forked}, {@code packaged}, {@code sent},
+     *                    {@code completed},
      *                    {@code discarded}, {@code deferred}, {@code escalated} or {@code failed}
      * @param failureKind {@code BUSINESS} or {@code TECHNICAL} for {@code failed}, else {@code null}
      */
@@ -142,6 +143,24 @@ public interface Telemetry {
      * @param role {@code housekeeping} or {@code projection}
      */
     default void leaderElected(String role) {
+    }
+
+    /**
+     * The receiver acknowledged a sent work package (committed).
+     *
+     * @param step      the job that sent it
+     * @param sinceSent the time since it was sent
+     */
+    default void packageAcknowledged(String step, Duration sinceSent) {
+    }
+
+    /**
+     * A sent work package was rejected, or not acknowledged in time (committed).
+     *
+     * @param step   the job that sent it
+     * @param reason {@code rejected} or {@code timeout}
+     */
+    default void packageRejected(String step, String reason) {
     }
 
     /**

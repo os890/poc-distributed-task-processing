@@ -15,16 +15,30 @@
  */
 package com.acme.trade;
 
+import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
+import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.inject.Instance;
+import jakarta.inject.Inject;
+
+import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.os890.dtp.core.engine.Acknowledgements;
+import org.os890.dtp.core.engine.Acknowledgements.Outcome;
 
 /**
- * Simulated settlement gateway: sends a file of settlement instructions to a custodian. A custodian can be
- * unavailable (demo and tests), then it rejects the file.
+ * Simulated settlement gateway: sends a file of settlement instructions to a custodian. The custodian answers later
+ * (after {@code trade.settlement.ack-delay}) with an acknowledgement, through the callback of the application
+ * ({@link Acknowledgements}). For demos and tests a custodian can be unavailable (the file can't be sent), reject its
+ * files, or not answer at all.
  */
 @ApplicationScoped
 public class SettlementGateway {
@@ -32,8 +46,31 @@ public class SettlementGateway {
     /** The custodians of the example. */
     static final List<String> CUSTODIANS = List.of("OEKB-CSD", "CLEARSTREAM", "EUROCLEAR");
 
+    /** How a custodian answers. */
+    public enum Mode {
+        /** Acknowledges every file. */
+        ACCEPTING,
+        /** Rejects every file. */
+        REJECTING,
+        /** Doesn't answer: the acknowledgement times out. */
+        SILENT
+    }
+
+    /** Attempts of a callback whose file isn't known yet (the send wasn't committed yet). */
+    private static final int CALLBACK_ATTEMPTS = 10;
+
     private final Set<String> unavailable = ConcurrentHashMap.newKeySet();
+    private final Map<String, Mode> modes = new ConcurrentHashMap<>();
     private final List<String> files = new CopyOnWriteArrayList<>();
+    private final List<String> answers = new CopyOnWriteArrayList<>();
+    private final ScheduledExecutorService custodians = Executors.newSingleThreadScheduledExecutor(
+            Thread.ofVirtual().name("custodians").factory());
+
+    @Inject
+    Instance<Acknowledgements> acknowledgements;
+
+    @ConfigProperty(name = "trade.settlement.ack-delay", defaultValue = "PT1S")
+    Duration ackDelay;
 
     /**
      * The custodian that settles a trade (example rule: by its trade number).
@@ -46,12 +83,12 @@ public class SettlementGateway {
     }
 
     /**
-     * Sends a file.
+     * Sends a file. The custodian answers later.
      *
      * @param custodian    the receiver
      * @param sequence     the number of the work package
      * @param instructions the trade numbers
-     * @return the file name
+     * @return the file name, the reference of the acknowledgement
      * @throws IllegalStateException if the custodian is unavailable
      */
     String send(String custodian, long sequence, List<String> instructions) {
@@ -60,7 +97,26 @@ public class SettlementGateway {
         }
         String file = "settlement-" + custodian + "-" + sequence + ".xml";
         files.add(file + " (" + instructions.size() + " instructions)");
+        Mode mode = modes.getOrDefault(custodian, Mode.ACCEPTING);
+        if (mode != Mode.SILENT) {
+            answerLater(custodian, file, mode == Mode.ACCEPTING, 1);
+        }
         return file;
+    }
+
+    /** The custodian's callback; repeated while the file isn't known yet, like a receiver retrying on 404. */
+    private void answerLater(String custodian, String file, boolean accepted, int attempt) {
+        custodians.schedule(() -> {
+            Outcome outcome = accepted
+                    ? acknowledgements.get().acknowledge(SettlementSender.class, file, custodian)
+                    : acknowledgements.get().reject(SettlementSender.class, file, custodian + " rejected " + file
+                            + ": unknown safekeeping account");
+            if (outcome == Outcome.UNKNOWN && attempt < CALLBACK_ATTEMPTS) {
+                answerLater(custodian, file, accepted, attempt + 1);
+            } else {
+                answers.add(file + ": " + outcome);
+            }
+        }, ackDelay.toMillis(), TimeUnit.MILLISECONDS);
     }
 
     boolean isAvailable(String custodian) {
@@ -81,8 +137,28 @@ public class SettlementGateway {
         }
     }
 
+    /**
+     * Sets how a custodian answers.
+     *
+     * @param custodian the custodian
+     * @param mode      the mode
+     */
+    public void setMode(String custodian, Mode mode) {
+        modes.put(custodian, mode);
+    }
+
     /** The files sent by this node. */
     public List<String> files() {
         return List.copyOf(files);
+    }
+
+    /** The answers of the custodians to the files of this node, with the outcome. */
+    public List<String> answers() {
+        return List.copyOf(answers);
+    }
+
+    @PreDestroy
+    void close() {
+        custodians.shutdownNow();
     }
 }

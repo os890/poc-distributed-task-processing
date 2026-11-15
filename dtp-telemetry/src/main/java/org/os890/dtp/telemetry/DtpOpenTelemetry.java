@@ -75,6 +75,7 @@ public class DtpOpenTelemetry implements Telemetry {
     static final AttributeKey<String> STATUS_REASON = AttributeKey.stringKey("dtp.step.status_reason");
     static final AttributeKey<String> NODE_COLOR = AttributeKey.stringKey("dtp.node.color");
     static final AttributeKey<String> NODE_STATE = AttributeKey.stringKey("dtp.node.state");
+    static final AttributeKey<String> REJECTION = AttributeKey.stringKey("dtp.rejection.reason");
     static final AttributeKey<String> RUN_ID = AttributeKey.stringKey("dtp.run.id");
     static final AttributeKey<Long> RUN_ATTEMPT = AttributeKey.longKey("dtp.run.attempt");
     static final AttributeKey<Long> BATCH_SIZE = AttributeKey.longKey("dtp.batch.size");
@@ -107,6 +108,9 @@ public class DtpOpenTelemetry implements Telemetry {
     private final LongCounter leasesLost;
     private final LongCounter leaseTakeovers;
     private final LongCounter leaderElections;
+    private final LongCounter packagesAcknowledged;
+    private final LongCounter packagesRejected;
+    private final DoubleHistogram acknowledgementTime;
     private final LongCounter decisionsCreated;
     private final LongCounter decisionsDecided;
     private volatile ClusterState cluster;
@@ -134,6 +138,9 @@ public class DtpOpenTelemetry implements Telemetry {
         leasesLost = counter(meter, "dtp.lease.lost", "Runs of this node that lost their lease");
         leaseTakeovers = counter(meter, "dtp.lease.takeovers", "Expired leases taken over by the leader");
         leaderElections = counter(meter, "dtp.leader.elections", "Times this node was elected leader");
+        packagesAcknowledged = counter(meter, "dtp.packages.acknowledged", "Sent work packages acknowledged");
+        packagesRejected = counter(meter, "dtp.packages.rejected", "Sent work packages rejected or not acknowledged");
+        acknowledgementTime = histogram(meter, "dtp.package.ack_time", "Time from sending to the acknowledgement");
         decisionsCreated = counter(meter, "dtp.decisions.created", "Decision requests created");
         decisionsDecided = counter(meter, "dtp.decisions.decided", "Decision requests decided");
         registerClusterGauges(meter);
@@ -207,6 +214,17 @@ public class DtpOpenTelemetry implements Telemetry {
     @Override
     public void leaderElected(String role) {
         leaderElections.add(1, base().put(LEADER_ROLE, role).build());
+    }
+
+    @Override
+    public void packageAcknowledged(String step, Duration sinceSent) {
+        packagesAcknowledged.add(1, step(step).build());
+        acknowledgementTime.record(seconds(sinceSent), step(step).build());
+    }
+
+    @Override
+    public void packageRejected(String step, String reason) {
+        packagesRejected.add(1, step(step).put(REJECTION, reason).build());
     }
 
     @Override

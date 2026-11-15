@@ -59,6 +59,7 @@ import org.junit.jupiter.api.TestMethodOrder;
 import org.os890.dtp.api.BusinessCalendars;
 import org.os890.dtp.core.query.DtpQueries;
 import org.os890.dtp.core.query.DtpQueries.JourneyEntry;
+import org.os890.dtp.core.query.DtpQueries.PackageView;
 
 import io.quarkus.test.junit.QuarkusTest;
 import io.restassured.RestAssured;
@@ -281,8 +282,9 @@ class TradeFlowTest {
     @Order(6)
     void theSettlementExportSendsOneFilePerCustodianAndARejectedFileIsDecided() {
         // after the sign-off of 2026-11-20 (order 4): seven released trades (trade 7 has a restricted ISIN), the
-        // export created the files and handed them over to the sender
-        await().atMost(Duration.ofSeconds(30)).until(() -> queries.isIdle());
+        // export created the files and handed them over to the sender, the custodians acknowledged them
+        await().atMost(Duration.ofSeconds(30)).until(() -> queries.isIdle() && queries.packages(20).stream()
+                .filter(p -> "settlement-sender".equals(p.job())).allMatch(p -> "DONE".equals(p.state())));
         given().when().get("/dtp/packages").then().statusCode(200)
                .body("findAll { it.collector == 'settlement-export' }.itemCount.sum()", is(7))
                .body("findAll { it.collector == 'settlement-export' }.job", everyItem(equalTo("settlement-sender")))
@@ -528,6 +530,106 @@ class TradeFlowTest {
                .body("findAll { it.traceId == '" + traces.getLast() + "' }.name[0]", startsWith("dtp trade-"))
                .body("findAll { it.traceId == '" + traces.getLast() + "' }.links.flatten()", not(empty()));
         given().when().get("/telemetry/spans?limit=5").then().statusCode(200).body("size()", is(5));
+    }
+
+    @Test
+    @Order(11)
+    void custodiansAcknowledgeOrRejectTheirFilesOrDontAnswer() {
+        LocalDate date = LocalDate.of(2026, 11, 26);
+        // three trades with ISIN (the P&L report needs them), one per custodian
+        given().contentType(ContentType.JSON).body(new ImportParams(date, 3))
+               .when().post("/trades/imports").then().statusCode(200);
+        await().atMost(Duration.ofSeconds(30)).until(() -> queries.isIdle()
+                && types("T-2026-11-26-3").contains("COMPLETED"));
+        List<String> custodians = SettlementGateway.CUSTODIANS;
+        String rejecting = custodians.get(0);
+        String silent = custodians.get(1);
+        given().contentType(ContentType.TEXT).body("REJECTING").when()
+               .put("/settlement/custodians/" + rejecting + "/mode").then().statusCode(204);
+        given().contentType(ContentType.TEXT).body("SILENT").when()
+               .put("/settlement/custodians/" + silent + "/mode").then().statusCode(204);
+        given().contentType(ContentType.TEXT).body("NONSENSE").when()
+               .put("/settlement/custodians/" + silent + "/mode").then().statusCode(400);
+        given().header("X-User", "otto").when().post("/eod/" + date).then().statusCode(200);
+
+        // rejected twice, and twice no answer within the timeout: both wait for a decision
+        await().atMost(Duration.ofSeconds(30)).until(() -> waitingFor(rejecting) && waitingFor(silent));
+        PackageView rejected = latestPackage(rejecting);
+        PackageView unanswered = latestPackage(silent);
+        assertThat(rejected.attempts()).isEqualTo(2);
+        assertThat(rejected.lastError()).contains("unknown safekeeping account");
+        assertThat(unanswered.lastError()).isEqualTo("no acknowledgement within PT1S");
+        given().when().get("/settlement/answers").then().statusCode(200)
+               .body("$", hasItem(rejected.reference() + ": REJECTED"));
+        // a rejection is a business decision, a missing answer goes to operations
+        given().header("X-User", "otto").header("X-Groups", "dtp-operator").when().get("/dtp/decisions").then()
+               .statusCode(200)
+               .body("find { it.subjectId == '" + unanswered.id() + "' }.responsibleGroup", equalTo("dtp-operator"))
+               .body("find { it.subjectId == '" + rejected.id() + "' }.responsibleGroup", equalTo(null));
+        // the journey of an instruction in the rejected file
+        String instruction = given().header("X-Groups", "dtp-viewer")
+                                    .when().get("/dtp/items/settlement-instruction/" + firstItemOf(rejected)
+                                            + "/journey").then().statusCode(200).extract().asString();
+        assertThat(instruction).contains("\"SENT\"", "\"REJECTED\"");
+
+        // the custodians are fixed: decided RETRY, the files go out again and are acknowledged; a late answer for
+        // a file that waits for a decision and one for an unknown file are refused
+        given().contentType(ContentType.JSON).body(Map.of("file", unanswered.reference(), "accepted", true))
+               .when().post("/settlement/acknowledgements").then().statusCode(409);
+        given().contentType(ContentType.JSON).body(Map.of("file", "unknown.xml", "accepted", true))
+               .when().post("/settlement/acknowledgements").then().statusCode(404);
+        given().contentType(ContentType.JSON).body(Map.of("accepted", true))
+               .when().post("/settlement/acknowledgements").then().statusCode(400);
+        given().contentType(ContentType.TEXT).body("ACCEPTING").when()
+               .put("/settlement/custodians/" + rejecting + "/mode").then().statusCode(204);
+        for (PackageView pkg : List.of(rejected, unanswered)) {
+            String id = given().header("X-User", "otto").header("X-Groups", "dtp-operator")
+                               .when().get("/dtp/decisions").then().statusCode(200)
+                               .extract().path("find { it.subjectId == '" + pkg.id() + "' }.id");
+            given().header("X-User", "otto").header("X-Groups", "dtp-operator").contentType(ContentType.JSON)
+                   .body(Map.of("option", "RETRY")).when().post("/dtp/decisions/" + id + "/decision")
+                   .then().statusCode(204);
+        }
+        // the silent custodian still doesn't answer by itself: its answer arrives through the callback
+        await().atMost(Duration.ofSeconds(30)).until(() -> "DONE".equals(latestPackage(rejecting).state())
+                && "SENT".equals(latestPackage(silent).state()));
+        given().contentType(ContentType.JSON).body(Map.of("file", unanswered.reference(), "accepted", true,
+                "custodian", silent))
+               .when().post("/settlement/acknowledgements").then().statusCode(200)
+               .body("outcome", equalTo("ACKNOWLEDGED"));
+        assertThat(latestPackage(silent).state()).isEqualTo("DONE");
+        given().contentType(ContentType.TEXT).body("ACCEPTING").when()
+               .put("/settlement/custodians/" + silent + "/mode").then().statusCode(204);
+        assertThat(given().header("X-Groups", "dtp-viewer")
+                          .when().get("/dtp/items/settlement-instruction/" + firstItemOf(rejected)
+                                  + "/journey").then().statusCode(200).extract().<List<String>>path("type"))
+                .containsSubsequence("PACKAGED", "SENT", "REJECTED", "SENT", "REJECTED", "SENT", "ACKNOWLEDGED",
+                        "COMPLETED");
+        given().when().get("/telemetry/metrics").then().statusCode(200)
+               .body("find { it.name == 'dtp.packages.rejected' }.points.attributes['dtp.rejection.reason']",
+                       hasItems("rejected", "timeout"))
+               .body("find { it.name == 'dtp.packages.acknowledged' }.points.size()", greaterThan(0));
+    }
+
+    private boolean waitingFor(String custodian) {
+        return queries.packages(50).stream().anyMatch(p -> custodian.equals(p.groupKey())
+                && "settlement-sender".equals(p.job()) && "WAITING_FOR_DECISION".equals(p.state()));
+    }
+
+    private PackageView latestPackage(String custodian) {
+        return queries.packages(50).stream().filter(p -> custodian.equals(p.groupKey())
+                && "settlement-sender".equals(p.job())).findFirst().orElseThrow();
+    }
+
+    private String firstItemOf(PackageView pkg) {
+        try (Connection c = dataSource.getConnection(); Statement s = c.createStatement()) {
+            ResultSet rs = s.executeQuery("SELECT business_key FROM dtp_item WHERE work_package_id = '" + pkg.id()
+                    + "' ORDER BY business_key LIMIT 1");
+            assertThat(rs.next()).isTrue();
+            return rs.getString(1);
+        } catch (java.sql.SQLException e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     private long reportedTrades(long sequence) {

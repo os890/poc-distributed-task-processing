@@ -60,6 +60,8 @@ class DtpOpenTelemetryTest {
             telemetry.leaseLost("trade-check");
             telemetry.leaseTakenOver("trade-check");
             telemetry.leaderElected("projection");
+            telemetry.packageAcknowledged("trade-check", Duration.ofSeconds(4));
+            telemetry.packageRejected("trade-check", "timeout");
             telemetry.decisionCreated("trade-check", "APPROVAL", "risk");
             telemetry.decisionDecided("trade-check", "CHOICE", null);
             otel.collect();
@@ -83,13 +85,18 @@ class DtpOpenTelemetryTest {
             assertThat(otel.points("dtp.unit_of_work.duration", CHECK)).hasSize(1);
             assertThat(otel.points("dtp.claim.duration", Attributes.empty())).hasSize(1);
             for (String counter : List.of("dtp.claim.conflicts", "dtp.lease.renewals", "dtp.lease.lost",
-                    "dtp.lease.takeovers", "dtp.leader.elections", "dtp.decisions.created",
+                    "dtp.lease.takeovers", "dtp.leader.elections", "dtp.decisions.created", "dtp.packages.acknowledged",
+                    "dtp.packages.rejected",
                     "dtp.decisions.decided")) {
                 assertThat(sum(otel, counter, Attributes.of(DtpOpenTelemetry.NAMESPACE, "trades")))
                         .as(counter).isEqualTo(1);
             }
             assertThat(sum(otel, "dtp.decisions.decided", CHECK.toBuilder().put(DtpOpenTelemetry.GROUP, "")
                     .put(DtpOpenTelemetry.DECISION_KIND, "CHOICE").build())).isEqualTo(1);
+            assertThat(sum(otel, "dtp.packages.rejected", CHECK.toBuilder().put(DtpOpenTelemetry.REJECTION,
+                    "timeout").build())).isEqualTo(1);
+            assertThat(((HistogramPointData) otel.points("dtp.package.ack_time", CHECK).getFirst()).getSum())
+                    .isEqualTo(4.0);
             assertThat(sum(otel, "dtp.leader.elections", Attributes.of(DtpOpenTelemetry.LEADER_ROLE, "projection")))
                     .isEqualTo(1);
         }

@@ -114,6 +114,7 @@ public record EngineContext(DtpConfig config, UUID nodeId, Transactions tx, SqlD
             case ROUTED_BACK -> "routed_back";
             case FORKED -> "forked";
             case PACKAGED -> "packaged";
+            case SENT -> "sent";
             case COMPLETED -> "completed";
             case DISCARDED -> "discarded";
             case DEFERRED -> "deferred";

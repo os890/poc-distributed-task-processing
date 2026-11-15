@@ -65,7 +65,8 @@ class JourneyFolderTest {
         entries.add(new JourneyEntry(6, 6, MONDAY, "PACKAGED", "collector", "sender", run, 1, "n1",
                 "work package 7 (OEKB-CSD)", null, null, null, pkg, null));
         Context ctx = context(item("PACKAGED", null, pkg), Map.of(), Map.of(pkg, new PackageInfo(pkg, 7,
-                "OEKB-CSD", "PENDING", "sender", "{\"file\":\"settle-7.xml\",\"size\":2}", 1, "gateway down")),
+                "OEKB-CSD", "PENDING", "sender", "{\"file\":\"settle-7.xml\",\"size\":2}", 1, "gateway down", null,
+                null)),
                 List.of(), Map.of());
 
         JourneyGraph graph = JourneyFolder.fold(ctx, FULL);
@@ -77,21 +78,21 @@ class JourneyFolderTest {
         Node pkgNode = graph.nodes().getLast();
         assertThat(pkgNode.title()).isEqualTo("work package 7 (OEKB-CSD)");
         assertThat(pkgNode.packageId()).isEqualTo(pkg);
-        assertThat(pkgNode.lines()).containsExactly("PENDING", "file:settle-7.xml, size:2", "1 failed attempts",
+        assertThat(pkgNode.lines()).containsExactly("PENDING", "file:settle-7.xml, size:2", "1 failed attempt",
                 "handed over to Sender", "waiting since Mon 10:00");
         assertThat(pkgNode.style()).isEqualTo(Style.CURRENT);
         assertThat(graph.mermaid()).contains("p1[/\"work package 7 (OEKB-CSD)<br/>PENDING<br/>",
                 "s3 -- \"6\" --> p1", "class p1 current");
         // operators see the error of the package, steps only hides the package
         assertThat(JourneyFolder.fold(ctx, new Options(Detail.FULL, true, ZoneOffset.UTC)).nodes().getLast().lines())
-                .contains("1 failed attempts: gateway down");
+                .contains("1 failed attempt: gateway down");
         JourneyGraph steps = JourneyFolder.fold(ctx, STEPS);
         assertThat(steps.nodes()).extracting(Node::kind).doesNotContain(NodeKind.PACKAGE);
         assertThat(node(steps, "TradeCheck").lines()).isEmpty();
 
         // a finished package
         Context done = context(item("PACKAGED", null, pkg), Map.of(), Map.of(pkg, new PackageInfo(pkg, 7,
-                "OEKB-CSD", "DONE", "sender", null, 1, null)), List.of(), Map.of());
+                "OEKB-CSD", "DONE", "sender", null, 1, null, null, null)), List.of(), Map.of());
         Node finished = JourneyFolder.fold(done, FULL).nodes().getLast();
         assertThat(finished.style()).isEqualTo(Style.DONE);
         assertThat(finished.lines()).containsExactly("DONE in attempt 2", "handed over to Sender");
@@ -108,7 +109,7 @@ class JourneyFolderTest {
                 "work package 3 (EUROCLEAR)", null, null, null, pkg, null));
         add("COMPLETED", "sender", null, null);
         Context ctx = context(item("COMPLETED", null, pkg), Map.of(), Map.of(pkg, new PackageInfo(pkg, 3,
-                "EUROCLEAR", "DONE", "sender", null, 0, null)), List.of(), Map.of());
+                "EUROCLEAR", "DONE", "sender", null, 0, null, null, null)), List.of(), Map.of());
 
         JourneyGraph graph = JourneyFolder.fold(ctx, FULL);
         assertThat(graph.edges()).extracting(Edge::from, Edge::to, Edge::label).containsExactly(
@@ -120,6 +121,41 @@ class JourneyFolderTest {
         // steps only: from the collector to the sender
         assertThat(JourneyFolder.fold(ctx, STEPS).edges()).extracting(Edge::from, Edge::to, Edge::kind)
                 .contains(tuple("s1", "s2", EdgeKind.ROUTE));
+    }
+
+    @Test
+    void aSentPackageShowsItsAnswersAndWaitsForTheAcknowledgement() {
+        UUID pkg = UUID.randomUUID();
+        add("TRACKED", null, null, null);
+        entries.add(new JourneyEntry(2, 2, MONDAY, "PACKAGED", "collector", "sender", run, 1, "n1",
+                "work package 3 (EUROCLEAR)", null, null, null, pkg, null));
+        for (String type : List.of("SENT", "REJECTED", "SENT")) {
+            int no = entries.size() + 1;
+            entries.add(new JourneyEntry(no, no, MONDAY, type, "sender", null, null, null, "n1",
+                    "REJECTED".equals(type) ? "EUROCLEAR rejected the file" : "settlement-EUROCLEAR-3.xml", null, null,
+                    null, pkg, null));
+        }
+        Context ctx = context(item("PACKAGED", null, pkg), Map.of(), Map.of(pkg, new PackageInfo(pkg, 3,
+                "EUROCLEAR", "SENT", "sender", null, 1, "EUROCLEAR rejected the file", MONDAY,
+                MONDAY.plusSeconds(600))), List.of(), Map.of());
+
+        Node sent = JourneyFolder.fold(ctx, FULL).nodes().getLast();
+        assertThat(sent.kind()).isEqualTo(NodeKind.PACKAGE);
+        assertThat(sent.style()).isEqualTo(Style.CURRENT);
+        assertThat(sent.lines()).containsExactly("SENT", "handed over to Sender", "sent 2×",
+                "attempt 1 rejected: EUROCLEAR rejected the file, Mon 10:00",
+                "waiting for the acknowledgement since Mon 10:00, until Mon 10:10");
+        // acknowledged: the package is done
+        int no = entries.size() + 1;
+        entries.add(new JourneyEntry(no, no, MONDAY, "ACKNOWLEDGED", "sender", null, null, null, "n1", null, null,
+                null, null, pkg, null));
+        Context acknowledged = context(item("PACKAGED", null, pkg), Map.of(), Map.of(pkg, new PackageInfo(pkg, 3,
+                "EUROCLEAR", "DONE", "sender", null, 1, null, MONDAY, null)), List.of(), Map.of());
+        Node done = JourneyFolder.fold(acknowledged, FULL).nodes().getLast();
+        assertThat(done.style()).isEqualTo(Style.DONE);
+        assertThat(done.lines()).endsWith("acknowledged Mon 10:00");
+        // steps only: no package node, the answers aren't shown
+        assertThat(JourneyFolder.fold(ctx, STEPS).nodes()).extracting(Node::kind).doesNotContain(NodeKind.PACKAGE);
     }
 
     @Test

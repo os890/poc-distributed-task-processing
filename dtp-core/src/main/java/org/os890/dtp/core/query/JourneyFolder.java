@@ -151,6 +151,7 @@ class JourneyFolder {
             case "MIGRATED" -> nodes.get(from(e)).annotations
                     .add("migrated: " + text(e.reason()));
             case "PACKAGED" -> packaged(e);
+            case "SENT", "ACKNOWLEDGED", "REJECTED" -> answer(e);
             case "COMPLETED", "DISCARDED" -> end(e);
             default -> {
                 // an event type of a later version: not shown
@@ -232,6 +233,21 @@ class JourneyFolder {
         position = pkg.id;
     }
 
+    /** Sending, acknowledgement and rejections are shown at the package (slice 14). */
+    private void answer(JourneyEntry e) {
+        String id = e.packageId() == null ? null : ids.get("p:" + e.packageId());
+        if (id == null) {
+            return;
+        }
+        NodeBuilder pkg = nodes.get(id);
+        switch (e.type()) {
+            case "SENT" -> pkg.sends++;
+            case "REJECTED" -> pkg.annotations.add("attempt " + ++pkg.rejections + " rejected: " + text(e.reason())
+                    + ", " + minutes.format(e.occurredAt()));
+            default -> pkg.annotations.add("acknowledged " + minutes.format(e.occurredAt()));
+        }
+    }
+
     private List<String> describe(PackageInfo info) {
         List<String> lines = new ArrayList<>();
         lines.add(info.state() + ("DONE".equals(info.state()) && info.attempts() > 0
@@ -239,9 +255,10 @@ class JourneyFolder {
         if (info.info() != null) {
             lines.add(text(info.info().replaceAll("[{}\"]", "").replace(",", ", ")));
         }
-        if (!"DONE".equals(info.state()) && info.attempts() > 0) {
-            lines.add(info.attempts() + " failed attempts" + (options.technical() && info.lastError() != null
-                    ? ": " + info.lastError() : ""));
+        // a sent package shows its rejections from the journal instead
+        if (!"DONE".equals(info.state()) && !"SENT".equals(info.state()) && info.attempts() > 0) {
+            lines.add(info.attempts() + (info.attempts() == 1 ? " failed attempt" : " failed attempts")
+                    + (options.technical() && info.lastError() != null ? ": " + info.lastError() : ""));
         }
         return lines;
     }
@@ -298,6 +315,9 @@ class JourneyFolder {
                 if (id != null && info != null) {
                     if ("DONE".equals(info.state())) {
                         nodes.get(id).style = Style.DONE;
+                    } else if ("SENT".equals(info.state()) && info.sentAt() != null) {
+                        current(id, "waiting for the acknowledgement since " + minutes.format(info.sentAt())
+                                + (info.ackDueAt() == null ? "" : ", until " + minutes.format(info.ackDueAt())));
                     } else {
                         current(id, "waiting since " + minutes.format(item.updatedAt()));
                     }
@@ -538,6 +558,8 @@ class JourneyFolder {
         private int succeededOn;
         private int deferred;
         private int reprocessed;
+        private int sends;
+        private int rejections;
         private int runAttempt;
         private String result;
         private String current;
@@ -575,6 +597,12 @@ class JourneyFolder {
                 if (retried && style == Style.NONE) {
                     style = Style.RETRIED;
                 }
+            }
+            if (kind == NodeKind.PACKAGE) {
+                if (sends > 0) {
+                    lines.add(sends == 1 ? "sent" : "sent " + sends + "×");
+                }
+                lines.addAll(annotations);
             }
             if (current != null) {
                 lines.add(current);

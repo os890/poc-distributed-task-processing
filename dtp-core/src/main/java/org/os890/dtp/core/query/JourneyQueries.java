@@ -110,7 +110,7 @@ public class JourneyQueries {
 
     /** A work package the item was put into. */
     record PackageInfo(UUID id, long seq, String groupKey, String state, String job, String info, int attempts,
-                       String lastError) {
+                       String lastError, Instant sentAt, Instant ackDueAt) {
     }
 
     /** An open branch of the item. */
@@ -203,12 +203,14 @@ public class JourneyQueries {
 
     private Map<UUID, PackageInfo> packages(Connection c, ItemInfo item) throws SQLException {
         Map<UUID, PackageInfo> packages = new HashMap<>();
-        Sql.query(c, "SELECT p.id, p.seq, p.group_key, p.state, j.name AS job, p.info, p.attempts, p.last_error"
+        Sql.query(c, "SELECT p.id, p.seq, p.group_key, p.state, j.name AS job, p.info, p.attempts, p.last_error,"
+                + " p.sent_at, p.ack_due_at"
                 + " FROM dtp_work_package p JOIN dtp_job j ON j.id = p.job_id WHERE p.id IN (SELECT e.work_package_id"
                 + " FROM dtp_item_event e WHERE e.item_id = ? AND e.work_package_id IS NOT NULL) OR p.id = ?",
                 rs -> packages.put(Sql.uuid(rs, "id"), new PackageInfo(Sql.uuid(rs, "id"), rs.getLong("seq"),
                         rs.getString("group_key"), rs.getString("state"), rs.getString("job"), rs.getString("info"),
-                        rs.getInt("attempts"), rs.getString("last_error"))), item.id(), item.packageId());
+                        rs.getInt("attempts"), rs.getString("last_error"), Sql.instant(rs, "sent_at"),
+                        Sql.instant(rs, "ack_due_at"))), item.id(), item.packageId());
         return packages;
     }
 

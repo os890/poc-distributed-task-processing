@@ -51,6 +51,9 @@ import java.util.UUID;
  * @param slots             processing slots, empty if runs may start any time
  * @param itemLimit         a run stops softly after this many items, or {@code null}
  * @param timeLimit         a run stops softly after this duration, or {@code null}
+ * @param ackRequired       work packages sent by the job wait for the acknowledgement of the receiver (D37)
+ * @param ackTimeout        a sent package without acknowledgement within this duration counts as rejected, or
+ *                          {@code null} to wait without limit
  * @param joinMembers       members of the run join this job is the target of, empty without join (DD-9)
  * @param transitions       successors of the job
  */
@@ -61,7 +64,7 @@ public record JobDefinition(UUID id, String namespace, String name, int revision
                             Duration leaseDuration, String defaultParameters, UUID fallbackJobId,
                             Duration fallbackDelay, UUID cronCalendarId, CalendarShift calendarShift,
                             boolean cronFlowInstance, List<ProcessingSlot> slots, Long itemLimit, Duration timeLimit,
-                            List<JoinMember> joinMembers,
+                            boolean ackRequired, Duration ackTimeout, List<JoinMember> joinMembers,
                             List<TransitionDefinition> transitions) {
 
     public JobDefinition {
@@ -70,6 +73,9 @@ public record JobDefinition(UUID id, String namespace, String name, int revision
         slots = List.copyOf(slots);
         if (cronFlowInstance && cronExpression == null) {
             throw new IllegalArgumentException("job " + name + ": cron_flow_instance needs a cron expression");
+        }
+        if (ackTimeout != null && !ackRequired) {
+            throw new IllegalArgumentException("job " + name + ": ack_timeout needs ack_required");
         }
         if ((fallbackJobId == null) != (fallbackDelay == null)) {
             throw new IllegalArgumentException("job " + name + ": a decision fallback needs a job and a delay");
@@ -113,7 +119,7 @@ public record JobDefinition(UUID id, String namespace, String name, int revision
         return new JobDefinition(id, namespace, name, revision, enabled, handlerClass, asap, cronExpression,
                 cronZone, external, inboxMinItems, concurrency, takeover, retryMax, retryBackoff, maxItemVisits,
                 leaseDuration, defaultParameters, fallbackJobId, fallbackDelay, cronCalendarId, calendarShift,
-                cronFlowInstance, slots, itemLimit, timeLimit, joinMembers, newTransitions);
+                cronFlowInstance, slots, itemLimit, timeLimit, ackRequired, ackTimeout, joinMembers, newTransitions);
     }
 
     /**
@@ -126,7 +132,7 @@ public record JobDefinition(UUID id, String namespace, String name, int revision
         return new JobDefinition(id, namespace, name, revision, enabled, handlerClass, asap, cronExpression,
                 cronZone, external, inboxMinItems, concurrency, takeover, retryMax, retryBackoff, maxItemVisits,
                 leaseDuration, defaultParameters, fallbackJobId, fallbackDelay, cronCalendarId, calendarShift,
-                cronFlowInstance, slots, itemLimit, timeLimit, members, transitions);
+                cronFlowInstance, slots, itemLimit, timeLimit, ackRequired, ackTimeout, members, transitions);
     }
 
     /**
@@ -139,7 +145,7 @@ public record JobDefinition(UUID id, String namespace, String name, int revision
         return new JobDefinition(id, namespace, name, revision, enabled, handlerClass, asap, cronExpression,
                 cronZone, external, inboxMinItems, concurrency, takeover, retryMax, retryBackoff, maxItemVisits,
                 leaseDuration, defaultParameters, fallbackJobId, fallbackDelay, cronCalendarId, calendarShift,
-                cronFlowInstance, newSlots, itemLimit, timeLimit, joinMembers, transitions);
+                cronFlowInstance, newSlots, itemLimit, timeLimit, ackRequired, ackTimeout, joinMembers, transitions);
     }
 
     /**

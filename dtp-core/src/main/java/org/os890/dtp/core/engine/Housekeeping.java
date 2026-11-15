@@ -54,11 +54,13 @@ public class Housekeeping {
     private final Map<String, CronExpression> crons = new ConcurrentHashMap<>();
     private final Map<UUID, Instant> examinedSlots = new ConcurrentHashMap<>();
     private final WindowCoordinator windows;
+    private final Acknowledgements acknowledgements;
 
     public Housekeeping(EngineContext ctx, RunPlanner planner) {
         this.ctx = ctx;
         this.planner = planner;
         this.decisions = new Decisions(ctx);
+        this.acknowledgements = new Acknowledgements(ctx, new ItemRouting(ctx));
         this.instances = new FlowInstances(ctx);
         this.packages = new PackageStore(ctx.dialect());
         this.windows = new WindowCoordinator(ctx, planner, decisions);
@@ -86,6 +88,7 @@ public class Housekeeping {
         guarded("collection windows", this::coordinateWindows);
         guarded("missed processing slots", this::moveMissedSlots);
         guarded("lease takeover", this::reapLeases);
+        guarded("acknowledgement timeouts", acknowledgements::timeOut);
         guarded("dead nodes", () -> ctx.tx().required(() -> ctx.tx().withConnection(c -> ctx.nodes().markDead(c,
                 ctx.namespace(), ctx.clock().now(c).minus(ctx.config().deadAfter())))));
     }
