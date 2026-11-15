@@ -49,7 +49,8 @@ public class TradeImport implements JobHandler<ImportParams, ImportOutcome> {
         List<Trade> trades = feed.importFor(ctx.parameters().businessDate(), ctx.parameters().trades());
         for (Trade trade : trades) {
             ctx.items()
-                    .track(ItemRef.of(Trade.ITEM, trade.getId(), trade.getVersion()), trade.getTradeNumber())
+                    .track(ItemRef.of(Trade.ITEM, trade.getId(), trade.getVersion()), trade.getTradeNumber(),
+                            TradeLane.of(trade))
                     .signal(ImportSignal.IMPORTED);
         }
         ctx.runInfo().put(IMPORTED, (long) trades.size());

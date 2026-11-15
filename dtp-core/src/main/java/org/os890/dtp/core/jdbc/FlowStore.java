@@ -21,7 +21,9 @@ import java.sql.SQLException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.TreeMap;
 import java.util.UUID;
 
 import org.os890.dtp.core.domain.RouteKind;
@@ -81,15 +83,16 @@ public class FlowStore {
     /**
      * An activation.
      *
-     * @param versionId   the activated version
+     * @param versionId   the activated version, {@code null} to end the activation of a lane
      * @param activeFrom  from when
      * @param generated   {@code true} if the framework activated a new code version
      * @param activatedBy who
      * @param reason      why
      * @param createdAt   when the activation was recorded
+     * @param lane        the lane the activation is for, {@code null} for all lanes
      */
     public record ActivationRow(UUID versionId, Instant activeFrom, boolean generated, String activatedBy,
-                                String reason, Instant createdAt) {
+                                String reason, Instant createdAt, String lane) {
     }
 
     /**
@@ -327,8 +330,53 @@ public class FlowStore {
      * @throws SQLException on DB errors
      */
     public Optional<UUID> activeVersion(Connection c, UUID flowId, Instant now) throws SQLException {
-        return Sql.queryOne(c, "SELECT version_id FROM dtp_flow_activation WHERE flow_id = ? AND active_from <= ?"
-                + " ORDER BY active_from DESC, created_at DESC LIMIT 1", rs -> Sql.uuid(rs, "version_id"), flowId, now);
+        return Sql.queryOne(c, "SELECT version_id FROM dtp_flow_activation WHERE flow_id = ? AND lane IS NULL"
+                + " AND active_from <= ? ORDER BY active_from DESC, created_at DESC LIMIT 1",
+                rs -> Sql.uuid(rs, "version_id"), flowId, now);
+    }
+
+    /**
+     * The active version of a flow for a lane: the latest activation of the lane that is in effect, else the version
+     * active for all lanes.
+     *
+     * @param c      the connection
+     * @param flowId the flow
+     * @param lane   the lane, or {@code null}
+     * @param now    the DB time
+     * @return the version id, if the flow has an active version
+     * @throws SQLException on DB errors
+     */
+    public Optional<UUID> activeVersion(Connection c, UUID flowId, String lane, Instant now) throws SQLException {
+        if (lane != null) {
+            Optional<Optional<UUID>> ofLane = Sql.queryOne(c, "SELECT version_id FROM dtp_flow_activation"
+                    + " WHERE flow_id = ? AND lane = ? AND active_from <= ? ORDER BY active_from DESC, created_at DESC"
+                    + " LIMIT 1", rs -> Optional.ofNullable(Sql.uuid(rs, "version_id")), flowId, lane, now);
+            if (ofLane.isPresent() && ofLane.get().isPresent()) {
+                return ofLane.get();
+            }
+        }
+        return activeVersion(c, flowId, now);
+    }
+
+    /**
+     * The versions active for single lanes, by lane (ended lane activations aren't included).
+     *
+     * @param c      the connection
+     * @param flowId the flow
+     * @param now    the DB time
+     * @return lane to version id
+     * @throws SQLException on DB errors
+     */
+    public Map<String, UUID> laneVersions(Connection c, UUID flowId, Instant now) throws SQLException {
+        Map<String, UUID> versions = new TreeMap<>();
+        for (String lane : Sql.query(c, "SELECT DISTINCT lane FROM dtp_flow_activation WHERE flow_id = ?"
+                + " AND lane IS NOT NULL AND active_from <= ?", rs -> rs.getString("lane"), flowId, now)) {
+            Sql.queryOne(c, "SELECT version_id FROM dtp_flow_activation WHERE flow_id = ? AND lane = ?"
+                    + " AND active_from <= ? ORDER BY active_from DESC, created_at DESC LIMIT 1",
+                    rs -> Optional.ofNullable(Sql.uuid(rs, "version_id")), flowId, lane, now)
+               .flatMap(v -> v).ifPresent(v -> versions.put(lane, v));
+        }
+        return versions;
     }
 
     /**
@@ -343,7 +391,7 @@ public class FlowStore {
         return Sql.query(c, "SELECT * FROM dtp_flow_activation WHERE flow_id = ? ORDER BY created_at DESC, id",
                 rs -> new ActivationRow(Sql.uuid(rs, "version_id"), Sql.instant(rs, "active_from"),
                         rs.getBoolean("generated"), rs.getString("activated_by"), rs.getString("reason"),
-                        Sql.instant(rs, "created_at")), flowId);
+                        Sql.instant(rs, "created_at"), rs.getString("lane")), flowId);
     }
 
     /**
@@ -356,9 +404,9 @@ public class FlowStore {
      */
     public void activate(Connection c, UUID flowId, ActivationRow activation) throws SQLException {
         Sql.update(c, "INSERT INTO dtp_flow_activation (id, flow_id, version_id, active_from, generated,"
-                + " activated_by, reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", UUID.randomUUID(), flowId,
-                activation.versionId(), activation.activeFrom(), activation.generated(), activation.activatedBy(),
-                activation.reason(), activation.createdAt());
+                + " activated_by, reason, created_at, lane) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", UUID.randomUUID(),
+                flowId, activation.versionId(), activation.activeFrom(), activation.generated(),
+                activation.activatedBy(), activation.reason(), activation.createdAt(), activation.lane());
     }
 
     /**
@@ -373,12 +421,28 @@ public class FlowStore {
      */
     public List<UUID> activeVersionsContaining(Connection c, String namespace, UUID jobId, Instant now)
             throws SQLException {
+        return activeVersionsContaining(c, namespace, jobId, null, now);
+    }
+
+    /**
+     * The active versions (for a lane) of all flows of a namespace that contain a step.
+     *
+     * @param c         the connection
+     * @param namespace the namespace
+     * @param jobId     the step
+     * @param lane      the lane, or {@code null}
+     * @param now       the DB time
+     * @return the version ids
+     * @throws SQLException on DB errors
+     */
+    public List<UUID> activeVersionsContaining(Connection c, String namespace, UUID jobId, String lane, Instant now)
+            throws SQLException {
         List<UUID> flows = Sql.query(c, "SELECT DISTINCT v.flow_id FROM dtp_flow_version v"
                 + " JOIN dtp_flow_step s ON s.version_id = v.id JOIN dtp_flow f ON f.id = v.flow_id"
                 + " WHERE f.namespace = ? AND s.job_id = ?", rs -> Sql.uuid(rs, "flow_id"), namespace, jobId);
         List<UUID> result = new ArrayList<>();
         for (UUID flow : flows) {
-            Optional<UUID> active = activeVersion(c, flow, now);
+            Optional<UUID> active = activeVersion(c, flow, lane, now);
             if (active.isPresent() && steps(c, active.get()).contains(jobId)) {
                 result.add(active.get());
             }

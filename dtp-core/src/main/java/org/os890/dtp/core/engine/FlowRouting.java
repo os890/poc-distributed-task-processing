@@ -108,7 +108,8 @@ public class FlowRouting {
         RunContext run = RunContext.current();
         String flow = flowName(start.flow());
         return ctx.tx().required(() -> {
-            VersionRow version = ctx.tx().withConnection(c -> activeVersion(c, flow, now(c, run)));
+            String lane = start.lane() == null ? null : start.lane().name();
+            VersionRow version = ctx.tx().withConnection(c -> activeVersion(c, flow, lane, now(c, run)));
             ItemsImpl items = new ItemsImpl(ctx, routing, run);
             TrackedItemImpl<?, ?> item = (TrackedItemImpl<?, ?>) track(items, start.ref(), start);
             ItemRow pinned = pin(item.row(), version.id(), run);
@@ -179,7 +180,7 @@ public class FlowRouting {
         }
         UUID versionId = item.flowVersionId();
         if (versionId == null) {
-            List<UUID> candidates = flows.activeVersionsContaining(c, ctx.namespace(), fromJob, now);
+            List<UUID> candidates = flows.activeVersionsContaining(c, ctx.namespace(), fromJob, item.lane(), now);
             if (candidates.size() != 1) {
                 throw new IllegalStateException("item " + item.businessKey() + ": " + candidates.size()
                         + " active flows contain the step " + jobName(fromJob) + ", start the flow via"
@@ -195,7 +196,7 @@ public class FlowRouting {
         RouteRow found = route.orElseThrow(() -> new IllegalStateException("flow version " + version.hash()
                 + " has no route for " + signal.name() + " of " + jobName(fromJob)));
         if (found.kind() == RouteKind.FLOW) {
-            VersionRow target = activeVersion(c, flows.flow(c, found.targetFlowId()).name(), now);
+            VersionRow target = activeVersion(c, flows.flow(c, found.targetFlowId()).name(), item.lane(), now);
             return new Resolved(target.id(), new RouteRow(found.id(), fromJob, found.signalType(), found.signal(),
                     RouteKind.FLOW, target.entryJobId(), found.targetFlowId(), found.override()));
         }
@@ -226,11 +227,12 @@ public class FlowRouting {
         return item.pinnedTo(versionId);
     }
 
-    private VersionRow activeVersion(Connection c, String flow, Instant now) throws SQLException {
+    /** The version of a flow that is active for a lane (an activation of the lane, else for all lanes). */
+    private VersionRow activeVersion(Connection c, String flow, String lane, Instant now) throws SQLException {
         FlowStore flows = ctx.flows();
         FlowRow row = flows.flow(c, ctx.namespace(), flow)
                            .orElseThrow(() -> new DtpException("unknown flow " + flow));
-        UUID versionId = flows.activeVersion(c, row.id(), now)
+        UUID versionId = flows.activeVersion(c, row.id(), lane, now)
                               .orElseThrow(() -> new DtpException("flow " + flow + " has no active version"));
         return flows.version(c, versionId);
     }

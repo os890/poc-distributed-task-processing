@@ -66,8 +66,9 @@ public class FlowResource {
      * @param activeFrom from when, or {@code null} for now
      * @param by         who
      * @param reason     why
+     * @param lane       the lane the version is active for, or {@code null} for all lanes
      */
-    public record Activation(String version, Instant activeFrom, String by, String reason) {
+    public record Activation(String version, Instant activeFrom, String by, String reason, String lane) {
     }
 
     /**
@@ -131,8 +132,33 @@ public class FlowResource {
     @Path("/{flow}/activations")
     public Response activate(@PathParam("flow") String flow, Activation activation) {
         call(() -> {
-            admin.activate(flow, activation.version(), activation.activeFrom(), activation.by(),
-                    activation.reason());
+            if (activation.lane() == null) {
+                admin.activate(flow, activation.version(), activation.activeFrom(), activation.by(),
+                        activation.reason());
+            } else {
+                admin.activateForLane(flow, activation.lane(), activation.version(), activation.activeFrom(),
+                        activation.by(), activation.reason());
+            }
+            return null;
+        });
+        return Response.noContent().build();
+    }
+
+    /**
+     * Ends the activation of a lane: its trades follow the version active for all lanes again.
+     *
+     * @param flow   the flow
+     * @param lane   the lane
+     * @param by     who
+     * @param reason why
+     * @return 204
+     */
+    @DELETE
+    @Path("/{flow}/activations/lanes/{lane}")
+    public Response endLaneActivation(@PathParam("flow") String flow, @PathParam("lane") String lane,
+                                      @QueryParam("by") String by, @QueryParam("reason") String reason) {
+        call(() -> {
+            admin.endLaneActivation(flow, lane, by, reason);
             return null;
         });
         return Response.noContent().build();

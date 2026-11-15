@@ -116,7 +116,7 @@ public class FlowRegistrar {
         boolean manual = !activations.isEmpty() && !activations.getFirst().generated();
         if (activations.isEmpty() || (created && !manual)) {
             flows.activate(c, flowId, new ActivationRow(versionId, now, true, ctx.config().nodeName(),
-                    created ? "new version deployed" : "first activation", now));
+                    created ? "new version deployed" : "first activation", now, null));
             LOG.log(System.Logger.Level.INFO, "flow {0}: version {1} is active", model.name(), hash);
         } else if (!versionId.equals(flows.activeVersion(c, flowId, now).orElse(null))) {
             LOG.log(System.Logger.Level.WARNING, "flow {0}: the deployed version {1} is a candidate, the active"

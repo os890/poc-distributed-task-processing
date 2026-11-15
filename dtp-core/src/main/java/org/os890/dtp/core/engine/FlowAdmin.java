@@ -71,6 +71,45 @@ public class FlowAdmin {
      * @param reason     why
      */
     public void activate(String flow, String hash, Instant activeFrom, String by, String reason) {
+        activate(flow, null, hash, activeFrom, by, reason);
+    }
+
+    /**
+     * Activates a version of a flow for one lane only, e.g. as a canary for the VIP lane: items of the lane that start
+     * the flow from now on are pinned to it, the other lanes keep the version active for all lanes. Refused if no
+     * active node can run one of its steps.
+     *
+     * @param flow       the flow name
+     * @param lane       the lane (the name of an {@code ItemLane})
+     * @param hash       the version hash (or a unique prefix)
+     * @param activeFrom from when, or {@code null} for now
+     * @param by         who
+     * @param reason     why
+     */
+    public void activateForLane(String flow, String lane, String hash, Instant activeFrom, String by, String reason) {
+        activate(flow, Objects.requireNonNull(lane, "lane"), hash, activeFrom, by, reason);
+    }
+
+    /**
+     * Ends the activation of a lane: its items follow the version active for all lanes again (items pinned already
+     * finish with their version).
+     *
+     * @param flow   the flow name
+     * @param lane   the lane
+     * @param by     who
+     * @param reason why
+     */
+    public void endLaneActivation(String flow, String lane, String by, String reason) {
+        Objects.requireNonNull(lane, "lane");
+        Objects.requireNonNull(by, "by");
+        inTx(c -> {
+            Instant now = ctx.clock().now(c);
+            ctx.flows().activate(c, flow(c, flow).id(), new ActivationRow(null, now, false, by, reason, now, lane));
+            return null;
+        });
+    }
+
+    private void activate(String flow, String lane, String hash, Instant activeFrom, String by, String reason) {
         Objects.requireNonNull(by, "by");
         inTx(c -> {
             Instant now = ctx.clock().now(c);
@@ -82,7 +121,7 @@ public class FlowAdmin {
                         + " can't be activated, no active node can run " + missing);
             }
             ctx.flows().activate(c, row.id(), new ActivationRow(version.id(), activeFrom != null ? activeFrom : now,
-                    false, by, reason, now));
+                    false, by, reason, now, lane));
             return null;
         });
     }

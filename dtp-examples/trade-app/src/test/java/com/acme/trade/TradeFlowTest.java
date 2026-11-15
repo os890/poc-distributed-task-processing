@@ -509,14 +509,17 @@ class TradeFlowTest {
                        "dtp.run.duration", "dtp.claim.duration", "dtp.leader.elections", "dtp.decisions.created",
                        "dtp.decisions.decided", "dtp.cluster.step.jam_score", "dtp.cluster.step.alert_state",
                        "dtp.cluster.nodes"))
-               .body("find { it.name == 'dtp.items.processed' }.points.findAll { it.attributes['dtp.step']"
-                       + " == 'trade-enrichment' && it.attributes['dtp.result'] == 'completed' }.value.sum()",
-                       greaterThan(10f))
                .body("find { it.name == 'dtp.failures.technical' }.points[0].attributes['error.type']",
                        equalTo(IllegalStateException.class.getName()))
                .body("find { it.name == 'dtp.decisions.decided' }.points.attributes['dtp.responsible.group']",
                        hasItem("risk"))
                .body("find { it.name == 'dtp.item.wait_time' }.unit", equalTo("s"));
+
+        Number completed = given().when().get("/telemetry/metrics").then().extract()
+                                  .path("find { it.name == 'dtp.items.processed' }.points.findAll {"
+                                          + " it.attributes['dtp.step'] == 'trade-enrichment'"
+                                          + " && it.attributes['dtp.result'] == 'completed' }.value.sum()");
+        assertThat(completed.doubleValue()).isGreaterThan(10);
 
         // the journey of a trade links to the traces of its steps, and their spans link to the import
         List<String> traces = given().header("X-Groups", "dtp-viewer")
@@ -609,6 +612,46 @@ class TradeFlowTest {
                .body("find { it.name == 'dtp.packages.rejected' }.points.attributes['dtp.rejection.reason']",
                        hasItems("rejected", "timeout"))
                .body("find { it.name == 'dtp.packages.acknowledged' }.points.size()", greaterThan(0));
+    }
+
+    @Test
+    @Order(12)
+    void tradesHaveLanesAndAFlowVersionCanBeActiveForOneLane() throws java.sql.SQLException {
+        // large tickets are institutional (served first, 3 of 4 batches), the others retail
+        try (Connection c = dataSource.getConnection(); Statement s = c.createStatement()) {
+            ResultSet rs = s.executeQuery("SELECT business_key, lane, lane_weight FROM dtp_item WHERE business_key IN"
+                    + " ('T-2026-11-15-10', 'T-2026-11-15-1') ORDER BY business_key");
+            assertThat(rs.next()).isTrue();
+            assertThat(rs.getString("lane")).isEqualTo("RETAIL");
+            assertThat(rs.next()).isTrue();
+            assertThat(rs.getString("lane")).isEqualTo("INSTITUTIONAL");
+            assertThat(rs.getInt("lane_weight")).isEqualTo(3);
+        }
+        String lanes = "find { it.name == 'dtp.items.processed' }.points.attributes['dtp.lane']";
+        given().when().get("/telemetry/metrics").then().statusCode(200)
+               .body(lanes, hasItems("INSTITUTIONAL", "RETAIL"));
+
+        // a version active for the institutional lane only, then the lane follows the default again
+        String version = given().when().get("/dtp/flows").then().statusCode(200)
+                                .extract().path("find { it.name == 'trade-flow' }.activeVersion");
+        given().contentType(ContentType.JSON).body(Map.of("version", version, "by", "ops", "reason", "canary",
+                "lane", "INSTITUTIONAL"))
+               .when().post("/dtp/flows/trade-flow/activations").then().statusCode(204);
+        given().when().get("/dtp/flows").then().statusCode(200)
+               .body("find { it.name == 'trade-flow' }.laneVersions.INSTITUTIONAL", equalTo(version));
+        given().when().get("/dtp/flows/trade-flow/activations").then().statusCode(200)
+               .body("[0].lane", equalTo("INSTITUTIONAL"))
+               .body("[0].version", equalTo(version));
+        given().when().delete("/dtp/flows/trade-flow/activations/lanes/INSTITUTIONAL?by=ops&reason=done")
+               .then().statusCode(204);
+        given().when().get("/dtp/flows").then().statusCode(200)
+               .body("find { it.name == 'trade-flow' }.laneVersions.size()", is(0));
+        given().when().get("/dtp/flows/trade-flow/activations").then().statusCode(200)
+               .body("[0].lane", equalTo("INSTITUTIONAL"))
+               .body("[0].version", equalTo(null));
+        given().contentType(ContentType.JSON).body(Map.of("version", "nonsense", "by", "ops", "lane", "RETAIL"))
+               .when().post("/dtp/flows/trade-flow/activations").then().statusCode(409);
+        given().when().delete("/dtp/flows/trade-flow/activations/lanes/RETAIL").then().statusCode(409);
     }
 
     private boolean waitingFor(String custodian) {

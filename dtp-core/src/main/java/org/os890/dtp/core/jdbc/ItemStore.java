@@ -26,6 +26,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 import org.os890.dtp.core.domain.BranchState;
@@ -39,7 +40,7 @@ public class ItemStore {
 
     private static final String COLUMNS = "id, namespace, item_type, ref_id, ref_version, business_key, lane,"
             + " current_job_id, inbox_seq, state, arrival_reason, attempts, flow_version_id, decision_request_id,"
-            + " lane_priority";
+            + " lane_priority, lane_weight";
     private static final String BRANCH_COLUMNS = "item_id, branch_job_id, join_job_id, position, inbox_seq, state,"
             + " arrival_reason, attempts, decision_request_id, signal_type, signal, reason";
 
@@ -79,10 +80,12 @@ public class ItemStore {
      * @param flowVersionId the flow version the item is pinned to, or {@code null}
      * @param decisionId    the decision that brought the item back into its inbox, or {@code null}
      * @param lanePriority  the priority of the lane
+     * @param laneWeight    the weight of the lane (share of the batches while several lanes have due items)
      */
     public record ItemRow(UUID id, String namespace, String itemType, String refId, long refVersion,
                           String businessKey, String lane, UUID currentJobId, Long inboxSeq, ItemState state,
-                          String arrivalReason, int attempts, UUID flowVersionId, UUID decisionId, int lanePriority) {
+                          String arrivalReason, int attempts, UUID flowVersionId, UUID decisionId, int lanePriority,
+                          int laneWeight) {
 
         /**
          * Same item, pinned to a flow version.
@@ -92,7 +95,7 @@ public class ItemStore {
          */
         public ItemRow pinnedTo(UUID versionId) {
             return new ItemRow(id, namespace, itemType, refId, refVersion, businessKey, lane, currentJobId, inboxSeq,
-                    state, arrivalReason, attempts, versionId, decisionId, lanePriority);
+                    state, arrivalReason, attempts, versionId, decisionId, lanePriority, laneWeight);
         }
     }
 
@@ -180,9 +183,119 @@ public class ItemStore {
      * @param includeNotDue  also items that are deferred and not yet due
      * @param byLanePriority order by lane priority first
      * @param limit          batch size
+     * @param inLane         only items of the lane {@code lane}
+     * @param lane           the lane if {@code inLane}, {@code null} for items without lane
+     * @param excluded       items that other workers of the run are processing (their rows are locked)
      */
     public record InboxQuery(String namespace, UUID jobId, String itemType, Long afterSeq, boolean includeNotDue,
-                             boolean byLanePriority, int limit) {
+                             boolean byLanePriority, int limit, boolean inLane, String lane, Set<UUID> excluded) {
+
+        /**
+         * Copies the excluded items.
+         *
+         * @param namespace      the namespace
+         * @param jobId          the job
+         * @param itemType       only items of this type, or {@code null} for all
+         * @param afterSeq       only items behind this inbox position, or {@code null}
+         * @param includeNotDue  also items that are deferred and not yet due
+         * @param byLanePriority order by lane priority first
+         * @param limit          batch size
+         * @param inLane         only items of the lane {@code lane}
+         * @param lane           the lane if {@code inLane}, {@code null} for items without lane
+         * @param excluded       items that other workers of the run are processing
+         */
+        public InboxQuery {
+            excluded = Set.copyOf(excluded);
+        }
+
+        /**
+         * A query of all lanes.
+         *
+         * @param namespace      the namespace
+         * @param jobId          the job
+         * @param itemType       only items of this type, or {@code null} for all
+         * @param afterSeq       only items behind this inbox position, or {@code null}
+         * @param includeNotDue  also items that are deferred and not yet due
+         * @param byLanePriority order by lane priority first
+         * @param limit          batch size
+         */
+        public InboxQuery(String namespace, UUID jobId, String itemType, Long afterSeq, boolean includeNotDue,
+                          boolean byLanePriority, int limit) {
+            this(namespace, jobId, itemType, afterSeq, includeNotDue, byLanePriority, limit, false, null, Set.of());
+        }
+
+        /**
+         * The same query without the given items.
+         *
+         * @param items the items other workers of the run are processing
+         * @return the query
+         */
+        public InboxQuery excluding(Set<UUID> items) {
+            return new InboxQuery(namespace, jobId, itemType, afterSeq, includeNotDue, byLanePriority, limit, inLane,
+                    lane, items);
+        }
+
+        /**
+         * The same query, for one lane.
+         *
+         * @param name the lane, or {@code null} for items without lane
+         * @return the query
+         */
+        public InboxQuery inLane(String name) {
+            return new InboxQuery(namespace, jobId, itemType, afterSeq, includeNotDue, byLanePriority, limit, true,
+                    name, excluded);
+        }
+    }
+
+    /**
+     * A lane with due items in an inbox.
+     *
+     * @param name     the lane, or {@code null} for items without lane
+     * @param priority its priority
+     * @param weight   its weight
+     */
+    public record DueLane(String name, int priority, int weight) {
+    }
+
+    /**
+     * The lanes that have due items in an inbox (items and branches).
+     *
+     * @param c     the connection
+     * @param query the inbox (namespace, job, item type, due)
+     * @param now   the DB time
+     * @return the lanes
+     * @throws SQLException on DB errors
+     */
+    public List<DueLane> dueLanes(Connection c, InboxQuery query, Instant now) throws SQLException {
+        StringBuilder where = new StringBuilder();
+        List<Object> params = new ArrayList<>(List.of(query.namespace(), query.jobId()));
+        if (query.itemType() != null) {
+            where.append(" AND item_type = ?");
+            params.add(query.itemType());
+        }
+        if (!query.includeNotDue()) {
+            where.append(" AND (next_attempt_at IS NULL OR next_attempt_at <= ?)");
+            params.add(now);
+        }
+        String marks = String.join(", ", Collections.nCopies(query.excluded().size(), "?"));
+        String items = query.excluded().isEmpty() ? "" : " AND id NOT IN (" + marks + ")";
+        String branches = query.excluded().isEmpty() ? "" : " AND item_id NOT IN (" + marks + ")";
+        List<Object> all = new ArrayList<>(params);
+        all.addAll(query.excluded());
+        Map<String, DueLane> lanes = new HashMap<>();
+        Sql.RowMapper<DueLane> mapper = rs -> new DueLane(rs.getString("lane"), rs.getInt("priority"),
+                rs.getInt("weight"));
+        List<DueLane> found = new ArrayList<>(Sql.query(c, "SELECT lane, MAX(lane_priority) AS priority,"
+                + " MAX(lane_weight) AS weight FROM dtp_item WHERE namespace = ? AND current_job_id = ?"
+                + " AND state = 'QUEUED'" + where + items + " GROUP BY lane", mapper, all.toArray()));
+        found.addAll(Sql.query(c, "SELECT lane, MAX(lane_priority) AS priority, MAX(lane_weight) AS weight"
+                + " FROM dtp_item_branch WHERE namespace = ? AND branch_job_id = ? AND state = 'QUEUED'" + where
+                + branches + " GROUP BY lane", mapper, all.toArray()));
+        for (DueLane lane : found) {
+            lanes.merge(lane.name() == null ? "" : lane.name(), lane, (a, b) -> new DueLane(a.name(),
+                    Math.max(a.priority(), b.priority()), Math.max(a.weight(), b.weight())));
+        }
+        return List.copyOf(lanes.values());
     }
 
     /**
@@ -195,10 +308,10 @@ public class ItemStore {
      */
     public void insert(Connection c, ItemRow item, Instant now) throws SQLException {
         Sql.update(c, "INSERT INTO dtp_item (id, namespace, item_type, ref_id, ref_version, business_key, lane,"
-                + " lane_priority, state, attempts, trace_parent, created_at, updated_at)"
-                + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)", item.id(), item.namespace(), item.itemType(),
-                item.refId(), item.refVersion(), item.businessKey(), item.lane(), item.lanePriority(), item.state(),
-                telemetry.currentTraceParent(), now, now);
+                + " lane_priority, lane_weight, state, attempts, trace_parent, created_at, updated_at)"
+                + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)", item.id(), item.namespace(), item.itemType(),
+                item.refId(), item.refVersion(), item.businessKey(), item.lane(), item.lanePriority(),
+                item.laneWeight(), item.state(), telemetry.currentTraceParent(), now, now);
     }
 
     /**
@@ -342,17 +455,49 @@ public class ItemStore {
             where.append(" AND (next_attempt_at IS NULL OR next_attempt_at <= ?)");
             params.add(now);
         }
-        String order = query.byLanePriority() ? " ORDER BY lane_priority DESC, inbox_seq" : " ORDER BY inbox_seq";
-        params.add(query.limit());
-        for (ItemRow item : Sql.query(c, "SELECT " + COLUMNS + " FROM dtp_item WHERE namespace = ?"
-                + " AND current_job_id = ? AND state = 'QUEUED'" + where + order + " LIMIT ? FOR UPDATE SKIP LOCKED",
-                ItemStore::map, params.toArray())) {
-            entries.add(new InboxEntry(item, null));
+        if (query.inLane()) {
+            if (query.lane() == null) {
+                where.append(" AND lane IS NULL");
+            } else {
+                where.append(" AND lane = ?");
+                params.add(query.lane());
+            }
         }
-        List<BranchRow> branches = Sql.query(c, "SELECT " + BRANCH_COLUMNS + " FROM dtp_item_branch"
-                + " WHERE namespace = ? AND branch_job_id = ? AND state = 'QUEUED'" + where + order
-                + " LIMIT ? FOR UPDATE SKIP LOCKED", ItemStore::branch, params.toArray());
+        String order = query.byLanePriority() ? " ORDER BY lane_priority DESC, inbox_seq" : " ORDER BY inbox_seq";
+        // the rows the other workers of the run locked are excluded explicitly; the candidates are selected first and
+        // then locked by id: H2 doesn't skip locked rows reliably together with ORDER BY and LIMIT
+        String marks = String.join(", ", Collections.nCopies(query.excluded().size(), "?"));
+        String notItems = query.excluded().isEmpty() ? "" : " AND id NOT IN (" + marks + ")";
+        String notBranches = query.excluded().isEmpty() ? "" : " AND item_id NOT IN (" + marks + ")";
+        params.addAll(query.excluded());
+        params.add(query.limit());
+        List<UUID> itemIds = Sql.query(c, "SELECT id FROM dtp_item WHERE namespace = ? AND current_job_id = ?"
+                + " AND state = 'QUEUED'" + where + notItems + order + " LIMIT ?", rs -> Sql.uuid(rs, "id"),
+                params.toArray());
+        if (!itemIds.isEmpty()) {
+            List<Object> lock = new ArrayList<>(itemIds);
+            lock.add(query.jobId());
+            for (ItemRow item : Sql.query(c, "SELECT " + COLUMNS + " FROM dtp_item WHERE id IN ("
+                    + String.join(", ", Collections.nCopies(itemIds.size(), "?")) + ") AND current_job_id = ?"
+                    + " AND state = 'QUEUED' FOR UPDATE SKIP LOCKED", ItemStore::map, lock.toArray())) {
+                entries.add(new InboxEntry(item, null));
+            }
+        }
+        List<UUID> branchIds = Sql.query(c, "SELECT item_id FROM dtp_item_branch WHERE namespace = ?"
+                + " AND branch_job_id = ? AND state = 'QUEUED'" + where + notBranches + order + " LIMIT ?",
+                rs -> Sql.uuid(rs, "item_id"), params.toArray());
+        List<BranchRow> branches = List.of();
+        if (!branchIds.isEmpty()) {
+            List<Object> lock = new ArrayList<>(branchIds);
+            lock.add(query.jobId());
+            branches = Sql.query(c, "SELECT " + BRANCH_COLUMNS + " FROM dtp_item_branch WHERE item_id IN ("
+                    + String.join(", ", Collections.nCopies(branchIds.size(), "?")) + ") AND branch_job_id = ?"
+                    + " AND state = 'QUEUED' FOR UPDATE SKIP LOCKED", ItemStore::branch, lock.toArray());
+        }
+        Comparator<InboxEntry> bySeq = Comparator.comparingLong(InboxEntry::seq);
+        Comparator<InboxEntry> byLane = Comparator.comparingInt((InboxEntry e) -> e.item().lanePriority()).reversed();
         if (branches.isEmpty()) {
+            entries.sort(query.byLanePriority() ? byLane.thenComparing(bySeq) : bySeq);
             return entries;
         }
         Map<UUID, ItemRow> items = loadAll(c, branches.stream().map(BranchRow::itemId).toList());
@@ -360,8 +505,6 @@ public class ItemStore {
             ItemRow item = items.get(branch.itemId());
             entries.add(new InboxEntry(item, branch));
         }
-        Comparator<InboxEntry> bySeq = Comparator.comparingLong(InboxEntry::seq);
-        Comparator<InboxEntry> byLane = Comparator.comparingInt((InboxEntry e) -> e.item().lanePriority()).reversed();
         entries.sort(query.byLanePriority() ? byLane.thenComparing(bySeq) : bySeq);
         // the surplus stays locked until the commit and is handed over by a later batch
         return entries.size() > query.limit() ? new ArrayList<>(entries.subList(0, query.limit())) : entries;
@@ -548,10 +691,11 @@ public class ItemStore {
         Sql.update(c, "DELETE FROM dtp_item_branch WHERE item_id = ?", item.id());
         for (int i = 0; i < branchJobs.size(); i++) {
             Sql.update(c, "INSERT INTO dtp_item_branch (item_id, branch_job_id, join_job_id, position, namespace,"
-                    + " item_type, lane_priority, inbox_seq, state, arrival_reason, attempts, created_at, updated_at)"
-                    + " VALUES (?, ?, ?, ?, ?, ?, ?, " + dialect.nextValue("dtp_inbox_seq") + ", 'QUEUED', ?, 0, ?, ?)",
-                    item.id(), branchJobs.get(i), joinJobId, i, item.namespace(), item.itemType(), item.lanePriority(),
-                    reason, now, now);
+                    + " item_type, lane, lane_priority, lane_weight, inbox_seq, state, arrival_reason, attempts,"
+                    + " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, "
+                    + dialect.nextValue("dtp_inbox_seq") + ", 'QUEUED', ?, 0, ?, ?)", item.id(), branchJobs.get(i),
+                    joinJobId, i, item.namespace(), item.itemType(), item.lane(), item.lanePriority(),
+                    item.laneWeight(), reason, now, now);
         }
         Sql.update(c, "UPDATE dtp_item SET state = 'FORKED', open_branches = ?, attempts = 0, next_attempt_at = NULL,"
                 + " decision_request_id = NULL, updated_at = ? WHERE id = ?", branchJobs.size(), now, item.id());
@@ -772,6 +916,7 @@ public class ItemStore {
                 rs.getString("ref_id"), rs.getLong("ref_version"), rs.getString("business_key"),
                 rs.getString("lane"), Sql.uuid(rs, "current_job_id"), inboxSeq,
                 ItemState.valueOf(rs.getString("state")), rs.getString("arrival_reason"), rs.getInt("attempts"),
-                Sql.uuid(rs, "flow_version_id"), Sql.uuid(rs, "decision_request_id"), rs.getInt("lane_priority"));
+                Sql.uuid(rs, "flow_version_id"), Sql.uuid(rs, "decision_request_id"), rs.getInt("lane_priority"),
+                rs.getInt("lane_weight"));
     }
 }

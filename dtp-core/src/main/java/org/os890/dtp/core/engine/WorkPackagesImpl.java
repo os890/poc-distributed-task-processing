@@ -203,7 +203,7 @@ public class WorkPackagesImpl<E, ID> implements WorkPackages<E, ID> {
                     String key = groupKey.apply(ref);
                     Filling pkg = filling(c, filling, key, maxSize, created, now);
                     ItemRow item = new ItemRow(UUID.randomUUID(), ctx.namespace(), type.name(), refId, version,
-                            refId, null, pkg.jobId, null, ItemState.PACKAGED, null, 0, null, null, 0);
+                            refId, null, pkg.jobId, null, ItemState.PACKAGED, null, 0, null, null, 0, 1);
                     ctx.items().insertPackaged(c, item, pkg.jobId, pkg.id, now);
                     journal(c, item, ItemEventType.TRACKED, null, null, null, now);
                     journal(c, item, ItemEventType.PACKAGED, handedTo(pkg), describe(key, pkg.seq), pkg.id,

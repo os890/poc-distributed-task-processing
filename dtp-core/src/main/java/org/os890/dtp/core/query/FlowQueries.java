@@ -29,6 +29,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.UUID;
 import java.util.function.Function;
@@ -85,8 +86,10 @@ public class FlowQueries {
      * @param definitionClass the class of the Java definition
      * @param activeVersion   hash of the active version, or {@code null}
      * @param versions        the versions, newest first
+     * @param laneVersions    hashes of the versions active for single lanes, by lane
      */
-    public record FlowView(String name, String definitionClass, String activeVersion, List<VersionView> versions) {
+    public record FlowView(String name, String definitionClass, String activeVersion, List<VersionView> versions,
+                           Map<String, String> laneVersions) {
     }
 
     /**
@@ -110,9 +113,10 @@ public class FlowQueries {
      * @param activatedBy who
      * @param reason      why
      * @param createdAt   when it was recorded
+     * @param lane        the lane it is for, {@code null} for all lanes
      */
     public record ActivationView(String version, Instant activeFrom, boolean generated, String activatedBy,
-                                 String reason, Instant createdAt) {
+                                 String reason, Instant createdAt, String lane) {
     }
 
     /**
@@ -165,7 +169,11 @@ public class FlowQueries {
                         .toList();
                 String activeHash = versions.stream().filter(VersionView::active).map(VersionView::hash)
                                             .findFirst().orElse(null);
-                result.add(new FlowView(flow.name(), flow.definitionClass(), activeHash, versions));
+                Map<UUID, String> hashes = flows.versions(c, flow.id()).stream()
+                        .collect(Collectors.toMap(VersionRow::id, VersionRow::hash));
+                Map<String, String> lanes = new TreeMap<>();
+                flows.laneVersions(c, flow.id(), now).forEach((lane, id) -> lanes.put(lane, hashes.get(id)));
+                result.add(new FlowView(flow.name(), flow.definitionClass(), activeHash, versions, lanes));
             }
             return result;
         });
@@ -183,8 +191,8 @@ public class FlowQueries {
             Map<UUID, String> hashes = flows.versions(c, row.id()).stream()
                     .collect(Collectors.toMap(VersionRow::id, VersionRow::hash));
             return flows.activations(c, row.id()).stream()
-                    .map(a -> new ActivationView(hashes.get(a.versionId()), a.activeFrom(), a.generated(),
-                            a.activatedBy(), a.reason(), a.createdAt()))
+                    .map(a -> new ActivationView(a.versionId() == null ? null : hashes.get(a.versionId()),
+                            a.activeFrom(), a.generated(), a.activatedBy(), a.reason(), a.createdAt(), a.lane()))
                     .toList();
         });
     }
@@ -269,6 +277,12 @@ public class FlowQueries {
                     issues.add(new Issue(Severity.WARNING, flow.name(), null, "no active version"));
                 } else {
                     issues.addAll(validate(c, flow, flows.version(c, active.get())));
+                }
+                // a version active for a single lane runs too
+                for (UUID laneVersion : new LinkedHashSet<>(flows.laneVersions(c, flow.id(), now).values())) {
+                    if (active.isEmpty() || !laneVersion.equals(active.get())) {
+                        issues.addAll(validate(c, flow, flows.version(c, laneVersion)));
+                    }
                 }
             }
             return issues;

@@ -21,7 +21,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -34,6 +37,7 @@ import org.os890.dtp.api.ItemType;
 import org.os890.dtp.core.DtpException;
 import org.os890.dtp.core.domain.FailureKind;
 import org.os890.dtp.core.domain.LeaseLostException;
+import org.os890.dtp.core.jdbc.ItemStore.DueLane;
 import org.os890.dtp.core.jdbc.ItemStore.InboxEntry;
 import org.os890.dtp.core.jdbc.ItemStore.InboxQuery;
 import org.os890.dtp.core.jdbc.ItemStore.InboxTrace;
@@ -54,6 +58,10 @@ public class ItemProcessorDriver {
     private final ItemType<Object, Object> type;
     private final ItemProcessing settings;
     private final AtomicLong cursor;
+    private final LaneScheduler lanes = new LaneScheduler();
+    /** Items locked by the open units of work of the workers: the run is the only reader of its inbox (DD-1). */
+    private final Set<UUID> inFlight = ConcurrentHashMap.newKeySet();
+    private final Object reader = new Object();
 
     @SuppressWarnings("unchecked")
     public ItemProcessorDriver(RunContext run, ItemRouting routing, ItemProcessor<?, ?> processor) {
@@ -122,9 +130,12 @@ public class ItemProcessorDriver {
             if (ids.isEmpty()) {
                 throw e;
             }
+            // rolled back: they stay excluded for the other workers while they are isolated one by one
             isolate(ids, e);
             run.countItems(ids.size());
             return true;
+        } finally {
+            ids.forEach(inFlight::remove);
         }
     }
 
@@ -168,12 +179,30 @@ public class ItemProcessorDriver {
         });
     }
 
+    /**
+     * Locks the next batch. The workers of the run lock one after the other, each without the items the others are
+     * processing, so they never wait for or skip each other's rows; the processing runs in parallel.
+     */
     private List<InboxEntry> lock() {
+        synchronized (reader) {
+            List<InboxEntry> entries = lockBatch();
+            entries.forEach(entry -> inFlight.add(entry.item().id()));
+            return entries;
+        }
+    }
+
+    private List<InboxEntry> lockBatch() {
         EngineContext ctx = run.engine();
         Long after = cursor == null ? null : cursor.get();
         InboxQuery query = new InboxQuery(ctx.namespace(), run.claimed().jobId(), type.name(), after,
-                settings.includeDeferred(), true, settings.batchSize());
-        List<InboxEntry> entries = ctx.tx().withConnection(c -> ctx.items().lockInboxBatch(c, query, run.now()));
+                settings.includeDeferred(), true, settings.batchSize()).excluding(Set.copyOf(inFlight));
+        List<InboxEntry> entries = ctx.tx().withConnection(c -> {
+            // several lanes with due items: the batch comes from the lane whose turn it is (weights, DD-23)
+            Optional<DueLane> lane = lanes.next(ctx.items().dueLanes(c, query, run.now()));
+            List<InboxEntry> batch = lane.isEmpty() ? List.of()
+                    : ctx.items().lockInboxBatch(c, query.inLane(lane.get().name()), run.now());
+            return batch.isEmpty() ? ctx.items().lockInboxBatch(c, query, run.now()) : batch;
+        });
         if (cursor != null) {
             entries.forEach(entry -> cursor.accumulateAndGet(entry.seq(), Math::max));
         }
