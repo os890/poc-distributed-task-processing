@@ -478,7 +478,8 @@ public class Decisions {
             for (ItemRow item : ctx.items().lockPackaged(c, request.subjectId())) {
                 ctx.items().setState(c, item.id(), ItemState.DISCARDED, item.attempts(), now);
                 ctx.items().append(c, new ItemEvent(item.id(), ctx.namespace(), ItemEventType.DISCARDED,
-                        request.requestedByJobId(), null, null, null, ctx.nodeId(), reason, null, null, null), now);
+                        request.requestedByJobId(), null, null, null, ctx.nodeId(), reason, null, null, null,
+                        request.id(), request.subjectId()), now);
             }
         }
     }
@@ -511,7 +512,8 @@ public class Decisions {
                            Instant now) throws SQLException {
         if (request.subjectType() == SubjectType.ITEM) {
             ctx.items().append(c, new ItemEvent(request.subjectId(), ctx.namespace(), type,
-                    request.requestedByJobId(), toJob, null, null, ctx.nodeId(), reason, null, null, null), now);
+                    request.requestedByJobId(), toJob, null, null, ctx.nodeId(), reason, null, null, null,
+                    request.id(), null), now);
         }
     }
 

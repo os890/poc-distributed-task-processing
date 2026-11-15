@@ -79,6 +79,7 @@ import org.os890.dtp.core.jdbc.SchemaMigrator;
 import org.os890.dtp.core.jdbc.SqlDialect;
 import org.os890.dtp.core.query.DtpQueries;
 import org.os890.dtp.core.query.FlowQueries;
+import org.os890.dtp.core.query.JourneyQueries;
 import org.os890.dtp.core.query.MonitoringFeed;
 import org.os890.dtp.core.query.MonitoringQueries;
 import org.os890.dtp.core.spi.DomainEventPublisher;
@@ -122,6 +123,7 @@ public class DtpEngine {
     private FlowInstances flowInstances;
     private CollectionWindows windows;
     private MonitoringQueries monitoring;
+    private JourneyQueries journeys;
     private MonitoringFeed monitoringFeed;
     private LeaderElector projectionLeader;
     private ScheduledExecutorService scheduler;
@@ -247,6 +249,7 @@ public class DtpEngine {
         queries = new DtpQueries(tx, config.namespace());
         flowQueries = new FlowQueries(tx, config.namespace());
         monitoring = new MonitoringQueries(tx, config.namespace(), flowQueries);
+        journeys = new JourneyQueries(tx, config.namespace(), queries);
         monitoringFeed = new MonitoringFeed(monitoring, config.monitoring().feedInterval());
 
         tx.required(() -> tx.withConnection(c -> {
@@ -402,6 +405,15 @@ public class DtpEngine {
      */
     public MonitoringQueries monitoring() {
         return requireStarted(monitoring);
+    }
+
+    /**
+     * The journey diagrams of items.
+     *
+     * @return the queries
+     */
+    public JourneyQueries journeys() {
+        return requireStarted(journeys);
     }
 
     /**

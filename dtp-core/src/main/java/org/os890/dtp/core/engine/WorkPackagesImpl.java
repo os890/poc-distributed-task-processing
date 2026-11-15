@@ -175,7 +175,7 @@ public class WorkPackagesImpl<E, ID> implements WorkPackages<E, ID> {
                     Filling pkg = filling(c, filling, key, maxSize, created, now);
                     ctx.items().assignToPackage(c, entry.item().id(), pkg.jobId, pkg.id, now);
                     journal(c, entry.item().id(), ItemEventType.PACKAGED, handedTo(pkg), describe(key, pkg.seq),
-                            now);
+                            pkg.id, now);
                 }
                 flush(c, filling);
                 return true;
@@ -208,8 +208,9 @@ public class WorkPackagesImpl<E, ID> implements WorkPackages<E, ID> {
                     ItemRow item = new ItemRow(UUID.randomUUID(), ctx.namespace(), type.name(), refId, version,
                             refId, null, pkg.jobId, null, ItemState.PACKAGED, null, 0, null, null, 0);
                     ctx.items().insertPackaged(c, item, pkg.jobId, pkg.id, now);
-                    journal(c, item.id(), ItemEventType.TRACKED, null, null, now);
-                    journal(c, item.id(), ItemEventType.PACKAGED, handedTo(pkg), describe(key, pkg.seq), now);
+                    journal(c, item.id(), ItemEventType.TRACKED, null, null, null, now);
+                    journal(c, item.id(), ItemEventType.PACKAGED, handedTo(pkg), describe(key, pkg.seq), pkg.id,
+                            now);
                 }
                 flush(c, filling);
                 return null;
@@ -328,9 +329,10 @@ public class WorkPackagesImpl<E, ID> implements WorkPackages<E, ID> {
     }
 
     private void journal(Connection c, UUID itemId, ItemEventType eventType, UUID toJobId, String reason,
-                         Instant now) throws SQLException {
+                         UUID packageId, Instant now) throws SQLException {
         ctx.items().append(c, new ItemEvent(itemId, ctx.namespace(), eventType, jobId(), toJobId,
-                run.claimed().runId(), run.claimed().attempt(), ctx.nodeId(), reason, null, null, null), now);
+                run.claimed().runId(), run.claimed().attempt(), ctx.nodeId(), reason, null, null, null, null,
+                packageId), now);
     }
 
     /** The job a package is handed over to, {@code null} if the current job processes it. */

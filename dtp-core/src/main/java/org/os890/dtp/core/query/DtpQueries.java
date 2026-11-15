@@ -37,6 +37,7 @@ public class DtpQueries {
     /**
      * One entry of an item's journey.
      *
+     * @param no          number of the entry in the journey (1, 2, ...), as in the journey diagram
      * @param seq         order of the entries
      * @param occurredAt  DB time
      * @param type        event type
@@ -48,10 +49,12 @@ public class DtpQueries {
      * @param reason      the reason
      * @param failureKind business or technical failure
      * @param errorType   exception class of a technical failure
+     * @param decisionId  the decision request the entry is about (from slice 12 on)
+     * @param packageId   the work package the entry is about (from slice 12 on)
      */
-    public record JourneyEntry(long seq, Instant occurredAt, String type, String fromJob, String toJob, UUID runId,
-                               Integer runAttempt, String node, String reason, String failureKind,
-                               String errorType) {
+    public record JourneyEntry(int no, long seq, Instant occurredAt, String type, String fromJob, String toJob,
+                               UUID runId, Integer runAttempt, String node, String reason, String failureKind,
+                               String errorType, UUID decisionId, UUID packageId) {
     }
 
     /**
@@ -131,17 +134,33 @@ public class DtpQueries {
      * @return the entries
      */
     public List<JourneyEntry> journey(String itemType, String businessKey) {
+        return journey("i.namespace = ? AND i.item_type = ? AND i.business_key = ?", namespace, itemType,
+                businessKey);
+    }
+
+    /**
+     * The journey of an item, in order.
+     *
+     * @param itemId the item
+     * @return the entries
+     */
+    public List<JourneyEntry> journey(UUID itemId) {
+        return journey("i.namespace = ? AND i.id = ?", namespace, itemId);
+    }
+
+    private List<JourneyEntry> journey(String where, Object... params) {
+        int[] no = {0};
         return tx.withConnection(c -> Sql.query(c, "SELECT e.seq, e.occurred_at, e.event_type, fj.name AS from_job,"
-                + " tj.name AS to_job, e.run_id, e.run_attempt, n.name AS node, e.reason, e.failure_kind, e.error_type"
+                + " tj.name AS to_job, e.run_id, e.run_attempt, n.name AS node, e.reason, e.failure_kind, e.error_type,"
+                + " e.decision_request_id, e.work_package_id"
                 + " FROM dtp_item_event e JOIN dtp_item i ON i.id = e.item_id"
                 + " LEFT JOIN dtp_job fj ON fj.id = e.from_job_id LEFT JOIN dtp_job tj ON tj.id = e.to_job_id"
-                + " LEFT JOIN dtp_node n ON n.id = e.node_id"
-                + " WHERE i.namespace = ? AND i.item_type = ? AND i.business_key = ? ORDER BY e.seq",
-                rs -> new JourneyEntry(rs.getLong("seq"), Sql.instant(rs, "occurred_at"), rs.getString("event_type"),
-                        rs.getString("from_job"), rs.getString("to_job"), Sql.uuid(rs, "run_id"),
-                        Sql.integer(rs, "run_attempt"), rs.getString("node"), rs.getString("reason"),
-                        rs.getString("failure_kind"), rs.getString("error_type")),
-                namespace, itemType, businessKey));
+                + " LEFT JOIN dtp_node n ON n.id = e.node_id WHERE " + where + " ORDER BY e.seq",
+                rs -> new JourneyEntry(++no[0], rs.getLong("seq"), Sql.instant(rs, "occurred_at"),
+                        rs.getString("event_type"), rs.getString("from_job"), rs.getString("to_job"),
+                        Sql.uuid(rs, "run_id"), Sql.integer(rs, "run_attempt"), rs.getString("node"),
+                        rs.getString("reason"), rs.getString("failure_kind"), rs.getString("error_type"),
+                        Sql.uuid(rs, "decision_request_id"), Sql.uuid(rs, "work_package_id")), params));
     }
 
     /**

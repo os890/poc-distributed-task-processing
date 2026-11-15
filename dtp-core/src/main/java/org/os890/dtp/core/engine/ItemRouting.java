@@ -171,10 +171,11 @@ public class ItemRouting {
             String why = "visit " + visits + " of " + target.name() + " exceeds max_item_visits "
                     + target.maxItemVisits();
             items.setState(c, item.id(), ItemState.WAITING_FOR_DECISION, 0, now);
-            items.append(c, event(item, ItemEventType.LOOP_LIMIT_EXCEEDED, from, target.id(), why, run), now);
-            decisions.request(c, new Decisions.NewRequest(DecisionKind.CHOICE, SubjectType.ITEM, item.id(),
-                    target.id(), runId(run), why, Decisions.builtIn(BuiltInOption.ITEM_LOOP), null, null, null),
-                    now);
+            UUID request = decisions.request(c, new Decisions.NewRequest(DecisionKind.CHOICE, SubjectType.ITEM,
+                    item.id(), target.id(), runId(run), why, Decisions.builtIn(BuiltInOption.ITEM_LOOP), null, null,
+                    null), now);
+            items.append(c, event(item, ItemEventType.LOOP_LIMIT_EXCEEDED, from, target.id(), why, run)
+                    .withDecision(request), now);
         }
     }
 
@@ -260,7 +261,7 @@ public class ItemRouting {
             int attempts = (branch != null ? branch.attempts() : item.attempts()) + 1;
             items.append(c, new ItemEvent(item.id(), item.namespace(), ItemEventType.FAILED, from, null, runId(run),
                     runAttempt(run), ctx.nodeId(), reason, kind, error == null ? null : error.getClass().getName(),
-                    error == null ? null : hash(error)), now);
+                    error == null ? null : hash(error), null, null), now);
             if (attempts <= job.retryMax()) {
                 Instant next = now.plus(job.retryBackoff().multipliedBy(attempts));
                 if (branch != null) {
@@ -273,11 +274,12 @@ public class ItemRouting {
             } else {
                 String why = "retries exhausted (" + job.retryMax() + ")" + (reason == null ? "" : ": " + reason);
                 waitForDecision(c, item, branch, attempts, now);
-                items.append(c, event(item, ItemEventType.ESCALATED, from, null, why, run), now);
                 // technical failures go to operations, business failures to the business (DD-29)
-                decisions.request(c, new Decisions.NewRequest(DecisionKind.CHOICE, SubjectType.ITEM, item.id(),
-                        job.id(), runId(run), why, Decisions.builtIn(BuiltInOption.ITEM), null, null,
+                UUID request = decisions.request(c, new Decisions.NewRequest(DecisionKind.CHOICE, SubjectType.ITEM,
+                        item.id(), job.id(), runId(run), why, Decisions.builtIn(BuiltInOption.ITEM), null, null,
                         kind == FailureKind.TECHNICAL ? Decisions.OPERATORS : null), now);
+                items.append(c, event(item, ItemEventType.ESCALATED, from, null, why, run).withDecision(request),
+                        now);
             }
         });
     }
@@ -305,9 +307,10 @@ public class ItemRouting {
         }
         inTx(run, (c, now) -> {
             waitForDecision(c, item, branch, branch != null ? branch.attempts() : item.attempts(), now);
-            ctx.items().append(c, event(item, ItemEventType.ESCALATED, from, null, reason, run), now);
-            decisions.request(c, new Decisions.NewRequest(kind, SubjectType.ITEM, item.id(), requestingJob,
-                    runId(run), reason, options, optionType, quorum, team), now);
+            UUID request = decisions.request(c, new Decisions.NewRequest(kind, SubjectType.ITEM, item.id(),
+                    requestingJob, runId(run), reason, options, optionType, quorum, team), now);
+            ctx.items().append(c, event(item, ItemEventType.ESCALATED, from, null, reason, run)
+                    .withDecision(request), now);
         });
     }
 
@@ -406,7 +409,7 @@ public class ItemRouting {
     private ItemEvent event(ItemRow item, ItemEventType type, UUID fromJobId, UUID toJobId, String reason,
                             RunContext run) {
         return new ItemEvent(item.id(), item.namespace(), type, fromJobId, toJobId, runId(run), runAttempt(run),
-                ctx.nodeId(), reason, null, null, null);
+                ctx.nodeId(), reason, null, null, null, null, null);
     }
 
     private static UUID from(ItemRow item, BranchRow branch) {

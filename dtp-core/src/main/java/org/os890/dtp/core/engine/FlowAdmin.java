@@ -170,7 +170,8 @@ public class FlowAdmin {
                 ctx.items().pin(c, item.id(), to.id(), now);
                 ctx.items().append(c, new ItemEvent(item.id(), item.namespace(), ItemEventType.MIGRATED,
                         item.currentJobId(), item.currentJobId(), null, null, ctx.nodeId(),
-                        "flow " + flow + " " + from.hash() + " -> " + to.hash() + " by " + by, null, null, null), now);
+                        "flow " + flow + " " + from.hash() + " -> " + to.hash() + " by " + by, null, null, null,
+                        null, null), now);
                 migrated++;
             }
             return new Migration(migrated, skipped);

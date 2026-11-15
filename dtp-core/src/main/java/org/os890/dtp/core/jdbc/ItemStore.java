@@ -138,10 +138,23 @@ public class ItemStore {
      * @param failureKind business or technical failure, or {@code null}
      * @param errorType   exception class of a technical failure, or {@code null}
      * @param errorHash   hash of the top stack frames, or {@code null}
+     * @param decisionId  the decision request the entry is about, or {@code null}
+     * @param packageId   the work package the entry is about, or {@code null}
      */
     public record ItemEvent(UUID itemId, String namespace, ItemEventType type, UUID fromJobId, UUID toJobId,
                             UUID runId, Integer runAttempt, UUID nodeId, String reason, FailureKind failureKind,
-                            String errorType, String errorHash) {
+                            String errorType, String errorHash, UUID decisionId, UUID packageId) {
+
+        /**
+         * The same entry, linked to a decision request.
+         *
+         * @param id the decision request
+         * @return the linked entry
+         */
+        public ItemEvent withDecision(UUID id) {
+            return new ItemEvent(itemId, namespace, type, fromJobId, toJobId, runId, runAttempt, nodeId, reason,
+                    failureKind, errorType, errorHash, id, packageId);
+        }
     }
 
     /**
@@ -658,11 +671,13 @@ public class ItemStore {
      */
     public void append(Connection c, ItemEvent event, Instant now) throws SQLException {
         Sql.update(c, "INSERT INTO dtp_item_event (id, seq, namespace, item_id, event_type, from_job_id, to_job_id,"
-                + " run_id, run_attempt, node_id, reason, failure_kind, error_type, error_hash, occurred_at)"
-                + " VALUES (?, " + dialect.nextValue("dtp_event_seq") + ", ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                + " run_id, run_attempt, node_id, reason, failure_kind, error_type, error_hash, decision_request_id,"
+                + " work_package_id, occurred_at)"
+                + " VALUES (?, " + dialect.nextValue("dtp_event_seq")
+                + ", ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 UUID.randomUUID(), event.namespace(), event.itemId(), event.type(), event.fromJobId(),
                 event.toJobId(), event.runId(), event.runAttempt(), event.nodeId(), truncate(event.reason()),
-                event.failureKind(), event.errorType(), event.errorHash(), now);
+                event.failureKind(), event.errorType(), event.errorHash(), event.decisionId(), event.packageId(), now);
     }
 
     private Map<UUID, ItemRow> loadAll(Connection c, List<UUID> ids) throws SQLException {

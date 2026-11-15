@@ -424,6 +424,76 @@ class TradeFlowTest {
         assertThat(notifications.latest()).noneMatch(m -> m.subject().equals("Step congested: trade-enrichment"));
     }
 
+    @Test
+    @Order(9)
+    void journeyDiagramsShowThePathOfEachItem() {
+        String viewer = "dtp-viewer";
+        // the large trade of order 3: the approval of two risk managers, with their votes
+        String approved = given().header("X-Groups", viewer)
+                                 .when().get("/dtp/items/trade/T-2026-11-15-10/journey/diagram?zone=Europe/Vienna")
+                                 .then().statusCode(200).contentType(containsString("text/plain"))
+                                 .extract().asString();
+        assertThat(approved).startsWith("flowchart LR").contains("[\"TradeValidation", "fork\" --> ",
+                "{{\"Approval D-", ", quorum 2<br/>team risk<br/>", "APPROVE by rita: checked, ",
+                "APPROVE by rob: checked, ", "decided APPROVED by rob: checked, ", " APPROVED\" --> ",
+                "((\"COMPLETED<br/>", "class finish done")
+                .doesNotContain("<br/>on ");
+        // the trade without ISIN of order 1: routed back, imported again
+        given().header("X-Groups", viewer).when().get("/dtp/items/trade/T-2026-11-13-4/journey/diagram")
+               .then().statusCode(200)
+               .body(containsString("back-route: missing ISIN\" .-> "))
+               .body(containsString("[\"TradeValidation<br/>2 visits"))
+               .body(containsString(" re-imported\" --> "));
+        // the outage of order 8: failed attempts of the enrichment as a self-loop, for operators with the message
+        given().header("X-Groups", "dtp-operator").when().get("/dtp/items/trade/T-2026-11-25-1/journey/diagram")
+               .then().statusCode(200)
+               .body(containsString(" retry "))
+               .body(containsString("technical: IllegalStateException: market data service unavailable"))
+               .body(containsString("succeeded on attempt "))
+               .body(containsString("classDef retried"))
+               .body(containsString("<br/>on "));
+        // a settlement instruction of order 6: its work package, handed over to the sender
+        String instruction = trade("T-2026-11-23-2").getId().toString();
+        given().header("X-Groups", viewer)
+               .when().get("/dtp/items/settlement-instruction/" + instruction + "/journey/diagram")
+               .then().statusCode(200)
+               .body(containsString("[/\"work package "))
+               .body(containsString("handed over to SettlementSender"));
+
+        // the folded graph for custom UIs, steps only, by id, and the journal with the numbers of the diagram
+        String itemId = given().header("X-Groups", viewer)
+                               .when().get("/dtp/items/trade/T-2026-11-15-10/journey/diagram?format=json")
+                               .then().statusCode(200).contentType(ContentType.JSON)
+                               .body("state", equalTo("COMPLETED"))
+                               .body("nodes.kind", hasItem("DECISION"))
+                               .body("nodes.find { it.kind == 'DECISION' }.decisionId", not(equalTo(null)))
+                               .body("edges.find { it.kind == 'FORK' }.entries", equalTo(List.of(3)))
+                               .extract().path("itemId");
+        given().header("X-Groups", viewer)
+               .when().get("/dtp/items/trade/T-2026-11-15-10/journey/diagram?detail=steps")
+               .then().statusCode(200).body(not(containsString("{{")));
+        given().header("X-Groups", viewer).when().get("/dtp/items/by-id/" + itemId + "/journey/diagram")
+               .then().statusCode(200).body(containsString("Approval D-"));
+        given().header("X-Groups", viewer).when().get("/dtp/items/trade/T-2026-11-15-10/journey")
+               .then().statusCode(200).body("no", hasItem(1)).body("type", hasItem("VOTED"));
+
+        // viewers and operators only; unknown items, formats and zones
+        given().when().get("/dtp/items/trade/T-2026-11-15-10/journey/diagram").then().statusCode(403);
+        given().header("X-Groups", "risk").when().get("/dtp/items/trade/T-2026-11-15-10/journey").then()
+               .statusCode(403);
+        given().header("X-Groups", viewer).when().get("/dtp/items/trade/unknown/journey/diagram").then()
+               .statusCode(404);
+        given().header("X-Groups", viewer).when().get("/dtp/items/trade/unknown/journey").then().statusCode(404);
+        given().header("X-Groups", viewer).when().get("/dtp/items/by-id/" + UUID.randomUUID() + "/journey/diagram")
+               .then().statusCode(404);
+        given().header("X-Groups", viewer)
+               .when().get("/dtp/items/trade/T-2026-11-15-10/journey/diagram?format=png").then().statusCode(400);
+        given().header("X-Groups", viewer)
+               .when().get("/dtp/items/trade/T-2026-11-15-10/journey/diagram?zone=Mars/Base").then().statusCode(400);
+        given().header("X-Groups", viewer)
+               .when().get("/dtp/items/trade/T-2026-11-15-10/journey/diagram?detail=all").then().statusCode(400);
+    }
+
     private long reportedTrades(long sequence) {
         List<String> files = given().when().get("/reporting/files").then().statusCode(200).extract().path(".");
         return files.stream().filter(f -> f.startsWith("trade-report-" + sequence + "-"))
