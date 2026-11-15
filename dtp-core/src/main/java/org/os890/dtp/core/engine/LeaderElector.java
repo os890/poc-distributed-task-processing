@@ -88,6 +88,7 @@ public class LeaderElector {
             if (elected.isPresent()) {
                 validUntilNanos = started + duration * 2 / 3;
                 term = elected.getAsLong();
+                ctx.telemetry().leaderElected(role);
                 LOG.log(System.Logger.Level.INFO, "node {0} is {1} (term {2})", ctx.config().nodeName(), title,
                         term);
             }

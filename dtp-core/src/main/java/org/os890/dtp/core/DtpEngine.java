@@ -84,6 +84,7 @@ import org.os890.dtp.core.query.MonitoringFeed;
 import org.os890.dtp.core.query.MonitoringQueries;
 import org.os890.dtp.core.spi.DomainEventPublisher;
 import org.os890.dtp.core.spi.StepRegistry;
+import org.os890.dtp.core.spi.Telemetry;
 import org.os890.dtp.core.spi.Transactions;
 
 /**
@@ -104,6 +105,7 @@ public class DtpEngine {
     private final StepRegistry registry;
     private final DtpConfig config;
     private final DomainEventPublisher events;
+    private final Telemetry telemetry;
     private final UUID nodeId = UUID.randomUUID();
     private final Random random;
     private final ReentrantLock claimLock = new ReentrantLock();
@@ -139,6 +141,7 @@ public class DtpEngine {
         this.config = builder.config != null ? builder.config : DtpConfig.builder().build();
         this.tx = builder.transactions != null ? builder.transactions : new JdbcTransactions(dataSource);
         this.events = builder.events != null ? builder.events : DomainEventPublisher.NONE;
+        this.telemetry = builder.telemetry != null ? builder.telemetry : Telemetry.NONE;
         long seed = config.randomSeed() != null ? config.randomSeed() ^ nodeId.getLeastSignificantBits()
                                                  : new Random().nextLong();
         this.random = new Random(seed);
@@ -161,6 +164,7 @@ public class DtpEngine {
         private StepRegistry registry;
         private DtpConfig config;
         private DomainEventPublisher events;
+        private Telemetry telemetry;
 
         public Builder dataSource(DataSource value) {
             dataSource = value;
@@ -193,6 +197,18 @@ public class DtpEngine {
             return this;
         }
 
+        /**
+         * The telemetry metrics and traces, e.g. OpenTelemetry ({@code dtp-telemetry}). Without one, nothing is
+         * reported.
+         *
+         * @param value the telemetry
+         * @return this builder
+         */
+        public Builder telemetry(Telemetry value) {
+            telemetry = value;
+            return this;
+        }
+
         public DtpEngine build() {
             return new DtpEngine(this);
         }
@@ -218,10 +234,10 @@ public class DtpEngine {
         registry.stepClasses().forEach(step -> steps.put(step, StepInfo.of(step)));
         JobStore jobStore = new JobStore();
         ctx = new EngineContext(config, nodeId, tx, dialect, new DbClock(dialect), jobStore, new LeaseStore(dialect),
-                new RunStore(dialect), new NodeStore(), new LeaderStore(dialect), new ItemStore(dialect),
+                new RunStore(dialect), new NodeStore(), new LeaderStore(dialect), new ItemStore(dialect, telemetry),
                 new FlowStore(dialect),
                 new JobCatalog(tx, jobStore, config.namespace(), config.definitionRefresh().toNanos()),
-                new JsonCodec(), registry, Map.copyOf(steps), events);
+                new JsonCodec(), registry, Map.copyOf(steps), events, telemetry);
         RunPlanner planner = new RunPlanner(ctx);
         ItemRouting routing = new ItemRouting(ctx);
         List<FlowModel> flowModels = FlowRegistrar.compile(registry.flowDefinitions());
@@ -296,6 +312,7 @@ public class DtpEngine {
             projectionScheduler.shutdownNow();
             projectionLeader.resign();
         }
+        telemetry.clusterState(null); // a stopped node doesn't report the cluster gauges any more
         leader.resign();
         try {
             tx.required(() -> tx.withConnection(c -> {
@@ -496,9 +513,11 @@ public class DtpEngine {
                 boolean renewed = tx.required(() -> tx.withConnection(c -> ctx.leases().renew(c, claimed.jobId(),
                         claimed.runId(), claimed.token(), ctx.clock().now(c).plus(claimed.leaseDuration()))));
                 // a run that finished between the snapshot and the renewal released its lease itself
-                if (!renewed && !tx.withConnection(c -> ctx.runs().finishedWith(c, claimed.runId(),
-                        claimed.token()))) {
+                if (renewed) {
+                    ctx.telemetry().leaseRenewed(run.job().name());
+                } else if (!tx.withConnection(c -> ctx.runs().finishedWith(c, claimed.runId(), claimed.token()))) {
                     LOG.log(System.Logger.Level.WARNING, "run {0} lost its lease", claimed.runId());
+                    run.leaseLost();
                     run.requestStop(StopReason.LEASE_LOST);
                 }
             }

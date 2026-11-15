@@ -15,8 +15,12 @@
  */
 package org.os890.dtp.core.engine;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -32,6 +36,8 @@ import org.os890.dtp.core.domain.FailureKind;
 import org.os890.dtp.core.domain.LeaseLostException;
 import org.os890.dtp.core.jdbc.ItemStore.InboxEntry;
 import org.os890.dtp.core.jdbc.ItemStore.InboxQuery;
+import org.os890.dtp.core.jdbc.ItemStore.InboxTrace;
+import org.os890.dtp.core.spi.Telemetry;
 
 /**
  * Runs an {@link ItemProcessor}: iterates the inbox in batches (each batch is one fenced unit of work), up to
@@ -105,9 +111,7 @@ public class ItemProcessorDriver {
                     return false;
                 }
                 entries.forEach(entry -> ids.add(entry.item().id()));
-                for (InboxEntry entry : entries) {
-                    process(entry);
-                }
+                processInSpan(entries);
                 return true;
             });
             run.countItems(ids.size());
@@ -142,7 +146,7 @@ public class ItemProcessorDriver {
                             run.claimed().jobId(), run.now())).orElse(null);
                     if (entry != null) {
                         routing.reprocessed(entry.item(), entry.branch(), run);
-                        process(entry);
+                        processInSpan(List.of(entry));
                     }
                     return null;
                 });
@@ -158,8 +162,8 @@ public class ItemProcessorDriver {
         run.unitOfWork(false, () -> {
             EngineContext ctx = run.engine();
             ctx.tx().withConnection(c -> ctx.items().lockQueued(c, id, run.claimed().jobId(), run.now()))
-                    .ifPresent(entry -> routing.fail(entry.item(), entry.branch(), run.job(), FailureKind.TECHNICAL,
-                            String.valueOf(error.getMessage()), error, run));
+                    .ifPresent(entry -> inSpan(List.of(entry), error, () -> routing.fail(entry.item(), entry.branch(),
+                            run.job(), FailureKind.TECHNICAL, String.valueOf(error.getMessage()), error, run)));
             return null;
         });
     }
@@ -174,6 +178,55 @@ public class ItemProcessorDriver {
             entries.forEach(entry -> cursor.accumulateAndGet(entry.seq(), Math::max));
         }
         return entries;
+    }
+
+    private void processInSpan(List<InboxEntry> entries) {
+        inSpan(entries, null, () -> entries.forEach(this::process));
+    }
+
+    /**
+     * Works on entries in the span of their unit of work, linked to the traces of their items, and reports how long
+     * they waited (telemetry, after the commit).
+     *
+     * @param entries the entries
+     * @param failure the failure the work records, or {@code null} for their processing
+     * @param work    the work
+     */
+    private void inSpan(List<InboxEntry> entries, Throwable failure, Runnable work) {
+        EngineContext ctx = run.engine();
+        Telemetry telemetry = ctx.telemetry();
+        List<String> links = List.of();
+        if (telemetry != Telemetry.NONE) {
+            Map<UUID, InboxTrace> traces = ctx.tx().withConnection(c -> ctx.items().traces(c,
+                    run.claimed().jobId(), entries));
+            Instant now = run.now();
+            String step = run.job().name();
+            for (InboxEntry entry : entries) {
+                InboxTrace trace = traces.get(entry.item().id());
+                if (failure == null && trace != null && trace.dueAt() != null) {
+                    Duration wait = trace.dueAt().isBefore(now) ? Duration.between(trace.dueAt(), now) : Duration.ZERO;
+                    String lane = entry.item().lane();
+                    ctx.tx().afterCommit(() -> telemetry.itemWaited(step, lane, wait));
+                }
+            }
+            if (telemetry.tracing()) {
+                links = traces.values().stream().map(InboxTrace::traceParent).filter(Objects::nonNull).distinct()
+                              .toList();
+            }
+        }
+        try (Telemetry.Span span = telemetry.startUnitOfWork(run.job().name(), run.claimed().runId(),
+                run.claimed().attempt(), links)) {
+            span.items(entries.size());
+            if (failure != null) {
+                span.failed(failure);
+            }
+            try {
+                work.run();
+            } catch (RuntimeException | Error e) {
+                span.failed(e);
+                throw e;
+            }
+        }
     }
 
     private void process(InboxEntry entry) {

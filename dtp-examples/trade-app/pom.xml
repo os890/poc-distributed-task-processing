@@ -46,6 +46,15 @@
             <artifactId>dtp-cdi</artifactId>
         </dependency>
         <dependency>
+            <groupId>org.os890.dtp</groupId>
+            <artifactId>dtp-telemetry</artifactId>
+        </dependency>
+        <!-- stands in for the OpenTelemetry SDK of a MicroProfile Telemetry runtime (e.g. quarkus-opentelemetry) -->
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-sdk</artifactId>
+        </dependency>
+        <dependency>
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-arc</artifactId>
         </dependency>

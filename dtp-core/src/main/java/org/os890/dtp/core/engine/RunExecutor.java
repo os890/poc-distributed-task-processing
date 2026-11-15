@@ -38,6 +38,7 @@ import org.os890.dtp.core.domain.TransitionDefinition;
 import org.os890.dtp.core.domain.TriggerType;
 import org.os890.dtp.core.jdbc.RunStore;
 import org.os890.dtp.core.jdbc.RunStore.RunRecord;
+import org.os890.dtp.core.spi.Telemetry;
 
 /**
  * Executes claimed runs on virtual threads and finishes them: outcome (docs/design/04-lifecycles.md §4.1), fenced
@@ -159,8 +160,17 @@ public class RunExecutor {
         JobHandler<Object, ?> handler = handler(step);
         run.onStop(() -> handler.onStop(run.stopReason()));
         Object parameters = parameters(run);
-        JobResult<?> result = run.unitOfWork(false,
-                () -> handler.execute(new JobContextImpl<>(run, routing, parameters)));
+        JobResult<?> result = run.unitOfWork(false, () -> {
+            try (Telemetry.Span span = ctx.telemetry().startUnitOfWork(run.job().name(), run.claimed().runId(),
+                    run.claimed().attempt(), List.of())) {
+                try {
+                    return handler.execute(new JobContextImpl<>(run, routing, parameters));
+                } catch (RuntimeException | Error e) {
+                    span.failed(e);
+                    throw e;
+                }
+            }
+        });
         if (result == null) {
             throw new IllegalStateException(handler.getClass().getName() + ".execute returned null");
         }
@@ -225,6 +235,7 @@ public class RunExecutor {
             }
             return null;
         }));
+        ctx.telemetry().runFinished(run.job().name(), result.outcome().name(), run.elapsed());
         LOG.log(System.Logger.Level.DEBUG, "run {0} of job {1} finished: {2}", claimed.runId(), run.job().name(),
                 result.outcome());
     }

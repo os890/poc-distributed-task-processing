@@ -61,9 +61,9 @@ class JourneyFolderTest {
         add("REPROCESSED", "check", null, "batch rollback");
         // written by the second attempt of the run of the check step, after a takeover
         entries.add(new JourneyEntry(5, 5, MONDAY, "ROUTED", "check", "collector", run, 2, "n2", null, null, null,
-                null, null));
+                null, null, null));
         entries.add(new JourneyEntry(6, 6, MONDAY, "PACKAGED", "collector", "sender", run, 1, "n1",
-                "work package 7 (OEKB-CSD)", null, null, null, pkg));
+                "work package 7 (OEKB-CSD)", null, null, null, pkg, null));
         Context ctx = context(item("PACKAGED", null, pkg), Map.of(), Map.of(pkg, new PackageInfo(pkg, 7,
                 "OEKB-CSD", "PENDING", "sender", "{\"file\":\"settle-7.xml\",\"size\":2}", 1, "gateway down")),
                 List.of(), Map.of());
@@ -105,7 +105,7 @@ class JourneyFolderTest {
         UUID pkg = UUID.randomUUID();
         add("TRACKED", null, null, null);
         entries.add(new JourneyEntry(2, 2, MONDAY, "PACKAGED", "collector", "sender", run, 1, "n1",
-                "work package 3 (EUROCLEAR)", null, null, null, pkg));
+                "work package 3 (EUROCLEAR)", null, null, null, pkg, null));
         add("COMPLETED", "sender", null, null);
         Context ctx = context(item("COMPLETED", null, pkg), Map.of(), Map.of(pkg, new PackageInfo(pkg, 3,
                 "EUROCLEAR", "DONE", "sender", null, 0, null)), List.of(), Map.of());
@@ -172,7 +172,7 @@ class JourneyFolderTest {
         add("TRACKED", null, null, null);
         add("ROUTED", null, "check", null);
         entries.add(new JourneyEntry(3, 3, MONDAY, "FAILED", "check", null, run, 1, "n1", "missing price",
-                "BUSINESS", null, null, null));
+                "BUSINESS", null, null, null, null));
         add("ESCALATED", "check", null, "retries exhausted (0): missing price");
         add("DECIDED", "check", "check", "RETRY by otto");
         String text = "a very long reason that is much longer than sixty characters, so it is truncated";
@@ -238,7 +238,8 @@ class JourneyFolderTest {
 
     private JourneyEntry entry(String type, String from, String to, String reason, UUID decision) {
         int no = entries.size() + 1;
-        return new JourneyEntry(no, no, MONDAY, type, from, to, null, null, null, reason, null, null, decision, null);
+        return new JourneyEntry(no, no, MONDAY, type, from, to, null, null, null, reason, null, null, decision, null,
+                null);
     }
 
     private ItemInfo item(String state, String job, UUID pkg) {

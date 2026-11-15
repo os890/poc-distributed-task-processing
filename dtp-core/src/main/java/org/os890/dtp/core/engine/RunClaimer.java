@@ -75,18 +75,29 @@ public class RunClaimer {
                 break;
             }
             try {
-                ctx.tx().requiresNew(() -> tryClaim(candidate)).ifPresent(claimed::add);
+                Optional<Claim> claim = ctx.tx().requiresNew(() -> tryClaim(candidate));
+                if (claim.isPresent()) {
+                    claimed.add(claim.get().run());
+                    ctx.telemetry().claimed(claim.get().lag());
+                } else {
+                    ctx.telemetry().claimConflict(); // another node holds the lease
+                }
             } catch (ClaimAborted e) {
                 LOG.log(System.Logger.Level.DEBUG, "claim of run {0} aborted", candidate.runId());
             } catch (DtpException e) {
                 // e.g. a lock timeout on H2 (05 §5.3): count as a conflict and try the next candidate
                 LOG.log(System.Logger.Level.DEBUG, "claim conflict for run " + candidate.runId(), e);
+                ctx.telemetry().claimConflict();
             }
         }
         return claimed;
     }
 
-    private Optional<ClaimedRun> tryClaim(Candidate candidate) {
+    /** A claimed run and the time since it was due. */
+    private record Claim(ClaimedRun run, Duration lag) {
+    }
+
+    private Optional<Claim> tryClaim(Candidate candidate) {
         Duration leaseDuration = leaseDuration(candidate);
         Duration timeLimit = ctx.catalog().byId(candidate.jobId()).timeLimit();
         return ctx.tx().withConnection(c -> {
@@ -101,9 +112,11 @@ public class RunClaimer {
                 throw new ClaimAborted();
             }
             RunRecord run = ctx.runs().load(c, candidate.runId());
-            return Optional.of(new ClaimedRun(run.id(), run.jobId(), run.revision(), run.handlerClass(),
+            Duration lag = candidate.dueAt() == null || candidate.dueAt().isAfter(now) ? Duration.ZERO
+                    : Duration.between(candidate.dueAt(), now);
+            return Optional.of(new Claim(new ClaimedRun(run.id(), run.jobId(), run.revision(), run.handlerClass(),
                     token.getAsLong(), attempt.get(), leaseDuration, run.slotEnd(), timeLimit == null ? null
-                    : now.plus(timeLimit)));
+                    : now.plus(timeLimit)), lag));
         });
     }
 

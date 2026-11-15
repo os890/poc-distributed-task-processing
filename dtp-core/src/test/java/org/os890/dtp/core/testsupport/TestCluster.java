@@ -37,6 +37,7 @@ import org.os890.dtp.core.jdbc.SchemaMigrator;
 import org.os890.dtp.core.jdbc.Sql;
 import org.os890.dtp.core.jdbc.SqlDialect;
 import org.os890.dtp.core.query.DtpQueries;
+import org.os890.dtp.core.spi.Telemetry;
 import org.os890.dtp.core.spi.Transactions;
 
 /**
@@ -133,7 +134,20 @@ public class TestCluster implements AutoCloseable {
      * @return the started node
      */
     public DtpEngine start(DtpConfig config, MapStepRegistry registry) {
+        return start(config, registry, Telemetry.NONE);
+    }
+
+    /**
+     * Starts a node with telemetry.
+     *
+     * @param config    the settings
+     * @param registry  the steps and flows
+     * @param telemetry the telemetry
+     * @return the started node
+     */
+    public DtpEngine start(DtpConfig config, MapStepRegistry registry, Telemetry telemetry) {
         DtpEngine engine = DtpEngine.builder()
+                .telemetry(telemetry)
                 .dataSource(dataSource)
                 .transactions(tx)
                 .steps(registry)

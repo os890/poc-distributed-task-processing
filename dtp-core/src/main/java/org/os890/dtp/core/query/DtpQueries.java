@@ -51,10 +51,11 @@ public class DtpQueries {
      * @param errorType   exception class of a technical failure
      * @param decisionId  the decision request the entry is about (from slice 12 on)
      * @param packageId   the work package the entry is about (from slice 12 on)
+     * @param traceId     the trace of the unit of work that wrote the entry (from slice 13 on, with telemetry)
      */
     public record JourneyEntry(int no, long seq, Instant occurredAt, String type, String fromJob, String toJob,
                                UUID runId, Integer runAttempt, String node, String reason, String failureKind,
-                               String errorType, UUID decisionId, UUID packageId) {
+                               String errorType, UUID decisionId, UUID packageId, String traceId) {
     }
 
     /**
@@ -152,7 +153,7 @@ public class DtpQueries {
         int[] no = {0};
         return tx.withConnection(c -> Sql.query(c, "SELECT e.seq, e.occurred_at, e.event_type, fj.name AS from_job,"
                 + " tj.name AS to_job, e.run_id, e.run_attempt, n.name AS node, e.reason, e.failure_kind, e.error_type,"
-                + " e.decision_request_id, e.work_package_id"
+                + " e.decision_request_id, e.work_package_id, e.trace_id"
                 + " FROM dtp_item_event e JOIN dtp_item i ON i.id = e.item_id"
                 + " LEFT JOIN dtp_job fj ON fj.id = e.from_job_id LEFT JOIN dtp_job tj ON tj.id = e.to_job_id"
                 + " LEFT JOIN dtp_node n ON n.id = e.node_id WHERE " + where + " ORDER BY e.seq",
@@ -160,7 +161,8 @@ public class DtpQueries {
                         rs.getString("event_type"), rs.getString("from_job"), rs.getString("to_job"),
                         Sql.uuid(rs, "run_id"), Sql.integer(rs, "run_attempt"), rs.getString("node"),
                         rs.getString("reason"), rs.getString("failure_kind"), rs.getString("error_type"),
-                        Sql.uuid(rs, "decision_request_id"), Sql.uuid(rs, "work_package_id")), params));
+                        Sql.uuid(rs, "decision_request_id"), Sql.uuid(rs, "work_package_id"),
+                        rs.getString("trace_id")), params));
     }
 
     /**

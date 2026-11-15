@@ -48,6 +48,7 @@ import org.os890.dtp.core.query.FlowQueries;
 import org.os890.dtp.core.query.JourneyQueries;
 import org.os890.dtp.core.query.MonitoringFeed;
 import org.os890.dtp.core.query.MonitoringQueries;
+import org.os890.dtp.core.spi.Telemetry;
 import org.os890.dtp.core.spi.Transactions;
 
 /**
@@ -72,6 +73,10 @@ public class DtpBootstrap {
 
     @Inject
     Instance<TransactionManager> transactionManagers;
+
+    /** The telemetry of the application, e.g. {@code DtpOpenTelemetry} of {@code dtp-telemetry}, optional. */
+    @Inject
+    Instance<Telemetry> telemetries;
 
     @Inject
     BeanManager beanManager;
@@ -115,6 +120,7 @@ public class DtpBootstrap {
                     .transactions(tx)
                     .steps(new CdiStepRegistry(steps, flows))
                     .events(new CdiEventPublisher(beanManager))
+                    .telemetry(telemetries.isResolvable() ? telemetries.get() : Telemetry.NONE)
                     .config(DtpSettings.read(ConfigProvider.getConfig()))
                     .build()
                     .start();

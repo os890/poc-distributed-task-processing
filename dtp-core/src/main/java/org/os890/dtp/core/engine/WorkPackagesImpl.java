@@ -174,7 +174,7 @@ public class WorkPackagesImpl<E, ID> implements WorkPackages<E, ID> {
                     String key = groupKey.apply(new TrackedItemImpl<>(ctx, routing, entry, type, run));
                     Filling pkg = filling(c, filling, key, maxSize, created, now);
                     ctx.items().assignToPackage(c, entry.item().id(), pkg.jobId, pkg.id, now);
-                    journal(c, entry.item().id(), ItemEventType.PACKAGED, handedTo(pkg), describe(key, pkg.seq),
+                    journal(c, entry.item(), ItemEventType.PACKAGED, handedTo(pkg), describe(key, pkg.seq),
                             pkg.id, now);
                 }
                 flush(c, filling);
@@ -208,8 +208,8 @@ public class WorkPackagesImpl<E, ID> implements WorkPackages<E, ID> {
                     ItemRow item = new ItemRow(UUID.randomUUID(), ctx.namespace(), type.name(), refId, version,
                             refId, null, pkg.jobId, null, ItemState.PACKAGED, null, 0, null, null, 0);
                     ctx.items().insertPackaged(c, item, pkg.jobId, pkg.id, now);
-                    journal(c, item.id(), ItemEventType.TRACKED, null, null, null, now);
-                    journal(c, item.id(), ItemEventType.PACKAGED, handedTo(pkg), describe(key, pkg.seq), pkg.id,
+                    journal(c, item, ItemEventType.TRACKED, null, null, null, now);
+                    journal(c, item, ItemEventType.PACKAGED, handedTo(pkg), describe(key, pkg.seq), pkg.id,
                             now);
                 }
                 flush(c, filling);
@@ -328,9 +328,9 @@ public class WorkPackagesImpl<E, ID> implements WorkPackages<E, ID> {
         }
     }
 
-    private void journal(Connection c, UUID itemId, ItemEventType eventType, UUID toJobId, String reason,
+    private void journal(Connection c, ItemRow item, ItemEventType eventType, UUID toJobId, String reason,
                          UUID packageId, Instant now) throws SQLException {
-        ctx.items().append(c, new ItemEvent(itemId, ctx.namespace(), eventType, jobId(), toJobId,
+        ctx.journal(c, item.lane(), new ItemEvent(item.id(), ctx.namespace(), eventType, jobId(), toJobId,
                 run.claimed().runId(), run.claimed().attempt(), ctx.nodeId(), reason, null, null, null, null,
                 packageId), now);
     }

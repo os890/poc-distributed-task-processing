@@ -195,6 +195,7 @@ public class Housekeeping {
                 return true;
             }));
             if (taken) {
+                ctx.telemetry().leaseTakenOver(ctx.catalog().byId(lease.jobId()).name());
                 LOG.log(System.Logger.Level.INFO, "took over the expired lease of run {0} (node {1}): {2}",
                         lease.runId(), lease.owner(), rerun ? "RERUN" : "ABANDON");
             }

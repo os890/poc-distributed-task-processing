@@ -50,6 +50,7 @@ import org.os890.dtp.core.jdbc.MonitoringStore.QueueRow;
 import org.os890.dtp.core.jdbc.MonitoringStore.Recent;
 import org.os890.dtp.core.jdbc.MonitoringStore.StatusRow;
 import org.os890.dtp.core.jdbc.MonitoringStore.StepMinute;
+import org.os890.dtp.core.spi.Telemetry;
 
 /**
  * The monitoring projector (docs/design/09-monitoring-heatmap.md §9.2), run by the leader of the role
@@ -79,6 +80,7 @@ public class MonitoringProjector {
     private final LeaderElector leader;
     private final MonitoringStore store = new MonitoringStore();
     private long nextCycleNanos = System.nanoTime();
+    private boolean reporting;
 
     public MonitoringProjector(EngineContext ctx, LeaderElector leader) {
         this.ctx = ctx;
@@ -87,12 +89,25 @@ public class MonitoringProjector {
 
     /** One cycle, if this node leads the projection and the projection interval has passed since the last one. */
     public void cycle() {
-        if (!leader.isLeader() || System.nanoTime() - nextCycleNanos < 0) {
+        if (!leader.isLeader()) {
+            // a revoked leader stops reporting the cluster gauges at once, the new leader reports them
+            if (reporting) {
+                reporting = false;
+                ctx.telemetry().clusterState(null);
+            }
+            return;
+        }
+        if (System.nanoTime() - nextCycleNanos < 0) {
             return;
         }
         nextCycleNanos = System.nanoTime() + ctx.config().monitoring().interval().toNanos();
         try {
             project(leader.term());
+            if (ctx.telemetry() != Telemetry.NONE) {
+                ctx.telemetry().clusterState(ctx.tx().withConnection(c -> store.clusterState(c, ctx.namespace(),
+                        ctx.clock().now(c))));
+                reporting = true;
+            }
         } catch (RuntimeException e) {
             LOG.log(System.Logger.Level.WARNING, "monitoring projection failed", e);
         }

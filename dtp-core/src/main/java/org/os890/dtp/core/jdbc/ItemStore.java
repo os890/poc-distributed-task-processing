@@ -32,6 +32,7 @@ import org.os890.dtp.core.domain.BranchState;
 import org.os890.dtp.core.domain.FailureKind;
 import org.os890.dtp.core.domain.ItemEventType;
 import org.os890.dtp.core.domain.ItemState;
+import org.os890.dtp.core.spi.Telemetry;
 
 /** Tracked items, their visit counters and their journey ({@code dtp_item*}). */
 public class ItemStore {
@@ -43,8 +44,20 @@ public class ItemStore {
             + " arrival_reason, attempts, decision_request_id, signal_type, signal, reason";
 
     private final SqlDialect dialect;
+    private final Telemetry telemetry;
 
     public ItemStore(SqlDialect dialect) {
+        this(dialect, Telemetry.NONE);
+    }
+
+    /**
+     * Creates the store.
+     *
+     * @param dialect   the SQL dialect
+     * @param telemetry the trace context of new items and journal entries
+     */
+    public ItemStore(SqlDialect dialect, Telemetry telemetry) {
+        this.telemetry = telemetry;
         this.dialect = dialect;
     }
 
@@ -182,10 +195,10 @@ public class ItemStore {
      */
     public void insert(Connection c, ItemRow item, Instant now) throws SQLException {
         Sql.update(c, "INSERT INTO dtp_item (id, namespace, item_type, ref_id, ref_version, business_key, lane,"
-                + " lane_priority, state, attempts, created_at, updated_at)"
-                + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)", item.id(), item.namespace(), item.itemType(),
+                + " lane_priority, state, attempts, trace_parent, created_at, updated_at)"
+                + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)", item.id(), item.namespace(), item.itemType(),
                 item.refId(), item.refVersion(), item.businessKey(), item.lane(), item.lanePriority(), item.state(),
-                now, now);
+                telemetry.currentTraceParent(), now, now);
     }
 
     /**
@@ -234,10 +247,11 @@ public class ItemStore {
     public void insertPackaged(Connection c, ItemRow item, UUID jobId, UUID packageId, Instant now)
             throws SQLException {
         Sql.update(c, "INSERT INTO dtp_item (id, namespace, item_type, ref_id, ref_version, business_key, lane,"
-                + " lane_priority, current_job_id, inbox_seq, state, attempts, work_package_id, created_at, updated_at)"
-                + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, " + dialect.nextValue("dtp_inbox_seq")
-                + ", 'PACKAGED', 0, ?, ?, ?)", item.id(), item.namespace(), item.itemType(), item.refId(),
-                item.refVersion(), item.businessKey(), item.lane(), item.lanePriority(), jobId, packageId, now, now);
+                + " lane_priority, current_job_id, inbox_seq, state, attempts, work_package_id, trace_parent,"
+                + " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, " + dialect.nextValue("dtp_inbox_seq")
+                + ", 'PACKAGED', 0, ?, ?, ?, ?)", item.id(), item.namespace(), item.itemType(), item.refId(),
+                item.refVersion(), item.businessKey(), item.lane(), item.lanePriority(), jobId, packageId,
+                telemetry.currentTraceParent(), now, now);
     }
 
     /**
@@ -264,6 +278,55 @@ public class ItemStore {
      * @throws SQLException on DB errors
      */
     public List<InboxEntry> lockInboxBatch(Connection c, InboxQuery query, Instant now) throws SQLException {
+        return lockInbox(c, query, now);
+    }
+
+    /**
+     * When the entries of an inbox became due, and the trace context of their items (telemetry).
+     *
+     * @param c       the connection
+     * @param jobId   the job whose inbox the entries are in
+     * @param entries the entries, locked
+     * @return per item id
+     * @throws SQLException on DB errors
+     */
+    public Map<UUID, InboxTrace> traces(Connection c, UUID jobId, List<InboxEntry> entries) throws SQLException {
+        Map<UUID, InboxTrace> traces = new HashMap<>();
+        if (entries.isEmpty()) {
+            return traces;
+        }
+        List<UUID> ids = entries.stream().map(e -> e.item().id()).distinct().toList();
+        String marks = String.join(", ", Collections.nCopies(ids.size(), "?"));
+        Map<UUID, String> parents = new HashMap<>();
+        Map<UUID, Instant> due = new HashMap<>();
+        Sql.query(c, "SELECT id, trace_parent, COALESCE(next_attempt_at, updated_at) AS due_at FROM dtp_item"
+                + " WHERE id IN (" + marks + ")", rs -> {
+                    parents.put(Sql.uuid(rs, "id"), rs.getString("trace_parent"));
+                    return due.put(Sql.uuid(rs, "id"), Sql.instant(rs, "due_at"));
+                }, ids.toArray());
+        if (entries.stream().anyMatch(e -> e.branch() != null)) {
+            List<Object> params = new ArrayList<>(ids);
+            params.add(jobId);
+            Sql.query(c, "SELECT item_id, COALESCE(next_attempt_at, updated_at) AS due_at FROM dtp_item_branch"
+                    + " WHERE item_id IN (" + marks + ") AND branch_job_id = ?",
+                    rs -> due.put(Sql.uuid(rs, "item_id"), Sql.instant(rs, "due_at")), params.toArray());
+        }
+        for (UUID id : ids) {
+            traces.put(id, new InboxTrace(due.get(id), parents.get(id)));
+        }
+        return traces;
+    }
+
+    /**
+     * When an inbox entry became due, and the trace context of its item.
+     *
+     * @param dueAt       arrival, or the next attempt after a retry or a deferral
+     * @param traceParent the W3C traceparent stored with the item, or {@code null}
+     */
+    public record InboxTrace(Instant dueAt, String traceParent) {
+    }
+
+    private List<InboxEntry> lockInbox(Connection c, InboxQuery query, Instant now) throws SQLException {
         List<InboxEntry> entries = new ArrayList<>();
         StringBuilder where = new StringBuilder();
         List<Object> params = new ArrayList<>(List.of(query.namespace(), query.jobId()));
@@ -672,12 +735,13 @@ public class ItemStore {
     public void append(Connection c, ItemEvent event, Instant now) throws SQLException {
         Sql.update(c, "INSERT INTO dtp_item_event (id, seq, namespace, item_id, event_type, from_job_id, to_job_id,"
                 + " run_id, run_attempt, node_id, reason, failure_kind, error_type, error_hash, decision_request_id,"
-                + " work_package_id, occurred_at)"
+                + " work_package_id, trace_id, occurred_at)"
                 + " VALUES (?, " + dialect.nextValue("dtp_event_seq")
-                + ", ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                + ", ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 UUID.randomUUID(), event.namespace(), event.itemId(), event.type(), event.fromJobId(),
                 event.toJobId(), event.runId(), event.runAttempt(), event.nodeId(), truncate(event.reason()),
-                event.failureKind(), event.errorType(), event.errorHash(), event.decisionId(), event.packageId(), now);
+                event.failureKind(), event.errorType(), event.errorHash(), event.decisionId(), event.packageId(),
+                telemetry.currentTraceId(), now);
     }
 
     private Map<UUID, ItemRow> loadAll(Connection c, List<UUID> ids) throws SQLException {

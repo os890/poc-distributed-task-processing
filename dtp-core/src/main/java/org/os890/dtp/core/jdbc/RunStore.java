@@ -78,8 +78,9 @@ public class RunStore {
      *
      * @param runId the run
      * @param jobId its job
+     * @param dueAt since when it may run: its creation, or a later {@code not_before}
      */
-    public record Candidate(UUID runId, UUID jobId) {
+    public record Candidate(UUID runId, UUID jobId, Instant dueAt) {
     }
 
     /**
@@ -236,7 +237,8 @@ public class RunStore {
         List<Object> params = new ArrayList<>(List.of(namespace, now, now));
         params.addAll(handlerClasses);
         params.add(limit);
-        List<Candidate> rows = Sql.query(c, "SELECT r.id, r.job_id FROM dtp_run r"
+        List<Candidate> rows = Sql.query(c, "SELECT r.id, r.job_id, CASE WHEN r.not_before > r.created_at"
+                + " THEN r.not_before ELSE r.created_at END AS due_at FROM dtp_run r"
                 + " JOIN dtp_job_lease l ON l.job_id = r.job_id"
                 + " WHERE r.namespace = ? AND r.state = 'PENDING' AND l.run_id IS NULL"
                 + " AND (r.not_before IS NULL OR r.not_before <= ?) AND (r.slot_end IS NULL OR r.slot_end > ?)"
@@ -246,7 +248,8 @@ public class RunStore {
                 + " ON wo.window_id = wp.window_id WHERE wp.job_id = r.job_id"
                 + " AND wo.state IN ('QUIESCING', 'OPEN', 'WAITING_FOR_DECISION'))"
                 + " ORDER BY r.priority DESC, r.created_at, r.id LIMIT ?",
-                rs -> new Candidate(Sql.uuid(rs, "id"), Sql.uuid(rs, "job_id")), params.toArray());
+                rs -> new Candidate(Sql.uuid(rs, "id"), Sql.uuid(rs, "job_id"), Sql.instant(rs, "due_at")),
+                params.toArray());
         List<Candidate> onePerJob = new ArrayList<>();
         for (Candidate candidate : rows) {
             if (onePerJob.stream().noneMatch(other -> other.jobId().equals(candidate.jobId()))) {

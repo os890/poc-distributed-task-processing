@@ -15,15 +15,20 @@
  */
 package org.os890.dtp.core.engine;
 
+import java.sql.Connection;
+import java.sql.SQLException;
 import java.time.Instant;
 import java.util.Map;
 import java.util.UUID;
 
 import org.os890.dtp.api.ProcessStep;
 import org.os890.dtp.core.DtpConfig;
+import org.os890.dtp.core.domain.FailureKind;
+import org.os890.dtp.core.domain.ItemEventType;
 import org.os890.dtp.core.jdbc.DbClock;
 import org.os890.dtp.core.jdbc.FlowStore;
 import org.os890.dtp.core.jdbc.ItemStore;
+import org.os890.dtp.core.jdbc.ItemStore.ItemEvent;
 import org.os890.dtp.core.jdbc.JobStore;
 import org.os890.dtp.core.jdbc.LeaderStore;
 import org.os890.dtp.core.jdbc.LeaseStore;
@@ -32,6 +37,7 @@ import org.os890.dtp.core.jdbc.RunStore;
 import org.os890.dtp.core.jdbc.SqlDialect;
 import org.os890.dtp.core.spi.DomainEventPublisher;
 import org.os890.dtp.core.spi.StepRegistry;
+import org.os890.dtp.core.spi.Telemetry;
 import org.os890.dtp.core.spi.Transactions;
 
 /**
@@ -53,12 +59,14 @@ import org.os890.dtp.core.spi.Transactions;
  * @param json     the JSON codec
  * @param registry the process steps of this node
  * @param steps    the validated step infos by class
- * @param events   the publisher of the domain events
+ * @param events    the publisher of the domain events
+ * @param telemetry the telemetry
  */
 public record EngineContext(DtpConfig config, UUID nodeId, Transactions tx, SqlDialect dialect, DbClock clock,
                             JobStore jobs, LeaseStore leases, RunStore runs, NodeStore nodes, LeaderStore leaders,
                             ItemStore items, FlowStore flows, JobCatalog catalog, JsonCodec json, StepRegistry registry,
-                            Map<Class<? extends ProcessStep>, StepInfo> steps, DomainEventPublisher events) {
+                            Map<Class<? extends ProcessStep>, StepInfo> steps, DomainEventPublisher events,
+                            Telemetry telemetry) {
 
     /** The namespace. */
     public String namespace() {
@@ -72,6 +80,47 @@ public record EngineContext(DtpConfig config, UUID nodeId, Transactions tx, SqlD
      */
     public void publishAfterCommit(Object event) {
         tx.afterCommit(() -> events.publish(event));
+    }
+
+    /**
+     * Writes a journal entry that is the result of processing an item in a step, and reports the result to the
+     * telemetry after the commit (an entry written outside of a run, e.g. by a decision, isn't a processing result).
+     *
+     * @param c     the connection
+     * @param lane  the lane of the item, or {@code null}
+     * @param event the entry
+     * @param now   the DB time
+     * @throws SQLException on DB errors
+     */
+    public void journal(Connection c, String lane, ItemEvent event, Instant now) throws SQLException {
+        items.append(c, event, now);
+        String result = result(event.type());
+        if (event.runId() == null || event.fromJobId() == null || result == null) {
+            return;
+        }
+        String step = catalog.byId(event.fromJobId()).name();
+        String kind = event.failureKind() == null ? null : event.failureKind().name();
+        tx.afterCommit(() -> {
+            telemetry.itemProcessed(step, lane, result, kind);
+            if (event.failureKind() == FailureKind.TECHNICAL && event.errorType() != null) {
+                telemetry.technicalFailure(step, event.errorType());
+            }
+        });
+    }
+
+    private static String result(ItemEventType type) {
+        return switch (type) {
+            case ROUTED, BRANCH_FINISHED -> "routed";
+            case ROUTED_BACK -> "routed_back";
+            case FORKED -> "forked";
+            case PACKAGED -> "packaged";
+            case COMPLETED -> "completed";
+            case DISCARDED -> "discarded";
+            case DEFERRED -> "deferred";
+            case ESCALATED -> "escalated";
+            case FAILED -> "failed";
+            default -> null;
+        };
     }
 
     /** The DB time, read in the current transaction (or a short one). */

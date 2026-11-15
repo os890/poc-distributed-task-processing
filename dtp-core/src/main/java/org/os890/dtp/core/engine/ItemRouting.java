@@ -123,7 +123,8 @@ public class ItemRouting {
                 + ", join at " + join.name() + (reason == null ? "" : " (" + reason + ")");
         inTx(run, (c, now) -> {
             ctx.items().fork(c, item, branches.stream().map(JobDefinition::id).toList(), join.id(), reason, now);
-            ctx.items().append(c, event(item, ItemEventType.FORKED, item.currentJobId(), join.id(), why, run), now);
+            ctx.journal(c, item.lane(), event(item, ItemEventType.FORKED, item.currentJobId(), join.id(), why, run),
+                    now);
         });
     }
 
@@ -152,8 +153,8 @@ public class ItemRouting {
                 throw new IllegalStateException("branch " + jobName(branch.branchJobId()) + " of item "
                         + item.businessKey() + " isn't queued any more");
             }
-            items.append(c, event(item, ItemEventType.BRANCH_FINISHED, branch.branchJobId(), branch.joinJobId(),
-                    signal.name() + (reason == null ? "" : ": " + reason), run), now);
+            ctx.journal(c, item.lane(), event(item, ItemEventType.BRANCH_FINISHED, branch.branchJobId(),
+                    branch.joinJobId(), signal.name() + (reason == null ? "" : ": " + reason), run), now);
             if (open == 0) {
                 moveTo(c, now, locked, branch.branchJobId(), ctx.catalog().byId(branch.joinJobId()),
                         "all branches finished", ItemEventType.JOINED, run);
@@ -166,7 +167,7 @@ public class ItemRouting {
         ItemStore items = ctx.items();
         int visits = items.incrementVisits(c, item.id(), target.id());
         items.route(c, item.id(), target.id(), reason, now);
-        items.append(c, event(item, type, from, target.id(), reason, run), now);
+        ctx.journal(c, item.lane(), event(item, type, from, target.id(), reason, run), now);
         if (target.maxItemVisits() != null && visits > target.maxItemVisits()) {
             String why = "visit " + visits + " of " + target.name() + " exceeds max_item_visits "
                     + target.maxItemVisits();
@@ -188,7 +189,8 @@ public class ItemRouting {
     public void complete(ItemRow item, RunContext run) {
         inTx(run, (c, now) -> {
             ctx.items().setState(c, item.id(), ItemState.COMPLETED, item.attempts(), now);
-            ctx.items().append(c, event(item, ItemEventType.COMPLETED, item.currentJobId(), null, null, run), now);
+            ctx.journal(c, item.lane(), event(item, ItemEventType.COMPLETED, item.currentJobId(), null, null, run),
+                    now);
         });
     }
 
@@ -202,7 +204,8 @@ public class ItemRouting {
     public void discard(ItemRow item, String reason, RunContext run) {
         inTx(run, (c, now) -> {
             ctx.items().setState(c, item.id(), ItemState.DISCARDED, item.attempts(), now);
-            ctx.items().append(c, event(item, ItemEventType.DISCARDED, item.currentJobId(), null, reason, run), now);
+            ctx.journal(c, item.lane(), event(item, ItemEventType.DISCARDED, item.currentJobId(), null, reason, run),
+                    now);
         });
     }
 
@@ -222,7 +225,8 @@ public class ItemRouting {
             } else {
                 ctx.items().postpone(c, item.id(), item.attempts(), now.plus(delay), now);
             }
-            ctx.items().append(c, event(item, ItemEventType.DEFERRED, from(item, branch), null, reason, run), now);
+            ctx.journal(c, item.lane(), event(item, ItemEventType.DEFERRED, from(item, branch), null, reason, run),
+                    now);
         });
     }
 
@@ -259,8 +263,9 @@ public class ItemRouting {
             ItemStore items = ctx.items();
             UUID from = from(item, branch);
             int attempts = (branch != null ? branch.attempts() : item.attempts()) + 1;
-            items.append(c, new ItemEvent(item.id(), item.namespace(), ItemEventType.FAILED, from, null, runId(run),
-                    runAttempt(run), ctx.nodeId(), reason, kind, error == null ? null : error.getClass().getName(),
+            ctx.journal(c, item.lane(), new ItemEvent(item.id(), item.namespace(), ItemEventType.FAILED, from, null,
+                    runId(run), runAttempt(run), ctx.nodeId(), reason, kind,
+                    error == null ? null : error.getClass().getName(),
                     error == null ? null : hash(error), null, null), now);
             if (attempts <= job.retryMax()) {
                 Instant next = now.plus(job.retryBackoff().multipliedBy(attempts));
@@ -309,7 +314,7 @@ public class ItemRouting {
             waitForDecision(c, item, branch, branch != null ? branch.attempts() : item.attempts(), now);
             UUID request = decisions.request(c, new Decisions.NewRequest(kind, SubjectType.ITEM, item.id(),
                     requestingJob, runId(run), reason, options, optionType, quorum, team), now);
-            ctx.items().append(c, event(item, ItemEventType.ESCALATED, from, null, reason, run)
+            ctx.journal(c, item.lane(), event(item, ItemEventType.ESCALATED, from, null, reason, run)
                     .withDecision(request), now);
         });
     }

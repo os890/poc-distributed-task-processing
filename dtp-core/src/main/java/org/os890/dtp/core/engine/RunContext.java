@@ -15,7 +15,9 @@
  */
 package org.os890.dtp.core.engine;
 
+import java.time.Duration;
 import java.time.Instant;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.os890.dtp.api.StopReason;
@@ -38,6 +40,8 @@ public class RunContext {
     private final ThreadLocal<Instant> unitNow = new ThreadLocal<>();
 
     private final AtomicLong processedItems = new AtomicLong();
+    private final AtomicBoolean leaseLostReported = new AtomicBoolean();
+    private final long startedNanos = System.nanoTime();
 
     private volatile StopReason stopReason;
     private volatile Runnable onStop;
@@ -150,7 +154,45 @@ public class RunContext {
                 }
             }
         };
-        return requiresNew ? engine.tx().requiresNew(fenced) : engine.tx().required(fenced);
+        // only an own transaction is a unit of work of its own: a nested unit joins the outer one
+        boolean own = requiresNew || CURRENT.get() == null;
+        long started = System.nanoTime();
+        try {
+            T result = requiresNew ? engine.tx().requiresNew(fenced) : engine.tx().required(fenced);
+            if (own) {
+                engine.telemetry().unitOfWork(job.name(), Duration.ofNanos(System.nanoTime() - started));
+            }
+            return result;
+        } catch (LeaseLostException e) {
+            if (own) {
+                engine.telemetry().rollback(job.name(), "lease_lost");
+            }
+            throw e;
+        } catch (RuntimeException | Error e) {
+            if (own) {
+                engine.telemetry().rollback(job.name(), "exception");
+            }
+            throw e;
+        }
+    }
+
+    /**
+     * Reports that the run lost its lease, once per run (the heartbeat and the fence of a unit of work may both
+     * notice it).
+     */
+    public void leaseLost() {
+        if (leaseLostReported.compareAndSet(false, true)) {
+            engine.telemetry().leaseLost(job.name());
+        }
+    }
+
+    /**
+     * The time since this node claimed the run.
+     *
+     * @return the elapsed time
+     */
+    public Duration elapsed() {
+        return Duration.ofNanos(System.nanoTime() - startedNanos);
     }
 
     /**
@@ -173,6 +215,7 @@ public class RunContext {
         boolean holds = engine.tx().withConnection(c -> engine.leases().fence(c, claimed.jobId(), claimed.runId(),
                 claimed.token()));
         if (!holds) {
+            leaseLost();
             requestStop(StopReason.LEASE_LOST);
             throw new LeaseLostException(claimed.runId(), claimed.token());
         }

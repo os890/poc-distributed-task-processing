@@ -299,6 +299,8 @@ public class Decisions {
                 job.hasDecisionFallback() ? now.plus(job.fallbackDelay()) : null, null);
         store.insert(c, row);
         ctx.publishAfterCommit(new DecisionRequested(event(c, row)));
+        String step = job.name();
+        ctx.tx().afterCommit(() -> ctx.telemetry().decisionCreated(step, row.kind().name(), row.responsibleGroup()));
         return id;
     }
 
@@ -418,6 +420,9 @@ public class Decisions {
         }
         String reason = option + " by " + user + suffix(comment);
         ctx.publishAfterCommit(new DecisionMade(event(c, request), option, user, comment));
+        String step = ctx.catalog().byId(request.requestedByJobId()).name();
+        ctx.tx().afterCommit(() -> ctx.telemetry().decisionDecided(step, request.kind().name(),
+                request.responsibleGroup()));
         if (request.subjectType() == SubjectType.RUN) {
             RunOutcome outcome = switch (BuiltInOption.valueOf(option)) {
                 case FAIL -> RunOutcome.FAILED;

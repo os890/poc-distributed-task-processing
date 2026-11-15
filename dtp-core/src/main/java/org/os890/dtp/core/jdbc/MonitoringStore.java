@@ -29,12 +29,19 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+import org.os890.dtp.core.spi.ClusterState;
 
 /**
  * The tables of the monitoring read model (docs/design/09-monitoring-heatmap.md §9.3): what the projector reads from
  * the processing tables and writes into the views. Clients read the views with {@code MonitoringQueries}.
  */
 public class MonitoringStore {
+
+    /** An entry of the JSON object lane -> queued items. */
+    private static final Pattern LANE_COUNT = Pattern.compile("\"([^\"]*)\"\\s*:\\s*(\\d+)");
 
     /** The name of the projection in {@code dtp_projection_state}. */
     public static final String PROJECTION = "monitoring";
@@ -581,5 +588,55 @@ public class MonitoringStore {
      */
     public void deleteStatus(Connection c, String namespace, UUID jobId) throws SQLException {
         Sql.update(c, "DELETE FROM dtp_view_step_status WHERE namespace = ? AND job_id = ?", namespace, jobId);
+    }
+
+    /**
+     * The cluster-wide state for the telemetry gauges, read from the views and the open decision requests.
+     *
+     * @param c         the connection
+     * @param namespace the namespace
+     * @param now       the DB time
+     * @return the state
+     * @throws SQLException on DB errors
+     */
+    public ClusterState clusterState(Connection c, String namespace, Instant now) throws SQLException {
+        List<ClusterState.Step> steps = new ArrayList<>();
+        List<ClusterState.Queue> queues = new ArrayList<>();
+        Sql.query(c, "SELECT step_name, status_reason, queued_by_lane, oldest_queued_ms, jam_score, alert_state"
+                + " FROM dtp_view_step_status WHERE namespace = ? ORDER BY step_name", rs -> {
+                    String step = rs.getString("step_name");
+                    long oldest = rs.getLong("oldest_queued_ms");
+                    steps.add(new ClusterState.Step(step, rs.getString("status_reason"), oldest / 1000.0,
+                            rs.getInt("jam_score"), switch (rs.getString("alert_state")) {
+                                case "FAILING" -> 2;
+                                case "CONGESTED" -> 1;
+                                default -> 0;
+                            }));
+                    String lanes = rs.getString("queued_by_lane");
+                    if (lanes != null) {
+                        Matcher m = LANE_COUNT.matcher(lanes);
+                        while (m.find()) {
+                            queues.add(new ClusterState.Queue(step, m.group(1), Integer.parseInt(m.group(2))));
+                        }
+                    }
+                    return step;
+                }, namespace);
+        List<ClusterState.Waiting> waiting = Sql.query(c, "SELECT j.name, d.responsible_group, COUNT(*) AS cnt"
+                + " FROM dtp_decision_request d JOIN dtp_job j ON j.id = d.requested_by_job_id WHERE d.namespace = ?"
+                + " AND d.state = 'OPEN' AND d.subject_type = 'ITEM' GROUP BY j.name, d.responsible_group"
+                + " ORDER BY j.name, d.responsible_group",
+                rs -> new ClusterState.Waiting(rs.getString("name"), Objects.toString(rs.getString(
+                        "responsible_group"), ""), rs.getInt("cnt")), namespace);
+        List<ClusterState.OpenDecisions> decisions = Sql.query(c, "SELECT responsible_group,"
+                + " MIN(created_at) AS oldest FROM dtp_decision_request WHERE namespace = ? AND state = 'OPEN'"
+                + " GROUP BY responsible_group ORDER BY responsible_group",
+                rs -> new ClusterState.OpenDecisions(Objects.toString(rs.getString("responsible_group"), ""),
+                        Math.max(0, Duration.between(Sql.instant(rs, "oldest"), now).toMillis()) / 1000.0),
+                namespace);
+        List<ClusterState.Nodes> nodes = Sql.query(c, "SELECT color, state, COUNT(*) AS cnt FROM dtp_node"
+                + " WHERE namespace = ? GROUP BY color, state ORDER BY color, state",
+                rs -> new ClusterState.Nodes(Objects.toString(rs.getString("color"), ""), rs.getString("state"),
+                        rs.getInt("cnt")), namespace);
+        return new ClusterState(steps, queues, waiting, decisions, nodes);
     }
 }

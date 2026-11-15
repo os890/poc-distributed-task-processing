@@ -362,6 +362,9 @@ class JourneyFolder {
             return;
         }
         node.runIds.add(e.runId());
+        if (e.traceId() != null) {
+            node.traceIds.add(e.traceId());
+        }
         if (e.node() != null) {
             node.workers.add(e.node());
         }
@@ -527,6 +530,7 @@ class JourneyFolder {
         private final List<String> fixed = new ArrayList<>();
         private final List<String> annotations = new ArrayList<>();
         private final Set<UUID> runIds = new LinkedHashSet<>();
+        private final Set<String> traceIds = new LinkedHashSet<>();
         private final Set<String> workers = new LinkedHashSet<>();
         private int visits;
         private int failures;
@@ -576,7 +580,7 @@ class JourneyFolder {
                 lines.add(current);
             }
             return new Node(id, kind, title, job, List.copyOf(lines), visits, style, List.copyOf(runIds),
-                    decisionId, packageId);
+                    List.copyOf(traceIds), decisionId, packageId);
         }
 
         private List<String> stepAnnotations() {

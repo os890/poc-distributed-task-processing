@@ -20,12 +20,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.empty;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.everyItem;
 import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.hasItem;
+import static org.hamcrest.Matchers.hasItems;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.not;
+import static org.hamcrest.Matchers.startsWith;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -492,6 +495,39 @@ class TradeFlowTest {
                .when().get("/dtp/items/trade/T-2026-11-15-10/journey/diagram?zone=Mars/Base").then().statusCode(400);
         given().header("X-Groups", viewer)
                .when().get("/dtp/items/trade/T-2026-11-15-10/journey/diagram?detail=all").then().statusCode(400);
+    }
+
+    @Test
+    @Order(10)
+    void telemetryShowsTheMetricsAndTheTracesOfTheTrades() {
+        // the metrics of the orders before: this single node is also the projection leader (cluster gauges)
+        given().when().get("/telemetry/metrics").then().statusCode(200)
+               .body("name", hasItems("dtp.items.processed", "dtp.item.wait_time", "dtp.unit_of_work.duration",
+                       "dtp.unit_of_work.rollbacks", "dtp.failures.technical", "dtp.runs.finished",
+                       "dtp.run.duration", "dtp.claim.duration", "dtp.leader.elections", "dtp.decisions.created",
+                       "dtp.decisions.decided", "dtp.cluster.step.jam_score", "dtp.cluster.step.alert_state",
+                       "dtp.cluster.nodes"))
+               .body("find { it.name == 'dtp.items.processed' }.points.findAll { it.attributes['dtp.step']"
+                       + " == 'trade-enrichment' && it.attributes['dtp.result'] == 'completed' }.value.sum()",
+                       greaterThan(10f))
+               .body("find { it.name == 'dtp.failures.technical' }.points[0].attributes['error.type']",
+                       equalTo(IllegalStateException.class.getName()))
+               .body("find { it.name == 'dtp.decisions.decided' }.points.attributes['dtp.responsible.group']",
+                       hasItem("risk"))
+               .body("find { it.name == 'dtp.item.wait_time' }.unit", equalTo("s"));
+
+        // the journey of a trade links to the traces of its steps, and their spans link to the import
+        List<String> traces = given().header("X-Groups", "dtp-viewer")
+                                     .when().get("/dtp/items/trade/T-2026-11-25-1/journey/diagram?format=json")
+                                     .then().statusCode(200)
+                                     .extract().path("nodes.findAll { it.kind == 'STEP' }.traceIds.flatten()");
+        assertThat(traces).isNotEmpty();
+        given().when().get("/telemetry/spans?traceId=" + traces.getLast())
+               .then().statusCode(200)
+               .body("traceId", hasItem(traces.getLast()))
+               .body("findAll { it.traceId == '" + traces.getLast() + "' }.name[0]", startsWith("dtp trade-"))
+               .body("findAll { it.traceId == '" + traces.getLast() + "' }.links.flatten()", not(empty()));
+        given().when().get("/telemetry/spans?limit=5").then().statusCode(200).body("size()", is(5));
     }
 
     private long reportedTrades(long sequence) {

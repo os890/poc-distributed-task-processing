@@ -106,11 +106,12 @@ public record JourneyGraph(UUID itemId, String itemType, String businessKey, lon
      * @param visits     the visits of a step (0 for other nodes)
      * @param style      the highlighting
      * @param runIds     the runs that processed the item in this step
+     * @param traceIds   the traces of the units of work that processed the item in this step (with telemetry)
      * @param decisionId the decision request of a decision node, or {@code null}
      * @param packageId  the work package of a package node, or {@code null}
      */
     public record Node(String id, NodeKind kind, String title, String job, List<String> lines, int visits,
-                       Style style, List<UUID> runIds, UUID decisionId, UUID packageId) {
+                       Style style, List<UUID> runIds, List<String> traceIds, UUID decisionId, UUID packageId) {
     }
 
     /**
