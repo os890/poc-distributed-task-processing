@@ -340,6 +340,28 @@ public class RunStore {
     }
 
     /**
+     * Lets a run wait for the decision its handler requested (fenced by its token): the attempt ends, the run waits
+     * in {@code WAITING_FOR_DECISION} until the decision plans it again or finishes it ({@link #decided}).
+     *
+     * @param c       the connection
+     * @param runId   the run
+     * @param token   the fencing token of the run
+     * @param attempt the current attempt
+     * @param info    custom run info as JSON, or {@code null}
+     * @param now     the DB time
+     * @return {@code false} if the run isn't owned with this token anymore
+     * @throws SQLException on DB errors
+     */
+    public boolean waitForDecision(Connection c, UUID runId, long token, int attempt, String info, Instant now)
+            throws SQLException {
+        int updated = Sql.update(c, "UPDATE dtp_run SET state = 'WAITING_FOR_DECISION', owner_node_id = NULL,"
+                + " stop_reason = NULL, info = ? WHERE id = ? AND fencing_token = ?"
+                + " AND state IN ('RUNNING', 'STOPPING')", info, runId, token);
+        endAttempt(c, runId, attempt, "DECISION_REQUESTED", now);
+        return updated == 1;
+    }
+
+    /**
      * Whether the attempt with the given fencing token finished the run itself (not a takeover or a decision).
      *
      * @param c     the connection

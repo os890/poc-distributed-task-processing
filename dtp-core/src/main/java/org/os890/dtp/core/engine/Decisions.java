@@ -20,6 +20,7 @@ import java.sql.SQLException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -27,6 +28,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.UUID;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 import org.os890.dtp.api.ApprovalResult;
@@ -50,6 +52,7 @@ import org.os890.dtp.core.domain.TriggerType;
 import org.os890.dtp.core.jdbc.DecisionStore;
 import org.os890.dtp.core.jdbc.DecisionStore.RequestRow;
 import org.os890.dtp.core.jdbc.DecisionStore.VoteRow;
+import org.os890.dtp.core.jdbc.FlowInstanceStore;
 import org.os890.dtp.core.jdbc.ItemStore.ItemEvent;
 import org.os890.dtp.core.jdbc.ItemStore.ItemRow;
 import org.os890.dtp.core.jdbc.PackageStore;
@@ -373,6 +376,22 @@ public class Decisions {
     }
 
     /**
+     * Options of a custom option enum for a run ({@code JobContext#requestDecision}), plus {@code FAIL} unless the
+     * enum has its own.
+     *
+     * @param type the enum
+     * @return the options
+     */
+    static List<OptionView> optionsOfRun(Class<? extends DecisionOption> type) {
+        List<OptionView> options = new ArrayList<>(optionsOf(type).stream()
+                .filter(o -> !(o.builtIn() && BuiltInOption.DISCARD.name().equals(o.name()))).toList());
+        if (options.stream().noneMatch(o -> o.name().equals(BuiltInOption.FAIL.name()))) {
+            options.add(builtIn(BuiltInOption.FAIL));
+        }
+        return options;
+    }
+
+    /**
      * Built-in options.
      *
      * @param options the options
@@ -400,6 +419,34 @@ public class Decisions {
         }
         return Arrays.stream(type.getEnumConstants()).filter(o -> o.name().equals(request.decidedOption()))
                      .findFirst();
+    }
+
+    /**
+     * The custom option of the latest decided request about a run.
+     *
+     * @param runId the run
+     * @param type  the option enum
+     * @param <O>   the option type
+     * @return the option, empty if no request of this type was decided
+     */
+    <O extends Enum<O> & DecisionOption> Optional<O> decisionOfRun(UUID runId, Class<O> type) {
+        return decisionOf(latestDecided(runId, r -> type.getName().equals(r.optionType())), type);
+    }
+
+    /**
+     * The latest approval about a run.
+     *
+     * @param runId the run
+     * @return the result, empty if no approval was decided
+     */
+    Optional<ApprovalResult> approvalOfRun(UUID runId) {
+        return approvalOf(latestDecided(runId, r -> r.kind() == DecisionKind.APPROVAL));
+    }
+
+    private UUID latestDecided(UUID runId, Predicate<RequestRow> filter) {
+        return ctx.tx().withConnection(c -> store.ofSubject(c, runId)).stream()
+                  .filter(r -> r.subjectType() == SubjectType.RUN && r.decidedAt() != null && filter.test(r))
+                  .max(Comparator.comparing(RequestRow::decidedAt)).map(RequestRow::id).orElse(null);
     }
 
     /**
@@ -436,7 +483,10 @@ public class Decisions {
         ctx.tx().afterCommit(() -> ctx.telemetry().decisionDecided(step, request.kind().name(),
                 request.responsibleGroup()));
         if (request.subjectType() == SubjectType.RUN) {
-            RunOutcome outcome = switch (BuiltInOption.valueOf(option)) {
+            // an abandoned run (RETRY, FAIL, SKIP) or a run that asked itself (its options, FAIL, an approval):
+            // FAIL and SKIP finish it, everything else plans it again, the handler reads the decision
+            boolean builtIn = optionViews(request).stream().anyMatch(o -> o.name().equals(option) && o.builtIn());
+            RunOutcome outcome = !builtIn ? null : switch (BuiltInOption.valueOf(option)) {
                 case FAIL -> RunOutcome.FAILED;
                 case SKIP -> RunOutcome.SKIPPED;
                 default -> null;
@@ -567,6 +617,8 @@ public class Decisions {
         } else if (row.subjectType() == SubjectType.WINDOW_OCCURRENCE) {
             businessKey = new WindowStore().load(c, row.subjectId()).map(o -> "window " + o.window() + " #" + o.seq())
                     .orElse(null);
+        } else if (row.subjectType() == SubjectType.RUN) {
+            businessKey = runKey(c, row.subjectId());
         }
         List<VoteView> votes = store.votes(c, row.id()).stream()
                 .map(v -> new VoteView(v.voter(), v.vote(), v.comment(), v.votedAt())).toList();
@@ -590,6 +642,8 @@ public class Decisions {
         } else if (row.subjectType() == SubjectType.WINDOW_OCCURRENCE) {
             businessKey = new WindowStore().load(c, row.subjectId()).map(o -> "window " + o.window() + " #" + o.seq())
                     .orElse(null);
+        } else if (row.subjectType() == SubjectType.RUN) {
+            businessKey = runKey(c, row.subjectId());
         }
         int approvals = (int) store.votes(c, row.id()).stream().filter(v -> Vote.APPROVE.name().equals(v.vote()))
                                    .count();
@@ -597,6 +651,12 @@ public class Decisions {
                 row.subjectType().name(), row.subjectId(), itemType, businessKey,
                 ctx.catalog().byId(row.requestedByJobId()).name(), row.reason(), row.requiredApprovals(), approvals,
                 row.responsibleGroup(), row.createdAt());
+    }
+
+    /** A run of a flow instance is shown with the instance, e.g. {@code end-of-day 2026-11-18}. */
+    private String runKey(Connection c, UUID runId) throws SQLException {
+        return new FlowInstanceStore(ctx.dialect()).ofRun(c, runId).map(i -> i.flowName() + " " + i.businessKey())
+                                                  .orElse(null);
     }
 
     @SuppressWarnings("unchecked")

@@ -70,7 +70,12 @@ public class RunExecutor {
 
     private final FlowInstances instances;
 
-    private record Result(RunOutcome outcome, String resultType, String resultStatus, String error) {
+    /** How an execution ended; {@code decision} is the request the run waits for instead of finishing. */
+    private record Result(RunOutcome outcome, String resultType, String resultStatus, String error, UUID decision) {
+
+        Result(RunOutcome outcome, String resultType, String resultStatus, String error) {
+            this(outcome, resultType, resultStatus, error, null);
+        }
     }
 
     /** Number of runs this node can still start. */
@@ -175,7 +180,7 @@ public class RunExecutor {
             throw new IllegalStateException(handler.getClass().getName() + ".execute returned null");
         }
         return new Result(outcome(run, run.stopReason() != null), RouteModel.typeOf(result.status()),
-                result.status().name(), null);
+                result.status().name(), null, run.decisionRequest());
     }
 
     @SuppressWarnings("unchecked")
@@ -205,6 +210,10 @@ public class RunExecutor {
     }
 
     private void finish(RunContext run, Result result) {
+        if (result.decision() != null) {
+            waitForDecision(run, result.decision());
+            return;
+        }
         ClaimedRun claimed = run.claimed();
         ctx.tx().required(() -> ctx.tx().withConnection(c -> {
             var now = ctx.clock().now(c);
@@ -238,5 +247,25 @@ public class RunExecutor {
         ctx.telemetry().runFinished(run.job().name(), result.outcome().name(), run.elapsed());
         LOG.log(System.Logger.Level.DEBUG, "run {0} of job {1} finished: {2}", claimed.runId(), run.job().name(),
                 result.outcome());
+    }
+
+    /**
+     * The handler requested a decision: the run waits for it instead of finishing. No transitions, no join arrival;
+     * the decision plans the run again or finishes it.
+     */
+    private void waitForDecision(RunContext run, UUID decision) {
+        ClaimedRun claimed = run.claimed();
+        ctx.tx().required(() -> ctx.tx().withConnection(c -> {
+            if (!ctx.runs().waitForDecision(c, claimed.runId(), claimed.token(), claimed.attempt(),
+                    run.runInfo().toJson(), ctx.clock().now(c))) {
+                throw new LeaseLostException(claimed.runId(), claimed.token());
+            }
+            if (!ctx.leases().release(c, claimed.jobId(), claimed.runId(), claimed.token())) {
+                throw new LeaseLostException(claimed.runId(), claimed.token());
+            }
+            return null;
+        }));
+        LOG.log(System.Logger.Level.INFO, "run {0} of job {1} waits for decision request {2}", claimed.runId(),
+                run.job().name(), decision);
     }
 }

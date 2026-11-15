@@ -851,6 +851,33 @@ so the sign-off runs exactly once. If a member fails, the join waits and the ins
 fixed, run the failed run again. The new run replaces the failed one at the join:</p>
 <figure class="code"><pre><code class="language-bash">curl localhost:8080/eod/2026-11-20            # runs, the join, waitingFor: [&quot;pnl-report&quot;]
 curl -X POST localhost:8080/dtp/runs/&lt;id of the failed run&gt;/reruns -H &#x27;X-User: otto&#x27;</code></pre></figure>
+<p>A job can ask people too. When reports had to be run again, the sign-off asks two members of product control
+to approve (four eyes). After <code>requestApproval</code> the run doesn't finish: it waits in state
+<code>WAITING_FOR_DECISION</code>, and its transitions, the join and the instance wait with it. The decision plans the same
+run again, and the handler reads the result:</p>
+<figure class="code"><figcaption>EodSignOff.java</figcaption><pre><code class="language-java">@ApplicationScoped
+public class EodSignOff implements JobHandler&lt;NoParams, DefaultOutcome&gt; {
+
+    @Override
+    public JobResult&lt;DefaultOutcome&gt; execute(JobContext&lt;NoParams&gt; ctx) {
+        LocalDate date = EndOfDay.businessDate(ctx);
+        Optional&lt;ApprovalResult&gt; approval = ctx.approval();      // empty on the first execution
+        if (approval.isEmpty() &amp;&amp; corrected(date)) {
+            ctx.requestApproval(Approval.quorum(2).assignedTo(Desk.PRODUCT_CONTROL),
+                    &quot;Reports of the EOD &quot; + date + &quot; were run again: please check and sign off&quot;);
+            return JobResult.success();                          // ignored: the run waits
+        }
+        if (approval.isPresent() &amp;&amp; !approval.get().approved()) {
+            throw new IllegalStateException(&quot;sign-off rejected by &quot; + approval.get().decidedBy());
+        }
+        team.send(&quot;operations&quot;, &quot;EOD &quot; + date + &quot; signed off&quot;, &quot;Positions and P&amp;L are complete.&quot;);
+        return JobResult.success();
+    }
+}</code></pre></figure>
+<p><code>ctx.requestDecision(reason, Options.class, team)</code> works the same way with your own options (plus
+<code>FAIL</code>, which fails the run), read back with <code>ctx.decision(Options.class)</code>. The request is part of the
+unit of work of <code>execute</code>: if the handler throws, there is no request. A rejected sign-off fails the run, the
+instance stays open, and a rerun after the correction asks again.</p>
 <p>A run of an instance that stops early with work left (outcome <code>DEFERRED</code>: the end of its processing slot,
 its item or time limit, a drain) is continued by a new run of the same job with the same parameters in the same
 instance (trigger <code>CONTINUATION</code>); only the run that finishes the work arrives at the join. An instance

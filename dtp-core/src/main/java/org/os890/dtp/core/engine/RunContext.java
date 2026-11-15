@@ -17,6 +17,7 @@ package org.os890.dtp.core.engine;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -45,6 +46,7 @@ public class RunContext {
 
     private volatile StopReason stopReason;
     private volatile Runnable onStop;
+    private volatile UUID decisionRequest;
 
     public RunContext(EngineContext engine, ClaimedRun claimed, JobDefinition job, StepInfo step) {
         this.engine = engine;
@@ -111,6 +113,23 @@ public class RunContext {
         if (limit != null && total >= limit) {
             requestStop(StopReason.LIMIT_REACHED);
         }
+    }
+
+    /**
+     * Records the decision request of this execution ({@code JobContext#requestDecision}).
+     *
+     * @param requestId the request
+     */
+    public void decisionRequested(UUID requestId) {
+        if (decisionRequest != null) {
+            throw new IllegalStateException("run " + claimed.runId() + " requested a decision already");
+        }
+        decisionRequest = requestId;
+    }
+
+    /** The decision request of this execution, or {@code null}. */
+    public UUID decisionRequest() {
+        return decisionRequest;
     }
 
     /**

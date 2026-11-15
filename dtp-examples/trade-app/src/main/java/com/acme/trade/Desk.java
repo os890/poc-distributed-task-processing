@@ -21,7 +21,7 @@ import org.os890.dtp.api.Responsibility;
 
 /** Teams responsible for decisions and approvals, matched against the groups of the user. */
 public enum Desk implements Responsibility {
-    RISK, OPERATIONS;
+    RISK, OPERATIONS, PRODUCT_CONTROL;
 
     @Override
     public String group() {

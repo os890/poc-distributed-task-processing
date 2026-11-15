@@ -241,12 +241,29 @@ class TradeFlowTest {
                 && types("T-2026-11-20-8").contains("COMPLETED"));
         given().when().post("/dtp/runs/" + failed + "/reruns").then().statusCode(401);
         given().header("X-User", "otto").when().post("/dtp/runs/" + failed + "/reruns").then().statusCode(200);
+
+        // a corrected end of day: the sign-off waits for two members of product control
+        await().atMost(Duration.ofSeconds(30)).until(() -> "WAITING_FOR_DECISION".equals(given().when().get(eod)
+                .then().extract().path("runs.find { it.job == 'eod-sign-off' }.state")));
+        given().when().get(eod).then().body("state", equalTo("OPEN"));
+        await().atMost(Duration.ofSeconds(10)).until(() -> notifications.latest().stream().anyMatch(m ->
+                "product_control".equals(m.audience())
+                        && "Approval needed (2 approvers): end-of-day 2026-11-20".equals(m.subject())));
+        String signOff = given().header("X-User", "pia").header("X-Groups", "product_control")
+                                .when().get("/dtp/decisions").then().statusCode(200)
+                                .body("[0].subjectType", equalTo("RUN"))
+                                .body("[0].job", equalTo("eod-sign-off"))
+                                .extract().path("[0].id");
+        vote(signOff, "pia", "product_control", "APPROVE").statusCode(200).body("decided", is(false));
+        vote(signOff, "otto", "", "APPROVE").statusCode(409);
+        vote(signOff, "paul", "product_control", "APPROVE").statusCode(200).body("decided", is(true));
         await().atMost(Duration.ofSeconds(30)).until(() -> "COMPLETED".equals(
                 given().when().get(eod).then().extract().path("state")));
 
         assertThat(notifications.latest()).anySatisfy(m -> {
             assertThat(m.audience()).isEqualTo("operations");
             assertThat(m.subject()).isEqualTo("EOD 2026-11-20 signed off");
+            assertThat(m.body()).contains("Approved by pia and paul.");
         });
         given().when().get(eod).then()
                .body("runs.job", containsInAnyOrder("end-of-day", "position-report", "pnl-report", "pnl-report",
