@@ -142,7 +142,7 @@ figure.diagram img { display: block; max-width: 100%; height: auto; margin: 0 au
 
 <div class="wrap">
   <header class="intro">
-    <span class="eyebrow">dtp · distributed task processing · slices 1 to 16</span>
+    <span class="eyebrow">dtp · distributed task processing · slices 1 to 17</span>
     <h1>From one job to a cluster in <span class="tok">27</span> steps</h1>
     <p class="lede">How to write process steps, define them in SQL, trigger and follow runs, track items through a
     flow defined in Java, change that flow while it runs, let people decide and approve, remind them, run checks in parallel, run an end of day per business date, plan around business days, send files in work packages, and run several deployments on one database: on Quarkus with CDI, or with the plain Java engine.</p>
@@ -1313,8 +1313,10 @@ The core's own tests run three such engines in one JVM on a shared in-memory H2 
 <tr><td><code>CANCELLED</code></td><td>The run was cancelled</td></tr>
 <tr><td><code>SKIPPED</code></td><td>A trigger arrived while the job was busy and the policy is SKIP</td></tr></tbody></table></div>
 <h3 id="ref-scope">Not implemented yet</h3>
-<p>Activations of a flow version per tenant, and the red/green switch of whole deployments. PostgreSQL has its own
-migrations and SQL dialect but hasn't been run yet; slices 1 to 16 were tested on H2.</p>
+<p>Activations of a flow version per tenant, and the red/green switch of whole deployments. The engine's tests run
+on H2 and PostgreSQL 17; on PostgreSQL, set <code>lock_timeout</code> (e.g. 5 s) and
+<code>idle_in_transaction_session_timeout</code> for the database role of your app, so a hanging node can't block the
+others.</p>
 </section>
 
   </main>

@@ -1,0 +1,36 @@
+# Copyright 2026 os890
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#     http://www.apache.org/licenses/LICENSE-2.0
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# A local PostgreSQL for the tests and demos of dtp (slice 17), built from this file on the Red Hat Universal Base
+# Image with the server packages of the PostgreSQL project (PGDG). Started by tools/postgresql/run.sh, listens on
+# 127.0.0.1 only, the data lives in the container and is gone with it.
+FROM registry.access.redhat.com/ubi10/ubi
+
+ARG PG_MAJOR=17
+RUN ARCH=$(uname -m) \
+    && dnf -y install "https://download.postgresql.org/pub/repos/yum/reporpms/EL-10-${ARCH}/pgdg-redhat-repo-latest.noarch.rpm" \
+    && sed -E -i 's#rhel-[^/]*-\$basearch#rhel-10-$basearch#g' /etc/yum.repos.d/pgdg-redhat-all.repo \
+    && dnf -y --disablerepo='pgdg*' --enablerepo="pgdg${PG_MAJOR}" --enablerepo=pgdg-common \
+           install "postgresql${PG_MAJOR}-server" \
+    && dnf clean all \
+    && rm -rf /var/cache/dnf
+
+ENV PGDATA=/var/lib/pgsql/data PATH=/usr/pgsql-${PG_MAJOR}/bin:$PATH
+USER postgres
+# a throwaway test database: password authentication with a fixed demo password, reachable only via 127.0.0.1
+RUN echo dtp > /tmp/pw && initdb -D "$PGDATA" -U dtp --pwfile=/tmp/pw -A scram-sha-256 && rm /tmp/pw \
+    && echo "host all all 0.0.0.0/0 scram-sha-256" >> "$PGDATA/pg_hba.conf" \
+    && echo "listen_addresses = '*'" >> "$PGDATA/postgresql.conf" \
+    && echo "max_connections = 300" >> "$PGDATA/postgresql.conf" \
+    && echo "lock_timeout = '5s'" >> "$PGDATA/postgresql.conf" \
+    && echo "idle_in_transaction_session_timeout = '60s'" >> "$PGDATA/postgresql.conf"
+EXPOSE 5432
+CMD ["postgres", "-D", "/var/lib/pgsql/data"]

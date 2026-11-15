@@ -18,6 +18,7 @@ package org.os890.dtp.core.testsupport;
 import static org.awaitility.Awaitility.await;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -32,6 +33,7 @@ import org.os890.dtp.api.FlowDefinition;
 import org.os890.dtp.api.ProcessStep;
 import org.os890.dtp.core.DtpConfig;
 import org.os890.dtp.core.DtpEngine;
+import org.os890.dtp.core.jdbc.DbClock;
 import org.os890.dtp.core.jdbc.JdbcTransactions;
 import org.os890.dtp.core.jdbc.SchemaMigrator;
 import org.os890.dtp.core.jdbc.Sql;
@@ -39,6 +41,9 @@ import org.os890.dtp.core.jdbc.SqlDialect;
 import org.os890.dtp.core.query.DtpQueries;
 import org.os890.dtp.core.spi.Telemetry;
 import org.os890.dtp.core.spi.Transactions;
+
+import com.zaxxer.hikari.HikariConfig;
+import com.zaxxer.hikari.HikariDataSource;
 
 /**
  * Several dtp nodes in one JVM on one shared in-memory H2 database, with short intervals. Each node is a separate
@@ -52,6 +57,10 @@ public class TestCluster implements AutoCloseable {
 
     private final DataSource dataSource;
     private final Transactions tx;
+    /** Runs the cluster tests on PostgreSQL instead of H2: {@code -Ddtp.test.db=postgresql}. */
+    public static final boolean POSTGRESQL = "postgresql".equals(System.getProperty("dtp.test.db"));
+
+    private final String schema;
     private final List<DtpEngine> nodes = new ArrayList<>();
     private final JobDefinitions definitions;
     private final List<Published> events = new CopyOnWriteArrayList<>();
@@ -66,10 +75,34 @@ public class TestCluster implements AutoCloseable {
     }
 
     public TestCluster() {
-        JdbcDataSource h2 = new JdbcDataSource();
-        h2.setURL("jdbc:h2:mem:dtp" + DATABASES.incrementAndGet() + "-" + UUID.randomUUID()
-                + ";DB_CLOSE_DELAY=-1;LOCK_TIMEOUT=5000");
-        this.dataSource = h2;
+        if (POSTGRESQL) {
+            // one schema per cluster, dropped at the end (tools/postgresql/run.sh starts a local PostgreSQL)
+            schema = "dtp_test_" + DATABASES.incrementAndGet() + "_" + UUID.randomUUID().toString().substring(0, 8);
+            HikariConfig config = new HikariConfig();
+            config.setJdbcUrl(System.getProperty("dtp.test.db.url", "jdbc:postgresql://127.0.0.1:5433/dtp"));
+            config.setUsername(System.getProperty("dtp.test.db.user", "dtp"));
+            config.setPassword(System.getProperty("dtp.test.db.password", "dtp"));
+            config.setMaximumPoolSize(40);
+            // like LOCK_TIMEOUT of the H2 URL: a lock held by a hanging node is a conflict, not an endless wait
+            config.setConnectionInitSql("SET search_path TO " + schema + "; SET lock_timeout = '5s'");
+            config.setPoolName(schema);
+            HikariDataSource pool = new HikariDataSource(config);
+            try (var c = pool.getConnection(); var s = c.createStatement()) {
+                s.execute("CREATE SCHEMA " + schema);
+            } catch (java.sql.SQLException e) {
+                pool.close();
+                throw new IllegalStateException(e);
+            }
+            pool.close();
+            // the schema exists now: a new pool whose connections start in it
+            this.dataSource = new HikariDataSource(config);
+        } else {
+            schema = null;
+            JdbcDataSource h2 = new JdbcDataSource();
+            h2.setURL("jdbc:h2:mem:dtp" + DATABASES.incrementAndGet() + "-" + UUID.randomUUID()
+                    + ";DB_CLOSE_DELAY=-1;LOCK_TIMEOUT=5000");
+            this.dataSource = h2;
+        }
         // one instance for all nodes: the transaction is bound to the thread, so sharing it is safe, and handlers can
         // join the unit of work of their run via withConnection
         this.tx = new JdbcTransactions(dataSource);
@@ -223,9 +256,19 @@ public class TestCluster implements AutoCloseable {
     }
 
     /**
-     * Waits until no run is pending or active and no inbox with an inbox trigger has due items.
+     * The time of the database, the clock of the engine (a database in a VM, e.g. in Podman, may differ from the
+     * clock of the test).
      *
-     * @param timeout maximum wait
+     * @return the DB time
+     */
+    public Instant dbNow() {
+        return tx.withConnection(c -> new DbClock(SqlDialect.detect(c)).now(c));
+    }
+
+    /**
+     * Waits until the cluster is idle.
+     *
+     * @param timeout the timeout
      */
     public void awaitIdle(Duration timeout) {
         await().atMost(timeout).pollInterval(Duration.ofMillis(100)).until(() -> queries().isIdle());
@@ -234,6 +277,15 @@ public class TestCluster implements AutoCloseable {
     @Override
     public void close() {
         nodes.forEach(DtpEngine::kill);
-        tx.withConnection(c -> c.createStatement().execute("SHUTDOWN"));
+        if (schema != null) {
+            // zombies of killed nodes may still hold connections: the schema goes with the pool
+            try {
+                tx.withConnection(c -> c.createStatement().execute("DROP SCHEMA " + schema + " CASCADE"));
+            } finally {
+                ((HikariDataSource) dataSource).close();
+            }
+        } else {
+            tx.withConnection(c -> c.createStatement().execute("SHUTDOWN"));
+        }
     }
 }

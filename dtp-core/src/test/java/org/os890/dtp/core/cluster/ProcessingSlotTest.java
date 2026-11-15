@@ -103,7 +103,7 @@ class ProcessingSlotTest {
     void aRunStartsInItsSlotStopsAtItsEndAndTheRestWaitsForTheNextSlot() {
         try (TestCluster cluster = new TestCluster()) {
             DtpEngine node = cluster.start("a", new Settlement());
-            Instant start = Instant.now().plusSeconds(3).truncatedTo(ChronoUnit.SECONDS);
+            Instant start = cluster.dbNow().plusSeconds(3).truncatedTo(ChronoUnit.SECONDS);
             Instant end = start.plusSeconds(3);
             cluster.definitions().define(Settlement.class).inbox(1).slot(null, utc(start), utc(end)).save();
             cluster.tx().required(() -> {
@@ -118,7 +118,7 @@ class ProcessingSlotTest {
             await().atMost(Duration.ofSeconds(2)).until(() -> cluster.count("SELECT COUNT(*) FROM dtp_run") == 1);
             assertThat(instant(cluster, "SELECT not_before AS v FROM dtp_run")).isEqualTo(start);
             assertThat(instant(cluster, "SELECT slot_end AS v FROM dtp_run")).isEqualTo(end);
-            await().atMost(Duration.ofSeconds(5)).until(() -> Instant.now().isAfter(start.minusMillis(300)));
+            await().atMost(Duration.ofSeconds(5)).until(() -> cluster.dbNow().isAfter(start.minusMillis(300)));
             assertThat(cluster.count("SELECT COUNT(*) FROM dtp_item WHERE state = 'COMPLETED'")).isZero();
 
             await().atMost(Duration.ofSeconds(10)).until(() -> cluster.count("SELECT COUNT(*) FROM dtp_run"
@@ -151,7 +151,7 @@ class ProcessingSlotTest {
             Blocker blocker = new Blocker();
             DtpEngine node = cluster.start(TestCluster.config("a").maxConcurrentRuns(1).build(), blocker,
                     new Statement());
-            Instant start = Instant.now().plusSeconds(2).truncatedTo(ChronoUnit.SECONDS);
+            Instant start = cluster.dbNow().plusSeconds(2).truncatedTo(ChronoUnit.SECONDS);
             Instant end = start.plusSeconds(1);
             cluster.definitions().define(Blocker.class).external().save();
             UUID statement = cluster.definitions().define(Statement.class).external()
