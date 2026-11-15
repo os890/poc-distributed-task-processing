@@ -25,7 +25,9 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 import org.os890.dtp.api.ApprovalResult;
 import org.os890.dtp.api.DecisionOption;
@@ -178,6 +180,16 @@ public class Decisions {
     record NewRequest(DecisionKind kind, SubjectType subjectType, UUID subjectId, UUID requestedByJobId, UUID runId,
                       String reason, List<OptionView> options, Class<?> optionType, Integer requiredApprovals,
                       String responsibleGroup) {
+    }
+
+    /**
+     * The responsible teams of the open requests (e.g. to check the teams of a caller one by one).
+     *
+     * @return the teams
+     */
+    public Set<String> openTeams() {
+        return ctx.tx().withConnection(c -> store.open(c, ctx.namespace()).stream().map(RequestRow::responsibleGroup)
+                .filter(Objects::nonNull).collect(Collectors.toCollection(TreeSet::new)));
     }
 
     /**

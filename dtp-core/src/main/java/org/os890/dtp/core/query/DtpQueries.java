@@ -15,9 +15,12 @@
  */
 package org.os890.dtp.core.query;
 
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 import org.os890.dtp.core.jdbc.Sql;
@@ -176,16 +179,31 @@ public class DtpQueries {
      * @return the runs, newest first
      */
     public List<RunView> runs(int limit) {
-        return tx.withConnection(c -> Sql.query(c, "SELECT r.id, j.name AS job, r.state, r.outcome, r.result_status,"
-                + " r.trigger_type, r.attempt, n.name AS node, r.created_at, r.started_at, r.finished_at, r.info,"
-                + " r.stop_reason"
-                + " FROM dtp_run r JOIN dtp_job j ON j.id = r.job_id LEFT JOIN dtp_node n ON n.id = r.owner_node_id"
-                + " WHERE r.namespace = ? ORDER BY r.created_at DESC, r.id LIMIT ?",
-                rs -> new RunView(Sql.uuid(rs, "id"), rs.getString("job"), rs.getString("state"),
-                        rs.getString("outcome"), rs.getString("result_status"), rs.getString("trigger_type"),
-                        rs.getInt("attempt"), rs.getString("node"), Sql.instant(rs, "created_at"),
-                        Sql.instant(rs, "started_at"), Sql.instant(rs, "finished_at"), rs.getString("info"),
-                        rs.getString("stop_reason")), namespace, limit));
+        return tx.withConnection(c -> Sql.query(c, RUNS + " WHERE r.namespace = ? ORDER BY r.created_at DESC, r.id"
+                + " LIMIT ?", DtpQueries::run, namespace, limit));
+    }
+
+    /**
+     * A run.
+     *
+     * @param id the run
+     * @return the run, if it exists in the namespace
+     */
+    public Optional<RunView> run(UUID id) {
+        return tx.withConnection(c -> Sql.queryOne(c, RUNS + " WHERE r.namespace = ? AND r.id = ?", DtpQueries::run,
+                namespace, id));
+    }
+
+    private static final String RUNS = "SELECT r.id, j.name AS job, r.state, r.outcome, r.result_status,"
+            + " r.trigger_type, r.attempt, n.name AS node, r.created_at, r.started_at, r.finished_at, r.info,"
+            + " r.stop_reason FROM dtp_run r JOIN dtp_job j ON j.id = r.job_id"
+            + " LEFT JOIN dtp_node n ON n.id = r.owner_node_id";
+
+    private static RunView run(ResultSet rs) throws SQLException {
+        return new RunView(Sql.uuid(rs, "id"), rs.getString("job"), rs.getString("state"), rs.getString("outcome"),
+                rs.getString("result_status"), rs.getString("trigger_type"), rs.getInt("attempt"),
+                rs.getString("node"), Sql.instant(rs, "created_at"), Sql.instant(rs, "started_at"),
+                Sql.instant(rs, "finished_at"), rs.getString("info"), rs.getString("stop_reason"));
     }
 
     /**

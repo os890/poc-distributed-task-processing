@@ -113,10 +113,28 @@ public class Acknowledgements {
         return answer(packageId, false, reason);
     }
 
+    /**
+     * The receiver acknowledged or rejected a package, by the name of the job (e.g. for REST).
+     *
+     * @param job          the name of the job that sent it
+     * @param reference    the reference it was sent with
+     * @param acknowledged {@code true} for an acknowledgement, {@code false} for a rejection
+     * @param text         who acknowledged it, or the reason of the rejection
+     * @return the outcome
+     */
+    public Outcome answer(String job, String reference, boolean acknowledged, String text) {
+        UUID jobId = ctx.catalog().all().stream().filter(j -> j.name().equals(job)).findFirst()
+                        .orElseThrow(() -> new IllegalArgumentException("unknown job " + job)).id();
+        return answer(jobId, reference, acknowledged, text);
+    }
+
     private Outcome answer(Class<? extends JobHandler<?, ?>> job, String reference, boolean acknowledged,
                            String text) {
+        return answer(ctx.catalog().byStep(Objects.requireNonNull(job, "job")).id(), reference, acknowledged, text);
+    }
+
+    private Outcome answer(UUID jobId, String reference, boolean acknowledged, String text) {
         Objects.requireNonNull(reference, "reference");
-        UUID jobId = ctx.catalog().byStep(Objects.requireNonNull(job, "job")).id();
         return ctx.tx().required(() -> ctx.tx().withConnection(c -> {
             Optional<PackageRow> row = store.lockSent(c, jobId, reference);
             if (row.isEmpty()) {

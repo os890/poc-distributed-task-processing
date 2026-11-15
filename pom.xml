@@ -33,6 +33,7 @@
         <module>dtp-core</module>
         <module>dtp-cdi</module>
         <module>dtp-telemetry</module>
+        <module>dtp-rest</module>
         <module>dtp-examples/trade-app</module>
     </modules>
 
@@ -79,6 +80,8 @@
         <!-- OpenTelemetry: the API is all dtp-telemetry needs at runtime; the SDK only for the tests and the example
              (pinned below the Quarkus platform, whose SDK version isn't in every local repository) -->
         <opentelemetry.version>1.35.0</opentelemetry.version>
+        <jakarta.ws.rs.version>3.1.0</jakarta.ws.rs.version>
+        <microprofile.openapi.version>4.1.1</microprofile.openapi.version>
         <opentelemetry.alpha.version>1.35.0-alpha</opentelemetry.alpha.version>
     </properties>
 
@@ -109,6 +112,27 @@
                 <groupId>org.os890.dtp</groupId>
                 <artifactId>dtp-telemetry</artifactId>
                 <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.os890.dtp</groupId>
+                <artifactId>dtp-rest</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>jakarta.ws.rs</groupId>
+                <artifactId>jakarta.ws.rs-api</artifactId>
+                <version>${jakarta.ws.rs.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.eclipse.microprofile.openapi</groupId>
+                <artifactId>microprofile-openapi-api</artifactId>
+                <version>${microprofile.openapi.version}</version>
+            </dependency>
+            <!-- a JAX-RS runtime delegate for the unit tests of dtp-rest (the one of Quarkus) -->
+            <dependency>
+                <groupId>io.quarkus.resteasy.reactive</groupId>
+                <artifactId>resteasy-reactive</artifactId>
+                <version>${quarkus.platform.version}</version>
             </dependency>
             <dependency>
                 <groupId>io.opentelemetry</groupId>

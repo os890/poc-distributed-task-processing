@@ -57,6 +57,7 @@ import org.os890.dtp.core.engine.FlowRouting;
 import org.os890.dtp.core.engine.Housekeeping;
 import org.os890.dtp.core.engine.ItemRouting;
 import org.os890.dtp.core.engine.ItemsImpl;
+import org.os890.dtp.core.engine.JobAdmin;
 import org.os890.dtp.core.engine.JobCatalog;
 import org.os890.dtp.core.engine.JobEngineImpl;
 import org.os890.dtp.core.engine.JsonCodec;
@@ -128,6 +129,7 @@ public class DtpEngine {
     private MonitoringQueries monitoring;
     private JourneyQueries journeys;
     private Acknowledgements acknowledgements;
+    private JobAdmin jobAdmin;
     private MonitoringFeed monitoringFeed;
     private LeaderElector projectionLeader;
     private ScheduledExecutorService scheduler;
@@ -256,6 +258,7 @@ public class DtpEngine {
         flowAdmin = new FlowAdmin(ctx);
         decisions = routing.decisions();
         acknowledgements = new Acknowledgements(ctx, routing);
+        jobAdmin = new JobAdmin(ctx, planner);
         flowInstances = new FlowInstances(ctx);
         windows = new CollectionWindows(ctx);
         Set<String> capabilities = steps.keySet().stream().map(Class::getName).collect(Collectors.toSet());
@@ -506,12 +509,16 @@ public class DtpEngine {
      * @return {@code true} if the run was pending or running
      */
     public boolean cancel(UUID runId) {
-        return requireStarted(ctx).tx().required(() -> tx.withConnection(c -> {
-            var now = ctx.clock().now(c);
-            boolean cancelled = ctx.runs().cancel(c, runId, now);
-            flowInstances.runEnded(c, runId, now);
-            return cancelled;
-        }));
+        return requireStarted(jobAdmin).cancel(runId);
+    }
+
+    /**
+     * Operations on jobs and runs by name, e.g. for REST.
+     *
+     * @return the job admin
+     */
+    public JobAdmin jobAdmin() {
+        return requireStarted(jobAdmin);
     }
 
     private void heartbeat() {

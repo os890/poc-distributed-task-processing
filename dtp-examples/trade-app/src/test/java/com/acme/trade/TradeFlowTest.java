@@ -410,7 +410,6 @@ class TradeFlowTest {
         }
         given().when().get("/dtp/monitor/heatmap").then()
                .body("steps.find { it.step == 'trade-enrichment' }.alertState", equalTo("FAILING"));
-        given().when().get("/dtp/monitor/steps/trade-enrichment/failures").then().statusCode(403);
         given().header("X-Groups", "dtp-operator").when().get("/dtp/monitor/steps/trade-enrichment/failures")
                .then().statusCode(200)
                .body("[0].errorType", equalTo(IllegalStateException.class.getName()))
@@ -482,10 +481,7 @@ class TradeFlowTest {
         given().header("X-Groups", viewer).when().get("/dtp/items/trade/T-2026-11-15-10/journey")
                .then().statusCode(200).body("no", hasItem(1)).body("type", hasItem("VOTED"));
 
-        // viewers and operators only; unknown items, formats and zones
-        given().when().get("/dtp/items/trade/T-2026-11-15-10/journey/diagram").then().statusCode(403);
-        given().header("X-Groups", "risk").when().get("/dtp/items/trade/T-2026-11-15-10/journey").then()
-               .statusCode(403);
+        // unknown items, formats and zones (the roles are checked with JWT: DtpSecurityTest)
         given().header("X-Groups", viewer).when().get("/dtp/items/trade/unknown/journey/diagram").then()
                .statusCode(404);
         given().header("X-Groups", viewer).when().get("/dtp/items/trade/unknown/journey").then().statusCode(404);
@@ -651,7 +647,8 @@ class TradeFlowTest {
                .body("[0].version", equalTo(null));
         given().contentType(ContentType.JSON).body(Map.of("version", "nonsense", "by", "ops", "lane", "RETAIL"))
                .when().post("/dtp/flows/trade-flow/activations").then().statusCode(409);
-        given().when().delete("/dtp/flows/trade-flow/activations/lanes/RETAIL").then().statusCode(409);
+        // without a user (X-User here, the principal with JWT) nobody can be recorded
+        given().when().delete("/dtp/flows/trade-flow/activations/lanes/RETAIL").then().statusCode(401);
     }
 
     private boolean waitingFor(String custodian) {

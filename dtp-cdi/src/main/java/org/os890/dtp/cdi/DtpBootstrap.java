@@ -43,6 +43,7 @@ import org.os890.dtp.core.engine.CollectionWindows;
 import org.os890.dtp.core.engine.Decisions;
 import org.os890.dtp.core.engine.FlowAdmin;
 import org.os890.dtp.core.engine.FlowInstances;
+import org.os890.dtp.core.engine.JobAdmin;
 import org.os890.dtp.core.jdbc.JdbcTransactions;
 import org.os890.dtp.core.query.DtpQueries;
 import org.os890.dtp.core.query.FlowQueries;
@@ -186,6 +187,11 @@ public class DtpBootstrap {
     @Produces
     MonitoringQueries monitoring() {
         return engine().monitoring();
+    }
+
+    @Produces
+    JobAdmin jobAdmin() {
+        return engine().jobAdmin();
     }
 
     @Produces
