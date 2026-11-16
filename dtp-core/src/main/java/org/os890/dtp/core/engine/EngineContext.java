@@ -22,6 +22,7 @@ import java.util.Map;
 import java.util.UUID;
 
 import org.os890.dtp.api.ProcessStep;
+import org.os890.dtp.api.event.RunRef;
 import org.os890.dtp.core.DtpConfig;
 import org.os890.dtp.core.domain.FailureKind;
 import org.os890.dtp.core.domain.ItemEventType;
@@ -83,6 +84,19 @@ public record EngineContext(DtpConfig config, UUID nodeId, Transactions tx, SqlD
      */
     public void publishAfterCommit(Object event) {
         tx.afterCommit(() -> events.publish(event));
+    }
+
+    /**
+     * The run a domain event is about, as stored.
+     *
+     * @param c     the connection
+     * @param runId the run
+     * @return the reference
+     * @throws SQLException on DB errors
+     */
+    public RunRef runRef(Connection c, UUID runId) throws SQLException {
+        RunStore.RefRow row = runs.ref(c, runId);
+        return new RunRef(runId, catalog.byId(row.jobId()).name(), row.attempt(), row.node(), row.flowInstanceId());
     }
 
     /**

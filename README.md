@@ -67,9 +67,10 @@ metrics and traces with OpenTelemetry (slice 13), acknowledgements of sent work 
 with flow versions per lane (slice 15), the REST adapter with MP OpenAPI and MP JWT roles (slice 16), the tests
 of the engine on PostgreSQL 17 (slice 17), continued deferred runs in flow instances (slice 18), decisions
 requested by job runs, e.g. a four-eyes sign-off of an end of day (slice 19), cancelling flow instances, e.g.
-an end of day started by mistake (slice 20), red/green deployments with an activation switch (slice 21), and the
+an end of day started by mistake (slice 20), red/green deployments with an activation switch (slice 21), the
 test support `dtp-test` for applications, a JUnit 5 extension with simulated nodes and a clock the test moves
-forward (slice 22): see [IMPLEMENTATION.md](IMPLEMENTATION.md).
+forward (slice 22), and the domain events of the execution (runs, leases, nodes, windows, packages, jobs; slice 23):
+see [IMPLEMENTATION.md](IMPLEMENTATION.md).
 
 ## License
 

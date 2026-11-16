@@ -39,6 +39,7 @@ import org.os890.dtp.api.event.DecisionFallbackDue;
 import org.os890.dtp.api.event.DecisionMade;
 import org.os890.dtp.api.event.DecisionRequested;
 import org.os890.dtp.api.event.VoteCast;
+import org.os890.dtp.api.event.WindowClosed;
 import org.os890.dtp.core.DtpException;
 import org.os890.dtp.core.domain.BranchState;
 import org.os890.dtp.core.domain.BuiltInOption;
@@ -567,6 +568,10 @@ public class Decisions {
         };
         if (!applied) {
             throw new DtpException("window occurrence " + request.subjectId() + " doesn't wait for a decision");
+        }
+        if (option == BuiltInOption.SKIP_OCCURRENCE) {
+            ctx.publishAfterCommit(new WindowClosed(WindowCoordinator.occurrence(windows.load(c, request.subjectId())
+                    .orElseThrow()), true, null));
         }
     }
 

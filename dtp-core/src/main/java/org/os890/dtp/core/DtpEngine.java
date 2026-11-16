@@ -46,6 +46,8 @@ import org.os890.dtp.api.JobEngine;
 import org.os890.dtp.api.ProcessStep;
 import org.os890.dtp.api.StopReason;
 import org.os890.dtp.api.TrackedItem;
+import org.os890.dtp.api.event.NodeDrained;
+import org.os890.dtp.api.event.NodeJoined;
 import org.os890.dtp.core.domain.FlowModel;
 import org.os890.dtp.core.engine.Acknowledgements;
 import org.os890.dtp.core.engine.BusinessCalendarsImpl;
@@ -307,6 +309,8 @@ public class DtpEngine {
                     hostName(), config.color(), config.appVersion(), ctx.color().standby() ? "STANDBY" : "ACTIVE",
                     ctx.json().write(capabilities.stream().sorted().toList()),
                     flowVersions.isEmpty() ? null : ctx.json().write(flowVersions)), ctx.clock().now(c));
+            ctx.publishAfterCommit(new NodeJoined(nodeId, config.nodeName(), config.color(), config.appVersion(),
+                    ctx.color().standby()));
             return null;
         }));
         new FlowRegistrar(ctx).register(flowModels);
@@ -342,7 +346,7 @@ public class DtpEngine {
             return;
         }
         draining = true;
-        executor.stopAll(StopReason.DRAIN, config.drainTimeout().toMillis());
+        int left = executor.stopAll(StopReason.DRAIN, config.drainTimeout().toMillis());
         running = false;
         scheduler.shutdownNow();
         monitoringFeed.close();
@@ -355,6 +359,7 @@ public class DtpEngine {
         try {
             tx.required(() -> tx.withConnection(c -> {
                 ctx.nodes().setState(c, nodeId, "LEFT");
+                ctx.publishAfterCommit(new NodeDrained(nodeId, config.nodeName(), left));
                 return null;
             }));
         } catch (RuntimeException e) {

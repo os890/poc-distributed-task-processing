@@ -25,6 +25,8 @@ import java.util.OptionalLong;
 import java.util.Random;
 import java.util.Set;
 
+import org.os890.dtp.api.event.RunRef;
+import org.os890.dtp.api.event.RunStarted;
 import org.os890.dtp.core.DtpException;
 import org.os890.dtp.core.jdbc.RunStore.Candidate;
 import org.os890.dtp.core.jdbc.RunStore.RunRecord;
@@ -118,9 +120,11 @@ public class RunClaimer {
             RunRecord run = ctx.runs().load(c, candidate.runId());
             Duration lag = candidate.dueAt() == null || candidate.dueAt().isAfter(now) ? Duration.ZERO
                     : Duration.between(candidate.dueAt(), now);
+            ctx.publishAfterCommit(new RunStarted(new RunRef(run.id(), ctx.catalog().byId(run.jobId()).name(),
+                    attempt.get(), ctx.config().nodeName(), run.flowInstanceId())));
             return Optional.of(new Claim(new ClaimedRun(run.id(), run.jobId(), run.revision(), run.handlerClass(),
                     token.getAsLong(), attempt.get(), leaseDuration, run.slotEnd(), timeLimit == null ? null
-                    : now.plus(timeLimit)), lag));
+                    : now.plus(timeLimit), run.flowInstanceId()), lag));
         });
     }
 

@@ -31,7 +31,9 @@ import java.util.UUID;
  * @param leaseDuration the lease duration
  * @param slotEnd       end of the processing slot of the run, or {@code null}
  * @param limitAt       end of the time limit of this attempt, or {@code null}
+ * @param flowInstanceId the flow instance of the run, or {@code null}
  */
 public record ClaimedRun(UUID runId, UUID jobId, int revision, String handlerClass, long token, int attempt,
-                         Duration leaseDuration, Instant slotEnd, Instant limitAt) {
+                         Duration leaseDuration, Instant slotEnd, Instant limitAt,
+                         UUID flowInstanceId) {
 }

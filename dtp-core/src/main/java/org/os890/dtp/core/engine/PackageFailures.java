@@ -43,13 +43,18 @@ class PackageFailures {
         this.store = store;
     }
 
-    void failed(Connection c, PackageRow row, JobDefinition job, UUID runId, FailureKind kind, String reason,
-                Instant now) throws SQLException {
+    /**
+     * A failed attempt of a package.
+     *
+     * @return {@code true} if its retries are exhausted: it waits for a decision
+     */
+    boolean failed(Connection c, PackageRow row, JobDefinition job, UUID runId, FailureKind kind, String reason,
+                   Instant now) throws SQLException {
         int attempts = row.attempts() + 1;
         if (attempts <= job.retryMax()) {
             store.failed(c, row.id(), runId, attempts, now.plus(job.retryBackoff().multipliedBy(attempts)), reason,
                     now);
-            return;
+            return false;
         }
         store.failed(c, row.id(), runId, attempts, null, reason, now);
         String why = "work package " + row.seq() + " (" + row.groupKey() + "): retries exhausted (" + job.retryMax()
@@ -57,5 +62,6 @@ class PackageFailures {
         decisions.request(c, new Decisions.NewRequest(DecisionKind.CHOICE, SubjectType.WORK_PACKAGE, row.id(),
                 job.id(), runId, why, Decisions.builtIn(BuiltInOption.PACKAGE), null, null,
                 kind == FailureKind.TECHNICAL ? Decisions.OPERATORS : null), now);
+        return true;
     }
 }

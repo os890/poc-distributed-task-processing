@@ -16,6 +16,7 @@
 package org.os890.dtp.core.cluster;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.tuple;
 import static org.awaitility.Awaitility.await;
 
 import java.time.Duration;
@@ -34,8 +35,12 @@ import org.os890.dtp.api.JobContext;
 import org.os890.dtp.api.JobHandler;
 import org.os890.dtp.api.JobResult;
 import org.os890.dtp.api.NoParams;
+import org.os890.dtp.api.RunOutcome;
 import org.os890.dtp.api.TrackedItem;
 import org.os890.dtp.api.WindowOccurrence;
+import org.os890.dtp.api.event.WindowClosed;
+import org.os890.dtp.api.event.WindowOpened;
+import org.os890.dtp.api.event.WindowQuiescing;
 import org.os890.dtp.core.DtpEngine;
 import org.os890.dtp.core.engine.CollectionWindows.OccurrenceView;
 import org.os890.dtp.core.engine.Decisions;
@@ -169,6 +174,19 @@ class WindowTest {
             assertThat(collector.seen.get(1).sequence()).isEqualTo(2);
             assertThat(collector.seen.get(1).from()).isEqualTo(collector.seen.get(0).cutOff());
             assertThat(node.windows().latest(5)).extracting(OccurrenceView::sequence).containsExactly(2L, 1L);
+            // domain events: per occurrence quiescing, opened with the collector run, closed
+            assertThat(cluster.events(WindowQuiescing.class)).extracting(e -> e.occurrence().sequence(),
+                    WindowQuiescing::triggeredBy).containsExactly(tuple(1L, "otto"), tuple(2L, "otto"));
+            assertThat(cluster.events(WindowQuiescing.class)).allSatisfy(e -> assertThat(e.occurrence().cutOff())
+                    .isNull());
+            assertThat(cluster.events(WindowOpened.class)).hasSize(2).allSatisfy(e -> {
+                assertThat(e.forced()).isFalse();
+                assertThat(e.collectorRunId()).isNotNull();
+            }).extracting(e -> e.occurrence().cutOff()).containsExactly(collector.seen.get(0).cutOff(),
+                    collector.seen.get(1).cutOff());
+            assertThat(cluster.events(WindowClosed.class)).extracting(e -> e.occurrence().sequence(),
+                    WindowClosed::skipped, WindowClosed::collectorOutcome).containsExactly(
+                    tuple(1L, false, RunOutcome.SUCCEEDED), tuple(2L, false, RunOutcome.SUCCEEDED));
             cluster.awaitIdle(Duration.ofSeconds(10));
             // the writer's items, besides the one item the collector packaged per occurrence
             assertThat(cluster.count("SELECT COUNT(*) FROM dtp_item WHERE state = 'COMPLETED'"
@@ -229,6 +247,8 @@ class WindowTest {
                     "export can't wait");
             await().atMost(Duration.ofSeconds(10)).until(() -> occurrences(cluster, "CLOSED") == 1);
             assertThat(collector.maxWritersInFlight.get()).isEqualTo(1);
+            assertThat(cluster.events(WindowOpened.class)).singleElement().satisfies(e -> assertThat(e.forced())
+                    .isTrue());
         }
     }
 
@@ -266,6 +286,12 @@ class WindowTest {
             await().atMost(Duration.ofSeconds(10)).until(() -> occurrences(cluster, "WAITING_FOR_DECISION") == 1);
             decisions.decide(decisions.open(otto).getFirst().id(), "SKIP_OCCURRENCE", otto, "next one covers it");
             await().atMost(Duration.ofSeconds(5)).until(() -> occurrences(cluster, "SKIPPED") == 1);
+            await().atMost(Duration.ofSeconds(5)).until(() -> cluster.events(WindowClosed.class).size() == 2);
+            assertThat(cluster.events(WindowClosed.class).getLast()).satisfies(e -> {
+                assertThat(e.occurrence().sequence()).isEqualTo(2);
+                assertThat(e.skipped()).isTrue();
+                assertThat(e.collectorOutcome()).isNull();
+            });
             node.windows().startNow("export", "otto");
             await().atMost(Duration.ofSeconds(10)).until(() -> occurrences(cluster, "CLOSED") == 2);
             WindowOccurrence third = collector.seen.getLast();

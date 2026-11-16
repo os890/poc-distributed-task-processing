@@ -31,6 +31,8 @@ import org.os890.dtp.api.NoParams;
 import org.os890.dtp.api.ProcessStep;
 import org.os890.dtp.api.RunOutcome;
 import org.os890.dtp.api.StopReason;
+import org.os890.dtp.api.event.LeaseLost;
+import org.os890.dtp.api.event.RunFinished;
 import org.os890.dtp.core.domain.JobDefinition;
 import org.os890.dtp.core.domain.LeaseLostException;
 import org.os890.dtp.core.domain.RouteModel;
@@ -107,8 +109,9 @@ public class RunExecutor {
      *
      * @param reason  the stop reason
      * @param timeout maximum wait in milliseconds
+     * @return the number of runs that didn't stop in time
      */
-    public void stopAll(StopReason reason, long timeout) {
+    public int stopAll(StopReason reason, long timeout) {
         active.values().forEach(run -> run.requestStop(reason));
         threads.shutdown();
         try {
@@ -119,6 +122,7 @@ public class RunExecutor {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
+        return active.size();
     }
 
     /**
@@ -148,6 +152,9 @@ public class RunExecutor {
         } catch (LeaseLostException e) {
             LOG.log(System.Logger.Level.INFO, "run {0} of job {1} was fenced: {2}", runId, run.job().name(),
                     e.getMessage());
+            run.leaseLost();
+            // outside of any transaction: the event is published right away
+            ctx.publishAfterCommit(new LeaseLost(run.ref()));
         } catch (RuntimeException e) {
             LOG.log(System.Logger.Level.ERROR, "finishing run " + runId + " failed, its lease expires", e);
         } finally {
@@ -258,6 +265,8 @@ public class RunExecutor {
             if (!ctx.leases().release(c, claimed.jobId(), claimed.runId(), claimed.token())) {
                 throw new LeaseLostException(claimed.runId(), claimed.token());
             }
+            ctx.publishAfterCommit(new RunFinished(run.ref(), result.outcome(), result.resultStatus(),
+                    run.stopReason(), run.elapsed()));
             return null;
         }));
         ctx.telemetry().runFinished(run.job().name(), result.outcome().name(), run.elapsed());

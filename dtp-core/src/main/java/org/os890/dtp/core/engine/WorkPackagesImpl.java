@@ -41,6 +41,8 @@ import org.os890.dtp.api.RunInfo;
 import org.os890.dtp.api.TrackedItem;
 import org.os890.dtp.api.WorkPackage;
 import org.os890.dtp.api.WorkPackages;
+import org.os890.dtp.api.event.PackageCompleted;
+import org.os890.dtp.api.event.PackageRef;
 import org.os890.dtp.core.domain.FailureKind;
 import org.os890.dtp.core.domain.ItemEventType;
 import org.os890.dtp.core.domain.ItemState;
@@ -444,6 +446,8 @@ public class WorkPackagesImpl<E, ID> implements WorkPackages<E, ID> {
                 }
             }
             store.done(c, row.id(), run.claimed().runId(), info.toJson(), reference, now);
+            run.engine().publishAfterCommit(new PackageCompleted(new PackageRef(row.id(), run.job().name(),
+                    row.seq(), row.groupKey(), items.size(), reference), null));
         }
     }
 }

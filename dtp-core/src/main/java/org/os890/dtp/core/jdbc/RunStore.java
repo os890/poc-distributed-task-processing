@@ -457,23 +457,60 @@ public class RunStore {
         return result;
     }
 
+    /** What a cancel did. */
+    public enum Cancelled {
+        /** The run wasn't pending, waiting or running. */
+        NONE,
+        /** The pending or waiting run was finished as {@code CANCELLED}. */
+        FINISHED,
+        /** The running run was asked to stop. */
+        STOP_REQUESTED
+    }
+
     /**
      * Requests a soft stop of a run, or cancels it if it didn't start yet or waits for a decision.
      *
      * @param c     the connection
      * @param runId the run
      * @param now   the DB time
-     * @return {@code true} if the run was pending, waiting or running
+     * @return what happened
      * @throws SQLException on DB errors
      */
-    public boolean cancel(Connection c, UUID runId, Instant now) throws SQLException {
+    public Cancelled cancel(Connection c, UUID runId, Instant now) throws SQLException {
         int pending = Sql.update(c, "UPDATE dtp_run SET state = 'FINISHED', outcome = 'CANCELLED', finished_at = ?"
                 + " WHERE id = ? AND state IN ('PENDING', 'WAITING_FOR_DECISION')", now, runId);
         if (pending == 1) {
-            return true;
+            return Cancelled.FINISHED;
         }
         return Sql.update(c, "UPDATE dtp_run SET state = 'STOPPING', stop_reason = 'CANCEL'"
-                + " WHERE id = ? AND state = 'RUNNING'", runId) == 1;
+                + " WHERE id = ? AND state = 'RUNNING'", runId) == 1 ? Cancelled.STOP_REQUESTED : Cancelled.NONE;
+    }
+
+    /**
+     * What the domain events tell about a run.
+     *
+     * @param jobId          the job
+     * @param attempt        the current or last attempt, {@code 0} if it never started
+     * @param node           the name of the node that holds it, or {@code null}
+     * @param flowInstanceId its flow instance, or {@code null}
+     */
+    public record RefRow(UUID jobId, int attempt, String node, UUID flowInstanceId) {
+    }
+
+    /**
+     * What the domain events tell about a run.
+     *
+     * @param c     the connection
+     * @param runId the run
+     * @return the row
+     * @throws SQLException on DB errors
+     */
+    public RefRow ref(Connection c, UUID runId) throws SQLException {
+        return Sql.queryOne(c, "SELECT r.job_id, r.attempt, r.flow_instance_id, n.name FROM dtp_run r"
+                + " LEFT JOIN dtp_node n ON n.id = r.owner_node_id WHERE r.id = ?", rs -> new RefRow(
+                        Sql.uuid(rs, "job_id"), rs.getInt("attempt"), rs.getString("name"),
+                        Sql.uuid(rs, "flow_instance_id")), runId)
+                  .orElseThrow(() -> new SQLException("unknown run " + runId));
     }
 
     /**

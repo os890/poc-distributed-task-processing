@@ -22,6 +22,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.os890.dtp.api.StopReason;
+import org.os890.dtp.api.event.RunRef;
 import org.os890.dtp.core.domain.JobDefinition;
 import org.os890.dtp.core.domain.LeaseLostException;
 import org.os890.dtp.core.spi.Transactions;
@@ -62,6 +63,16 @@ public class RunContext {
 
     public ClaimedRun claimed() {
         return claimed;
+    }
+
+    /**
+     * The run as the domain events name it: attempt and node of this execution.
+     *
+     * @return the reference
+     */
+    public RunRef ref() {
+        return new RunRef(claimed.runId(), job.name(), claimed.attempt(), engine.config().nodeName(),
+                claimed.flowInstanceId());
     }
 
     public JobDefinition job() {
@@ -196,8 +207,8 @@ public class RunContext {
     }
 
     /**
-     * Reports that the run lost its lease, once per run (the heartbeat and the fence of a unit of work may both
-     * notice it).
+     * Reports that the run lost its lease, once per run (the heartbeat, the fence of a unit of work and the finish
+     * may all notice it).
      */
     public void leaseLost() {
         if (leaseLostReported.compareAndSet(false, true)) {

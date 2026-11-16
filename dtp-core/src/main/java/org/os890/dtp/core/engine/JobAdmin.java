@@ -26,10 +26,18 @@ import java.util.UUID;
 
 import org.os890.dtp.api.NoParams;
 import org.os890.dtp.api.RunHandle;
+import org.os890.dtp.api.RunOutcome;
+import org.os890.dtp.api.StopReason;
+import org.os890.dtp.api.event.JobDisabled;
+import org.os890.dtp.api.event.JobEnabled;
+import org.os890.dtp.api.event.RunFinished;
+import org.os890.dtp.api.event.RunRef;
+import org.os890.dtp.api.event.RunStopRequested;
 import org.os890.dtp.core.DtpException;
 import org.os890.dtp.core.domain.JobDefinition;
 import org.os890.dtp.core.domain.TriggerType;
 import org.os890.dtp.core.jdbc.DecisionStore;
+import org.os890.dtp.core.jdbc.RunStore;
 import org.os890.dtp.core.jdbc.Sql;
 
 /**
@@ -118,9 +126,14 @@ public class JobAdmin {
     public boolean setEnabled(String name, boolean enabled, String by) {
         Objects.requireNonNull(by, "by");
         JobDefinition job = byName(name);
-        boolean changed = ctx.tx().required(() -> ctx.tx().withConnection(c -> Sql.update(c, "UPDATE dtp_job"
-                + " SET enabled = ?, updated_at = ? WHERE id = ? AND enabled <> ?", enabled, ctx.clock().now(c),
-                job.id(), enabled) == 1));
+        boolean changed = ctx.tx().required(() -> ctx.tx().withConnection(c -> {
+            if (Sql.update(c, "UPDATE dtp_job SET enabled = ?, updated_at = ? WHERE id = ? AND enabled <> ?", enabled,
+                    ctx.clock().now(c), job.id(), enabled) != 1) {
+                return false;
+            }
+            ctx.publishAfterCommit(enabled ? new JobEnabled(name, by) : new JobDisabled(name, by));
+            return true;
+        }));
         if (changed) {
             ctx.catalog().invalidate();
             LOG.log(System.Logger.Level.INFO, "job {0} {1} by {2}", name, enabled ? "enabled" : "disabled", by);
@@ -177,14 +190,18 @@ public class JobAdmin {
             List<UUID> requests = decisions.lockOpenOfRuns(c, List.of(runId));
             instances.lockForSuccessors(c, ctx.runs().load(c, runId).flowInstanceId());
             Instant now = ctx.clock().now(c);
-            boolean cancelled = ctx.runs().cancel(c, runId, now);
-            if (cancelled) {
+            RunStore.Cancelled cancelled = ctx.runs().cancel(c, runId, now);
+            if (cancelled != RunStore.Cancelled.NONE) {
                 for (UUID request : requests) {
                     decisions.withdraw(c, request, by, "run cancelled", now);
                 }
+                RunRef run = ctx.runRef(c, runId);
+                ctx.publishAfterCommit(cancelled == RunStore.Cancelled.FINISHED
+                        ? new RunFinished(run, RunOutcome.CANCELLED, null, StopReason.CANCEL, null)
+                        : new RunStopRequested(run, StopReason.CANCEL, by));
             }
             instances.runEnded(c, runId, now);
-            return cancelled;
+            return cancelled != RunStore.Cancelled.NONE;
         }));
     }
 

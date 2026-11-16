@@ -26,6 +26,7 @@ import java.util.List;
 
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
+import org.os890.dtp.api.event.NodeJoined;
 import org.os890.dtp.core.DtpEngine;
 import org.os890.dtp.core.query.DtpQueries.NodeView;
 import org.os890.dtp.core.query.DtpQueries.RunView;
@@ -208,7 +209,9 @@ class DtpTestClusterTest {
         Assertions.assertThat(cluster.node("own")).isSameAs(node);
         Assertions.assertThat(cluster.count("SELECT COUNT(*) FROM dtp_item")).isZero();
         Assertions.assertThat(cluster.dataSource()).isNotNull();
-        Assertions.assertThat(cluster.events(Object.class)).isEmpty();
+        // only the events of this cluster: its node joined, nothing else happened
+        Assertions.assertThat(cluster.events(Object.class)).singleElement().isInstanceOfSatisfying(NodeJoined.class,
+                e -> Assertions.assertThat(e.node()).isEqualTo("own"));
 
         assertThatThrownBy(() -> cluster.placeholder("late", "x"))
                 .hasMessage("the definition scripts were applied already");

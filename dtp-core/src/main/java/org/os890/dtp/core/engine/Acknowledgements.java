@@ -25,6 +25,9 @@ import java.util.Optional;
 import java.util.UUID;
 
 import org.os890.dtp.api.JobHandler;
+import org.os890.dtp.api.event.PackageCompleted;
+import org.os890.dtp.api.event.PackageRef;
+import org.os890.dtp.api.event.PackageRejected;
 import org.os890.dtp.core.domain.FailureKind;
 import org.os890.dtp.core.domain.ItemEventType;
 import org.os890.dtp.core.domain.JobDefinition;
@@ -203,6 +206,7 @@ public class Acknowledgements {
                 routing.complete(item, null);
             }
             store.acknowledged(c, row.id(), text, now);
+            ctx.publishAfterCommit(new PackageCompleted(ref(row, job, items.size()), text));
             Duration latency = row.sentAt() == null || row.sentAt().isAfter(now) ? Duration.ZERO
                     : Duration.between(row.sentAt(), now);
             ctx.tx().afterCommit(() -> ctx.telemetry().packageAcknowledged(step, latency));
@@ -212,10 +216,17 @@ public class Acknowledgements {
         for (ItemRow item : items) {
             journal(c, item, ItemEventType.REJECTED, reason, row, now);
         }
-        new PackageFailures(routing.decisions(), store).failed(c, row, job, null, kind, reason, now);
+        boolean exhausted = new PackageFailures(routing.decisions(), store).failed(c, row, job, null, kind, reason,
+                now);
+        ctx.publishAfterCommit(new PackageRejected(ref(row, job, items.size()), reason,
+                kind == FailureKind.TECHNICAL, exhausted));
         String cause = kind == FailureKind.TECHNICAL ? "timeout" : "rejected";
         ctx.tx().afterCommit(() -> ctx.telemetry().packageRejected(step, cause));
         return Outcome.REJECTED;
+    }
+
+    private static PackageRef ref(PackageRow row, JobDefinition job, int items) {
+        return new PackageRef(row.id(), job.name(), row.seq(), row.groupKey(), items, row.ackReference());
     }
 
     private void journal(Connection c, ItemRow item, ItemEventType type, String reason, PackageRow row, Instant now)

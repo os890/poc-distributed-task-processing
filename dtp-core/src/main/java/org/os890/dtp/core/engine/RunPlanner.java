@@ -22,6 +22,8 @@ import java.util.List;
 import java.util.UUID;
 
 import org.os890.dtp.api.RunOutcome;
+import org.os890.dtp.api.event.RunRef;
+import org.os890.dtp.api.event.RunSkipped;
 import org.os890.dtp.core.domain.ConcurrencyPolicy;
 import org.os890.dtp.core.domain.JobDefinition;
 import org.os890.dtp.core.domain.ProcessingSlots;
@@ -149,6 +151,10 @@ public class RunPlanner {
                 job.revision(), job.handlerClass(), state, outcome, trigger.type(), trigger.triggeredBy(), parameters,
                 notBefore, trigger.flowInstanceId(), trigger.cronSlot(), slotEnd), now);
         if (created) {
+            if (outcome == RunOutcome.SKIPPED) {
+                ctx.publishAfterCommit(new RunSkipped(new RunRef(id, job.name(), 0, null, trigger.flowInstanceId()),
+                        trigger.type().name(), trigger.triggeredBy()));
+            }
             return new Planned(id, true);
         }
         return new Planned(runs.findByKey(c, ctx.namespace(), trigger.runKey()).orElse(null), false);

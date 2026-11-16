@@ -627,3 +627,11 @@ metrics and traces.
 | Execution | `RunPlanned`, `RunSkipped`, `RunStarted`, `RunStopRequested`, `RunFinished`, `RunRequeued`, `LeaseLost`, `LeaseExpired`, `NodeJoined`, `NodeDrained`, `NodeLost`, `FlowInstanceStarted`, `FlowInstanceCompleted`, `PackageCompleted`, `PackageRejected`, `WindowQuiescing`, `WindowOpened`, `WindowClosed`, `JoinFired` |
 | Tracking | `ItemTracked`, `ItemRouted`, `ItemRoutedBack`, `ItemDeferred`, `ItemForked`, `BranchFinished`, `ItemJoined`, `ItemFailed`, `LoopLimitExceeded`, `ItemCompleted`, `ItemDiscarded` |
 | Intervention | `DecisionRequested`, `VoteCast`, `DecisionMade`, `DecisionFallbackDue` |
+
+> **First implementation (slices 5 to 23, [IMPLEMENTATION.md](../../IMPLEMENTATION.md)):** published are the
+> intervention events, `FlowInstanceStarted`, `FlowInstanceCompleted`, `JoinFired`, and since slice 23 the execution
+> events `RunStarted`, `RunFinished`, `RunSkipped`, `RunStopRequested`, `LeaseExpired`, `LeaseLost`, `NodeJoined`,
+> `NodeDrained`, `NodeLost`, `WindowQuiescing`, `WindowOpened`, `WindowClosed`, `PackageCompleted`,
+> `PackageRejected`, `JobEnabled` and `JobDisabled`, each by the node that committed the change. Not published yet:
+> `RunPlanned`, `RunRequeued`, `JobDefined`, `JobRevised`, `WindowDefined` and the tracking events (one per item and
+> step; the journal and the monitoring read model cover them).

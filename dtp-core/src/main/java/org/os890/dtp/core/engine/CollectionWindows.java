@@ -20,6 +20,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
+import org.os890.dtp.api.event.WindowQuiescing;
 import org.os890.dtp.core.domain.WindowDefinition;
 import org.os890.dtp.core.jdbc.WindowStore;
 import org.os890.dtp.core.jdbc.WindowStore.OccurrenceRow;
@@ -81,7 +82,9 @@ public class CollectionWindows {
             }
             UUID id = store.startQuiescing(c, window.id(), now, user, now).orElseThrow();
             LOG.log(System.Logger.Level.INFO, "window {0}: occurrence started by {1}", name, user);
-            return OccurrenceView.of(store.load(c, id).orElseThrow());
+            OccurrenceRow started = store.load(c, id).orElseThrow();
+            ctx.publishAfterCommit(new WindowQuiescing(WindowCoordinator.occurrence(started), user));
+            return OccurrenceView.of(started);
         }));
     }
 

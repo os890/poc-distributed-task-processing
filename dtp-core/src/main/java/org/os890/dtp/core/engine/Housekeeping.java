@@ -20,6 +20,8 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
+import org.os890.dtp.api.event.LeaseExpired;
+import org.os890.dtp.api.event.NodeLost;
 import org.os890.dtp.core.domain.BuiltInOption;
 import org.os890.dtp.core.domain.CalendarDefinition;
 import org.os890.dtp.core.domain.CronExpression;
@@ -31,6 +33,7 @@ import org.os890.dtp.core.domain.SubjectType;
 import org.os890.dtp.core.domain.TakeoverPolicy;
 import org.os890.dtp.core.domain.TriggerType;
 import org.os890.dtp.core.jdbc.LeaseStore.ExpiredLease;
+import org.os890.dtp.core.jdbc.NodeStore;
 import org.os890.dtp.core.jdbc.PackageStore;
 import org.os890.dtp.core.jdbc.RunStore;
 
@@ -89,8 +92,7 @@ public class Housekeeping {
         guarded("missed processing slots", this::moveMissedSlots);
         guarded("lease takeover", this::reapLeases);
         guarded("acknowledgement timeouts", acknowledgements::timeOut);
-        guarded("dead nodes", () -> ctx.tx().required(() -> ctx.tx().withConnection(c -> ctx.nodes().markDead(c,
-                ctx.namespace(), ctx.clock().now(c).minus(ctx.config().deadAfter())))));
+        guarded("dead nodes", this::markDeadNodes);
     }
 
     private Object planCron(JobDefinition job) {
@@ -179,6 +181,18 @@ public class Housekeeping {
         }));
     }
 
+    private Object markDeadNodes() {
+        return ctx.tx().required(() -> ctx.tx().withConnection(c -> {
+            for (NodeStore.LostNode node : ctx.nodes().markDead(c, ctx.namespace(),
+                    ctx.clock().now(c).minus(ctx.config().deadAfter()))) {
+                LOG.log(System.Logger.Level.WARNING, "node {0} ({1}) is lost, its last heartbeat was at {2}",
+                        node.name(), node.id(), node.lastHeartbeat());
+                ctx.publishAfterCommit(new NodeLost(node.id(), node.name(), node.color(), node.lastHeartbeat()));
+            }
+            return null;
+        }));
+    }
+
     private Object reapLeases() {
         var expired = ctx.tx().withConnection(c -> ctx.leases().findExpired(c, ctx.namespace(), ctx.clock().now(c)));
         for (ExpiredLease lease : expired) {
@@ -188,6 +202,8 @@ public class Housekeeping {
                 if (!ctx.leases().expire(c, lease, now)) {
                     return false;
                 }
+                // read before the takeover: it still names the node whose lease expired
+                ctx.publishAfterCommit(new LeaseExpired(ctx.runRef(c, lease.runId()), rerun));
                 if (ctx.runs().afterLeaseExpired(c, lease.runId(), rerun, now) && !rerun) {
                     // takeover policy ABANDON: an operator decides (DD-5)
                     decisions.request(c, new Decisions.NewRequest(DecisionKind.CHOICE, SubjectType.RUN,

@@ -28,6 +28,10 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 import org.os890.dtp.api.RunOutcome;
+import org.os890.dtp.api.WindowOccurrence;
+import org.os890.dtp.api.event.WindowClosed;
+import org.os890.dtp.api.event.WindowOpened;
+import org.os890.dtp.api.event.WindowQuiescing;
 import org.os890.dtp.core.domain.BuiltInOption;
 import org.os890.dtp.core.domain.CalendarDefinition;
 import org.os890.dtp.core.domain.CalendarShift;
@@ -95,9 +99,13 @@ public class WindowCoordinator {
             if (active.isEmpty() && window.enabled() && window.scheduleCron() != null) {
                 Optional<Instant> slot = dueSlot(c, window, now);
                 if (slot.isPresent()) {
-                    store.startQuiescing(c, window.id(), slot.get(), null, now).ifPresent(id -> LOG.log(
-                            System.Logger.Level.INFO, "window {0}: occurrence for {1} started", window.name(),
-                            slot.get()));
+                    Optional<UUID> started = store.startQuiescing(c, window.id(), slot.get(), null, now);
+                    if (started.isPresent()) {
+                        LOG.log(System.Logger.Level.INFO, "window {0}: occurrence for {1} started", window.name(),
+                                slot.get());
+                        ctx.publishAfterCommit(new WindowQuiescing(occurrence(store.load(c, started.get())
+                                .orElseThrow()), null));
+                    }
                     active = store.active(c, window.id());
                 }
             }
@@ -144,7 +152,9 @@ public class WindowCoordinator {
             if (store.open(c, occurrence.id(), now)) {
                 LOG.log(System.Logger.Level.INFO, "window {0}: occurrence {1} open, cut-off {2}", window.name(),
                         occurrence.seq(), now);
-                planCollector(c, window, store.load(c, occurrence.id()).orElseThrow(), now);
+                OccurrenceRow opened = store.load(c, occurrence.id()).orElseThrow();
+                ctx.publishAfterCommit(new WindowOpened(occurrence(opened), occurrence.forceOpen(),
+                        planCollector(c, window, opened, now)));
             }
             return;
         }
@@ -174,10 +184,12 @@ public class WindowCoordinator {
         if (store.transition(c, occurrence.id(), OccurrenceState.OPEN, OccurrenceState.CLOSED, now)) {
             LOG.log(System.Logger.Level.INFO, "window {0}: occurrence {1} closed ({2})", window.name(),
                     occurrence.seq(), run.outcome());
+            ctx.publishAfterCommit(new WindowClosed(occurrence(occurrence), false, run.outcome()));
         }
     }
 
-    private void planCollector(Connection c, WindowDefinition window, OccurrenceRow occurrence, Instant now)
+    /** Plans the collector run of an open occurrence; {@code null} if it can't be planned (a decision follows). */
+    private UUID planCollector(Connection c, WindowDefinition window, OccurrenceRow occurrence, Instant now)
             throws SQLException {
         JobDefinition collector = ctx.catalog().byId(window.collectorJobId());
         String key = "window:" + occurrence.id() + ":" + (occurrence.collectorAttempts() + 1);
@@ -188,10 +200,21 @@ public class WindowCoordinator {
             waitForDecision(c, window, store.load(c, occurrence.id()).orElseThrow(), "window " + window.name()
                     + " #" + occurrence.seq() + ": the collector " + collector.name() + " can't be planned",
                     BuiltInOption.WINDOW_COLLECTOR, null, now);
-            return;
+            return null;
         }
         store.assignRun(c, planned.runId(), occurrence.id());
         store.collectorPlanned(c, occurrence.id(), planned.runId());
+        return planned.runId();
+    }
+
+    /**
+     * An occurrence as the API names it.
+     *
+     * @param row the occurrence
+     * @return the API view
+     */
+    static WindowOccurrence occurrence(OccurrenceRow row) {
+        return new WindowOccurrence(row.id(), row.window(), row.seq(), row.from(), row.cutOff());
     }
 
     private void waitForDecision(Connection c, WindowDefinition window, OccurrenceRow occurrence, String reason,

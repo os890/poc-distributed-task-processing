@@ -18,6 +18,7 @@ package org.os890.dtp.core.jdbc;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
@@ -83,17 +84,39 @@ public class NodeStore {
     }
 
     /**
-     * Marks nodes without a recent heartbeat as dead.
+     * A node marked as dead.
+     *
+     * @param id            the node id
+     * @param name          its name
+     * @param color         its color, or {@code null}
+     * @param lastHeartbeat its last heartbeat
+     */
+    public record LostNode(UUID id, String name, String color, Instant lastHeartbeat) {
+    }
+
+    /**
+     * Marks nodes without a recent heartbeat as dead, each one conditionally (a heartbeat that commits meanwhile
+     * keeps its node alive).
      *
      * @param c         the connection
      * @param namespace the namespace
      * @param cutOff    heartbeats before this time are too old
-     * @return number of nodes marked as dead
+     * @return the nodes marked as dead
      * @throws SQLException on DB errors
      */
-    public int markDead(Connection c, String namespace, Instant cutOff) throws SQLException {
-        return Sql.update(c, "UPDATE dtp_node SET state = 'DEAD' WHERE namespace = ? AND state IN ('ACTIVE',"
-                + " 'STANDBY', 'DRAINING') AND heartbeat_at < ?", namespace, cutOff);
+    public List<LostNode> markDead(Connection c, String namespace, Instant cutOff) throws SQLException {
+        List<LostNode> candidates = Sql.query(c, "SELECT id, name, color, heartbeat_at FROM dtp_node"
+                + " WHERE namespace = ? AND state IN ('ACTIVE', 'STANDBY', 'DRAINING') AND heartbeat_at < ?",
+                rs -> new LostNode(Sql.uuid(rs, "id"), rs.getString("name"), rs.getString("color"),
+                        Sql.instant(rs, "heartbeat_at")), namespace, cutOff);
+        List<LostNode> lost = new ArrayList<>();
+        for (LostNode node : candidates) {
+            if (Sql.update(c, "UPDATE dtp_node SET state = 'DEAD' WHERE id = ? AND state IN ('ACTIVE', 'STANDBY',"
+                    + " 'DRAINING') AND heartbeat_at < ?", node.id(), cutOff) == 1) {
+                lost.add(node);
+            }
+        }
+        return lost;
     }
 
     /**

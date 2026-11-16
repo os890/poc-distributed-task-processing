@@ -16,6 +16,7 @@
 package org.os890.dtp.core.cluster;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.tuple;
 import static org.awaitility.Awaitility.await;
 
 import java.time.Duration;
@@ -32,6 +33,8 @@ import org.os890.dtp.api.JobContext;
 import org.os890.dtp.api.JobHandler;
 import org.os890.dtp.api.JobResult;
 import org.os890.dtp.api.NoParams;
+import org.os890.dtp.api.event.PackageCompleted;
+import org.os890.dtp.api.event.PackageRejected;
 import org.os890.dtp.core.DtpEngine;
 import org.os890.dtp.core.engine.Acknowledgements;
 import org.os890.dtp.core.engine.Acknowledgements.Outcome;
@@ -158,6 +161,18 @@ class AcknowledgementTest {
                     .hasSize(2 + 1 + 1 + 1);
             assertThat(tb.acknowledged).containsExactly("Sender", "Sender");
             assertThat(tb.rejected).containsExactly("Sender:rejected", "Sender:rejected");
+
+            // domain events: one per answer, the second rejection exhausted the retries
+            assertThat(cluster.events(PackageCompleted.class)).extracting(e -> e.pkg().reference(),
+                    PackageCompleted::acknowledgedBy).containsExactly(tuple(at, "custodian AT"),
+                    tuple(de, "custodian DE"));
+            assertThat(cluster.events(PackageRejected.class)).allSatisfy(e -> {
+                assertThat(e.pkg().job()).isEqualTo("Sender");
+                assertThat(e.pkg().groupKey()).isEqualTo("DE");
+                assertThat(e.pkg().items()).isEqualTo(1);
+                assertThat(e.timeout()).isFalse();
+            }).extracting(PackageRejected::reason, PackageRejected::retriesExhausted).containsExactly(
+                    tuple("DE rejected the file", false), tuple("DE rejected the file again", true));
         }
     }
 
@@ -181,6 +196,8 @@ class AcknowledgementTest {
             DecisionView decision = a.decisions().open(OTTO).getFirst();
             assertThat(decision.responsibleGroup()).isEqualTo(Decisions.OPERATORS);
             assertThat(telemetry.rejected).containsExactly("Sender:timeout", "Sender:timeout");
+            assertThat(cluster.events(PackageRejected.class)).allSatisfy(e -> assertThat(e.timeout()).isTrue())
+                    .extracting(PackageRejected::retriesExhausted).containsExactly(false, true);
             // a late answer finds nothing to acknowledge
             assertThat(a.acknowledgements().acknowledge(Sender.class, file, null)).isEqualTo(Outcome.NOT_WAITING);
         }
@@ -206,6 +223,12 @@ class AcknowledgementTest {
             PackageView done = a.queries().packages(10).stream().filter(p -> p.state().equals("DONE")).findFirst()
                                 .orElseThrow();
             assertThat(done.reference()).isEqualTo(fileOf(a, "AT"));
+            assertThat(cluster.events(PackageCompleted.class)).singleElement().satisfies(e -> {
+                assertThat(e.pkg().id()).isEqualTo(done.id());
+                assertThat(e.pkg().reference()).isEqualTo(done.reference());
+                assertThat(e.pkg().items()).isEqualTo(1);
+                assertThat(e.acknowledgedBy()).isNull();
+            });
             assertThat(done.sentAt()).isNotNull();
             assertThat(a.queries().journey(TestTrade.ITEM.name(), "T-AT-1")).extracting(JourneyEntry::type)
                     .doesNotContain("SENT").endsWith("COMPLETED");

@@ -38,9 +38,13 @@ import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.sql.Statement;
+import java.sql.Timestamp;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
@@ -764,6 +768,27 @@ class TradeFlowTest {
                .when().post("/trades/imports").then().statusCode(200);
         await().atMost(Duration.ofSeconds(30)).until(() -> queries.isIdle()
                 && types("T-2026-11-27-1").contains("COMPLETED"));
+    }
+
+    @Test
+    @Order(15)
+    void operationsAreInformedWhenANodeIsLost() throws SQLException {
+        // a node of the other color that crashed an hour ago: the housekeeping leader marks it as dead
+        try (Connection c = dataSource.getConnection(); PreparedStatement insert = c.prepareStatement("INSERT INTO"
+                + " dtp_node (id, namespace, name, color, state, started_at, heartbeat_at) SELECT ?, namespace,"
+                + " 'trade-node-9', 'green', 'STANDBY', ?, ? FROM dtp_node WHERE color = 'blue'")) {
+            Timestamp anHourAgo = Timestamp.from(Instant.now().minus(Duration.ofHours(1)));
+            insert.setObject(1, UUID.randomUUID());
+            insert.setTimestamp(2, anHourAgo);
+            insert.setTimestamp(3, anHourAgo);
+            assertThat(insert.executeUpdate()).isEqualTo(1);
+        }
+        await().atMost(Duration.ofSeconds(10)).until(() -> notifications.latest().stream().anyMatch(m ->
+                "dtp-operator".equals(m.audience()) && "Node lost: trade-node-9".equals(m.subject())));
+        assertThat(notifications.latest()).anySatisfy(m -> assertThat(m.body()).contains("(color green)")
+                .endsWith("Nodes: /dtp/nodes"));
+        given().when().get("/dtp/nodes").then().statusCode(200)
+               .body("find { it.name == 'trade-node-9' }.state", equalTo("DEAD"));
     }
 
     private boolean waitingFor(String custodian) {
