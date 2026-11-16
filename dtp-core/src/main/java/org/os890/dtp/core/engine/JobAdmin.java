@@ -29,6 +29,7 @@ import org.os890.dtp.api.RunHandle;
 import org.os890.dtp.core.DtpException;
 import org.os890.dtp.core.domain.JobDefinition;
 import org.os890.dtp.core.domain.TriggerType;
+import org.os890.dtp.core.jdbc.DecisionStore;
 import org.os890.dtp.core.jdbc.Sql;
 
 /**
@@ -43,6 +44,7 @@ public class JobAdmin {
     private final EngineContext ctx;
     private final RunPlanner planner;
     private final FlowInstances instances;
+    private final DecisionStore decisions = new DecisionStore();
 
     public JobAdmin(EngineContext ctx, RunPlanner planner) {
         this.ctx = ctx;
@@ -151,15 +153,36 @@ public class JobAdmin {
     }
 
     /**
-     * Cancels a run: a pending run is finished as {@code CANCELLED}, a running one is asked to stop softly.
+     * Cancels a run: a pending run or a run that waits for a decision is finished as {@code CANCELLED} (the open
+     * decision request is withdrawn), a running one is asked to stop softly.
      *
      * @param runId the run
-     * @return {@code true} if the run was pending or running
+     * @return {@code true} if the run was pending, waiting or running
      */
     public boolean cancel(UUID runId) {
+        return cancel(runId, null);
+    }
+
+    /**
+     * Cancels a run: a pending run or a run that waits for a decision is finished as {@code CANCELLED} (the open
+     * decision request is withdrawn), a running one is asked to stop softly.
+     *
+     * @param runId the run
+     * @param by    who cancels it, or {@code null}
+     * @return {@code true} if the run was pending, waiting or running
+     */
+    public boolean cancel(UUID runId, String by) {
         return ctx.tx().required(() -> ctx.tx().withConnection(c -> {
+            // the lock order of a cancel: the open requests about the run, its flow instance, the run
+            List<UUID> requests = decisions.lockOpenOfRuns(c, List.of(runId));
+            instances.lockForSuccessors(c, ctx.runs().load(c, runId).flowInstanceId());
             Instant now = ctx.clock().now(c);
             boolean cancelled = ctx.runs().cancel(c, runId, now);
+            if (cancelled) {
+                for (UUID request : requests) {
+                    decisions.withdraw(c, request, by, "run cancelled", now);
+                }
+            }
             instances.runEnded(c, runId, now);
             return cancelled;
         }));

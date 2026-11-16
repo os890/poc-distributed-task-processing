@@ -16,8 +16,11 @@
 package org.os890.dtp.rest;
 
 import java.util.List;
+import java.util.UUID;
 
 import jakarta.inject.Inject;
+import jakarta.ws.rs.BadRequestException;
+import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.DefaultValue;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.POST;
@@ -36,12 +39,15 @@ import org.os890.dtp.api.BusinessCalendars;
 import org.os890.dtp.core.engine.CollectionWindows;
 import org.os890.dtp.core.engine.CollectionWindows.OccurrenceView;
 import org.os890.dtp.core.engine.FlowInstances;
+import org.os890.dtp.core.engine.FlowInstances.Cancelled;
 import org.os890.dtp.core.engine.FlowInstances.InstanceView;
 import org.os890.dtp.core.query.DtpQueries;
 import org.os890.dtp.core.query.DtpQueries.ItemCount;
 import org.os890.dtp.core.query.DtpQueries.NodeView;
 
-/** The cluster: nodes, items per job, flow instances, collection windows and business calendars. */
+/**
+ * The cluster: nodes, items per job, flow instances (and cancelling one), collection windows and business calendars.
+ */
 @Path("/dtp")
 @Produces(MediaType.APPLICATION_JSON)
 @Tag(name = "dtp cluster", description = "Nodes, items, flow instances, collection windows, business calendars")
@@ -107,6 +113,37 @@ public class ClusterResource {
                                             @Context SecurityContext security, @Context HttpHeaders headers) {
         access.caller(security, headers).require(DtpAccess.VIEWER);
         return instances.latest(limit);
+    }
+
+    /**
+     * Cancels an open flow instance, e.g. an end of day started by mistake: its pending and waiting runs are
+     * cancelled, its running ones stop softly, the open decision requests about its runs are withdrawn.
+     *
+     * @param id       the instance
+     * @param cancel   the reason
+     * @param security the security context
+     * @param headers  the headers
+     * @return the runs cancelled or asked to stop and the withdrawn decision requests
+     */
+    @POST
+    @Path("/flow-instances/{id}/cancel")
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Operation(summary = "Cancels an open flow instance with a reason (operators)")
+    public Cancelled cancelFlowInstance(@PathParam("id") UUID id, CancelRequest cancel,
+                                        @Context SecurityContext security, @Context HttpHeaders headers) {
+        String user = access.caller(security, headers).require(DtpAccess.OPERATOR).requireUser();
+        if (cancel == null || cancel.reason() == null || cancel.reason().isBlank()) {
+            throw new BadRequestException("a cancel needs a reason");
+        }
+        return DtpErrors.call(() -> instances.cancel(id, user, cancel.reason()));
+    }
+
+    /**
+     * The body of a cancel.
+     *
+     * @param reason why
+     */
+    public record CancelRequest(String reason) {
     }
 
     /**

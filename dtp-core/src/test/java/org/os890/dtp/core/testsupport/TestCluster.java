@@ -278,14 +278,35 @@ public class TestCluster implements AutoCloseable {
     public void close() {
         nodes.forEach(DtpEngine::kill);
         if (schema != null) {
-            // zombies of killed nodes may still hold connections: the schema goes with the pool
+            // zombies of killed nodes may still hold connections: the schema goes with the pool; a zombie that still
+            // queries the schema may make the drop a deadlock victim, then it's tried again
             try {
-                tx.withConnection(c -> c.createStatement().execute("DROP SCHEMA " + schema + " CASCADE"));
+                dropSchema();
             } finally {
                 ((HikariDataSource) dataSource).close();
             }
         } else {
             tx.withConnection(c -> c.createStatement().execute("SHUTDOWN"));
+        }
+    }
+
+    private void dropSchema() {
+        for (int attempt = 1; ; attempt++) {
+            try {
+                tx.withConnection(c -> c.createStatement().execute("DROP SCHEMA " + schema + " CASCADE"));
+                return;
+            } catch (RuntimeException e) {
+                if (attempt == 5 || !(e.getCause() instanceof java.sql.SQLException sql)
+                        || !"40P01".equals(sql.getSQLState())) {
+                    throw e;
+                }
+                try {
+                    Thread.sleep(200L * attempt);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw e;
+                }
+            }
         }
     }
 }

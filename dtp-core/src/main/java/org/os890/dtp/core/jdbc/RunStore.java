@@ -354,11 +354,30 @@ public class RunStore {
      */
     public boolean waitForDecision(Connection c, UUID runId, long token, int attempt, String info, Instant now)
             throws SQLException {
+        // a run cancelled meanwhile (e.g. with its flow instance) doesn't wait: it finishes as cancelled
         int updated = Sql.update(c, "UPDATE dtp_run SET state = 'WAITING_FOR_DECISION', owner_node_id = NULL,"
                 + " stop_reason = NULL, info = ? WHERE id = ? AND fencing_token = ?"
-                + " AND state IN ('RUNNING', 'STOPPING')", info, runId, token);
-        endAttempt(c, runId, attempt, "DECISION_REQUESTED", now);
+                + " AND state IN ('RUNNING', 'STOPPING') AND (stop_reason IS NULL OR stop_reason <> 'CANCEL')",
+                info, runId, token);
+        if (updated == 1) {
+            endAttempt(c, runId, attempt, "DECISION_REQUESTED", now);
+        }
         return updated == 1;
+    }
+
+    /**
+     * Whether the attempt with the given fencing token still owns the run and was asked to stop by a cancel.
+     *
+     * @param c     the connection
+     * @param runId the run
+     * @param token the fencing token of the attempt
+     * @return {@code true} if the run was cancelled while the attempt ran
+     * @throws SQLException on DB errors
+     */
+    public boolean cancelledDuring(Connection c, UUID runId, long token) throws SQLException {
+        return Sql.queryOne(c, "SELECT COUNT(*) FROM dtp_run WHERE id = ? AND fencing_token = ?"
+                + " AND state = 'STOPPING' AND stop_reason = 'CANCEL'", rs -> rs.getInt(1), runId, token)
+                  .orElse(0) == 1;
     }
 
     /**
@@ -433,17 +452,17 @@ public class RunStore {
     }
 
     /**
-     * Requests a soft stop of a run, or cancels it if it didn't start yet.
+     * Requests a soft stop of a run, or cancels it if it didn't start yet or waits for a decision.
      *
      * @param c     the connection
      * @param runId the run
      * @param now   the DB time
-     * @return {@code true} if the run was pending or running
+     * @return {@code true} if the run was pending, waiting or running
      * @throws SQLException on DB errors
      */
     public boolean cancel(Connection c, UUID runId, Instant now) throws SQLException {
         int pending = Sql.update(c, "UPDATE dtp_run SET state = 'FINISHED', outcome = 'CANCELLED', finished_at = ?"
-                + " WHERE id = ? AND state = 'PENDING'", now, runId);
+                + " WHERE id = ? AND state IN ('PENDING', 'WAITING_FOR_DECISION')", now, runId);
         if (pending == 1) {
             return true;
         }

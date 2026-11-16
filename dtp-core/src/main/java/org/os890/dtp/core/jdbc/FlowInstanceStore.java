@@ -46,17 +46,28 @@ public class FlowInstanceStore {
      * @param flowName    the name: the root job
      * @param businessKey the business key
      * @param rootJobId   the root job
-     * @param state       OPEN or COMPLETED
+     * @param state       OPEN, COMPLETED or CANCELLED
      * @param startedAt   when it was started
      * @param completedAt when it completed, or {@code null}
+     * @param cancel      who cancelled it, when and why, or {@code null}
      */
     public record InstanceRow(UUID id, String namespace, String flowName, String businessKey, UUID rootJobId,
-                              String state, Instant startedAt, Instant completedAt) {
+                              String state, Instant startedAt, Instant completedAt, Cancel cancel) {
 
-        /** {@code true} until it completed. */
+        /** {@code true} until it completed or was cancelled. */
         public boolean isOpen() {
             return "OPEN".equals(state);
         }
+    }
+
+    /**
+     * The cancel of a flow instance.
+     *
+     * @param at     when
+     * @param by     who
+     * @param reason why
+     */
+    public record Cancel(Instant at, String by, String reason) {
     }
 
     /**
@@ -190,6 +201,44 @@ public class FlowInstanceStore {
     public boolean complete(Connection c, UUID id, Instant now) throws SQLException {
         return Sql.update(c, "UPDATE dtp_flow_instance SET state = 'COMPLETED', completed_at = ? WHERE id = ?"
                 + " AND state = 'OPEN'", now, id) == 1;
+    }
+
+    /**
+     * Cancels an open instance.
+     *
+     * @param c      the connection
+     * @param id     the instance
+     * @param cancel who, when and why
+     * @return {@code false} if it isn't open
+     * @throws SQLException on DB errors
+     */
+    public boolean cancel(Connection c, UUID id, Cancel cancel) throws SQLException {
+        return Sql.update(c, "UPDATE dtp_flow_instance SET state = 'CANCELLED', cancelled_at = ?, cancelled_by = ?,"
+                + " cancel_reason = ? WHERE id = ? AND state = 'OPEN'", cancel.at(), cancel.by(), cancel.reason(),
+                id) == 1;
+    }
+
+    /**
+     * Cancels the runs of an instance in one statement: pending runs and runs waiting for a decision finish as
+     * {@code CANCELLED}, running ones are asked to stop softly ({@code STOPPING}, stop reason {@code CANCEL}). One
+     * statement, so a run that changes its state meanwhile (claimed, waiting for a decision) is still caught: the DB
+     * evaluates the condition again on the new row version once the other transaction committed.
+     *
+     * @param c   the connection
+     * @param id  the instance
+     * @param now the DB time
+     * @return the number of runs cancelled or asked to stop
+     * @throws SQLException on DB errors
+     */
+    public int cancelRuns(Connection c, UUID id, Instant now) throws SQLException {
+        return Sql.update(c, "UPDATE dtp_run SET"
+                + " outcome = CASE WHEN state IN ('RUNNING', 'STOPPING') THEN outcome ELSE 'CANCELLED' END,"
+                + " finished_at = CASE WHEN state IN ('RUNNING', 'STOPPING') THEN finished_at ELSE ? END,"
+                + " state = CASE WHEN state IN ('RUNNING', 'STOPPING') THEN 'STOPPING' ELSE 'FINISHED' END,"
+                + " stop_reason = 'CANCEL'"
+                + " WHERE flow_instance_id = ?"
+                + " AND state IN ('PENDING', 'RUNNING', 'STOPPING', 'WAITING_FOR_DECISION')",
+                now, id);
     }
 
     /**
@@ -374,7 +423,9 @@ public class FlowInstanceStore {
     private static InstanceRow map(ResultSet rs) throws SQLException {
         return new InstanceRow(Sql.uuid(rs, "id"), rs.getString("namespace"), rs.getString("flow_name"),
                 rs.getString("business_key"), Sql.uuid(rs, "root_job_id"), rs.getString("state"),
-                Sql.instant(rs, "started_at"), Sql.instant(rs, "completed_at"));
+                Sql.instant(rs, "started_at"), Sql.instant(rs, "completed_at"),
+                rs.getString("cancelled_by") == null ? null : new Cancel(Sql.instant(rs, "cancelled_at"),
+                        rs.getString("cancelled_by"), rs.getString("cancel_reason")));
     }
 
     private static JoinRow join(ResultSet rs) throws SQLException {

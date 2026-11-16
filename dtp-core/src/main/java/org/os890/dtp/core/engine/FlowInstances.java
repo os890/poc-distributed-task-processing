@@ -20,11 +20,13 @@ import java.sql.SQLException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.UUID;
 
 import org.os890.dtp.api.FlowInstance;
 import org.os890.dtp.api.RunOutcome;
+import org.os890.dtp.api.event.FlowInstanceCancelled;
 import org.os890.dtp.api.event.FlowInstanceCompleted;
 import org.os890.dtp.api.event.FlowInstanceStarted;
 import org.os890.dtp.api.event.JoinFired;
@@ -34,9 +36,12 @@ import org.os890.dtp.core.domain.JobDefinition;
 import org.os890.dtp.core.domain.JoinMember;
 import org.os890.dtp.core.domain.RunState;
 import org.os890.dtp.core.domain.TriggerType;
+import org.os890.dtp.core.jdbc.DecisionStore;
 import org.os890.dtp.core.jdbc.FlowInstanceStore;
 import org.os890.dtp.core.jdbc.FlowInstanceStore.ArrivalRow;
+import org.os890.dtp.core.jdbc.FlowInstanceStore.Cancel;
 import org.os890.dtp.core.jdbc.FlowInstanceStore.InstanceRow;
+import org.os890.dtp.core.jdbc.FlowInstanceStore.InstanceRun;
 import org.os890.dtp.core.jdbc.FlowInstanceStore.JoinRow;
 import org.os890.dtp.core.jdbc.RunStore.RunRecord;
 
@@ -45,7 +50,10 @@ import org.os890.dtp.core.jdbc.RunStore.RunRecord;
  * of day of a business date: the root run and its successors. A run join plans its target once per instance when all
  * members finished with an accepted outcome. Every finishing run of an instance locks the instance row, then the row of
  * each join it is a member of: concurrent arrivals are serialized, so exactly one of them fires the join and exactly
- * one of them completes the instance.
+ * one of them completes the instance. An operator can cancel an open instance ({@link #cancel}).
+ * <p>
+ * Lock order: the open decision requests about runs, then the instance, then its runs. A decision about a run locks
+ * its request first, a finishing run locks its instance before its run row.
  */
 public class FlowInstances {
 
@@ -54,6 +62,7 @@ public class FlowInstances {
     private final EngineContext ctx;
     private final RunPlanner planner;
     private final FlowInstanceStore store;
+    private final DecisionStore decisions = new DecisionStore();
 
     public FlowInstances(EngineContext ctx) {
         this.ctx = ctx;
@@ -67,14 +76,34 @@ public class FlowInstances {
      * @param id          the instance
      * @param name        the flow name: the root job
      * @param businessKey the business key
-     * @param state       OPEN or COMPLETED
+     * @param state       OPEN, COMPLETED or CANCELLED
      * @param startedAt   when it was started
      * @param completedAt when it completed, or {@code null}
+     * @param cancel      who cancelled it, when and why, or {@code null}
      * @param runs        its runs, in the order they were planned
      * @param joins       its run joins
      */
     public record InstanceView(UUID id, String name, String businessKey, String state, Instant startedAt,
-                               Instant completedAt, List<RunView> runs, List<JoinView> joins) {
+                               Instant completedAt, CancelView cancel, List<RunView> runs, List<JoinView> joins) {
+    }
+
+    /**
+     * The cancel of an instance.
+     *
+     * @param at     when
+     * @param by     who
+     * @param reason why
+     */
+    public record CancelView(Instant at, String by, String reason) {
+    }
+
+    /**
+     * What a cancel did.
+     *
+     * @param runs      the runs cancelled or asked to stop
+     * @param withdrawn the decision requests withdrawn
+     */
+    public record Cancelled(int runs, int withdrawn) {
     }
 
     /**
@@ -160,7 +189,7 @@ public class FlowInstances {
             throw new IllegalStateException("job " + root.name() + " is disabled");
         }
         InstanceRow row = new InstanceRow(UUID.randomUUID(), ctx.namespace(), root.name(), businessKey, root.id(),
-                "OPEN", now, null);
+                "OPEN", now, null, null);
         boolean created = store.insertIfAbsent(c, row);
         InstanceRow instance = created ? row : store.find(c, ctx.namespace(), root.name(), businessKey).orElseThrow();
         RunPlanner.Planned run = planner.plan(c, root, new RunPlanner.Trigger(trigger.type(),
@@ -193,8 +222,9 @@ public class FlowInstances {
         }
         InstanceRow instance = store.lock(c, run.flowInstanceId()).orElseThrow();
         if (!instance.isOpen()) {
-            LOG.log(System.Logger.Level.WARNING, "run {0} finished after its flow instance {1} completed", runId,
-                    instance.id());
+            LOG.log(instance.cancel() != null ? System.Logger.Level.INFO : System.Logger.Level.WARNING,
+                    "run {0} ended ({1}) after its flow instance {2} {3} was {4}", runId, run.outcome(),
+                    instance.flowName(), instance.businessKey(), instance.state().toLowerCase(Locale.ROOT));
             return;
         }
         if (run.outcome() == RunOutcome.DEFERRED) {
@@ -270,7 +300,7 @@ public class FlowInstances {
             InstanceRow instance = store.lock(c, run.flowInstanceId()).orElseThrow();
             if (!instance.isOpen()) {
                 throw new DtpException("flow instance " + instance.flowName() + " " + instance.businessKey()
-                        + " completed already");
+                        + " is " + instance.state().toLowerCase(Locale.ROOT) + " already");
             }
             JobDefinition job = ctx.catalog().byId(run.jobId());
             RunPlanner.Planned planned = planner.plan(c, job, new RunPlanner.Trigger(TriggerType.RERUN,
@@ -281,6 +311,63 @@ public class FlowInstances {
             }
             return planned.runId();
         }));
+    }
+
+    /**
+     * Cancels an open instance, e.g. the end of day of a business date that was started by mistake: its pending runs
+     * and the runs that wait for a decision finish as {@code CANCELLED}, its running runs are asked to stop softly
+     * (they end as {@code CANCELLED} once their handler noticed it, or with their own outcome if they finished before),
+     * the open decision requests about its runs are withdrawn. Nothing is planned in the instance any more: no
+     * transitions, no joins, no continuations, no reruns. Its business key stays taken: starting it again finds the
+     * cancelled instance.
+     *
+     * @param instanceId the instance
+     * @param by         who cancels it
+     * @param reason     why (required)
+     * @return what the cancel did
+     * @throws DtpException if the instance completed or was cancelled already
+     */
+    public Cancelled cancel(UUID instanceId, String by, String reason) {
+        if (reason == null || reason.isBlank()) {
+            throw new IllegalArgumentException("a cancel needs a reason");
+        }
+        return ctx.tx().required(() -> ctx.tx().withConnection(c -> {
+            if (store.load(c, instanceId).isEmpty()) {
+                throw new IllegalArgumentException("unknown flow instance " + instanceId);
+            }
+            List<UUID> runIds = store.runs(c, instanceId).stream().map(InstanceRun::id).toList();
+            List<UUID> requests = decisions.lockOpenOfRuns(c, runIds);
+            InstanceRow instance = store.lock(c, instanceId).orElseThrow();
+            Instant now = ctx.clock().now(c);
+            if (!store.cancel(c, instanceId, new Cancel(now, by, reason))) {
+                throw new DtpException("flow instance " + instance.flowName() + " " + instance.businessKey()
+                        + " is " + instance.state().toLowerCase(Locale.ROOT) + " already");
+            }
+            int runs = store.cancelRuns(c, instanceId, now);
+            int withdrawn = 0;
+            for (UUID request : requests) {
+                if (decisions.withdraw(c, request, by, "flow instance cancelled: " + reason, now)) {
+                    withdrawn++;
+                }
+            }
+            LOG.log(System.Logger.Level.INFO, "flow instance {0} {1} cancelled by {2} ({3}): {4} runs cancelled or"
+                    + " asked to stop, {5} decision requests withdrawn", instance.flowName(), instance.businessKey(),
+                    by, reason, runs, withdrawn);
+            ctx.publishAfterCommit(new FlowInstanceCancelled(api(instance), by, reason));
+            return new Cancelled(runs, withdrawn);
+        }));
+    }
+
+    /**
+     * Locks the instance of a finishing run before its run row (the lock order of {@link #cancel}).
+     *
+     * @param c          the connection
+     * @param instanceId the instance, or {@code null} outside an instance
+     * @return {@code false} if the instance completed or was cancelled: nothing is planned in it any more
+     * @throws SQLException on DB errors
+     */
+    boolean lockForSuccessors(Connection c, UUID instanceId) throws SQLException {
+        return instanceId == null || store.lock(c, instanceId).map(InstanceRow::isOpen).orElse(false);
     }
 
     /**
@@ -347,8 +434,10 @@ public class FlowInstances {
             joins.add(new JoinView(target.name(), join.fired(), join.runId(), arrived,
                     join.fired() ? List.of() : waitingFor(target, arrivals)));
         }
+        CancelView cancel = row.cancel() == null ? null
+                : new CancelView(row.cancel().at(), row.cancel().by(), row.cancel().reason());
         return new InstanceView(row.id(), row.flowName(), row.businessKey(), row.state(), row.startedAt(),
-                row.completedAt(), runs, joins);
+                row.completedAt(), cancel, runs, joins);
     }
 
     private List<String> waitingFor(JobDefinition target, List<ArrivalRow> arrivals) {

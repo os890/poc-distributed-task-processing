@@ -19,6 +19,8 @@ import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -50,7 +52,7 @@ public class DecisionStore {
      * @param optionType        enum class of custom options, or {@code null}
      * @param requiredApprovals quorum of an approval
      * @param responsibleGroup  the responsible team, or {@code null}
-     * @param state             OPEN or DECIDED
+     * @param state             OPEN, DECIDED or WITHDRAWN
      * @param decidedOption     the decision
      * @param decidedBy         who decided
      * @param decidedAt         when
@@ -168,6 +170,44 @@ public class DecisionStore {
         return Sql.update(c, "UPDATE dtp_decision_request SET state = 'DECIDED', decided_option = ?, decided_by = ?,"
                 + " decided_at = ?, decision_comment = ? WHERE id = ? AND state = 'OPEN'", option, by, now, comment,
                 id) == 1;
+    }
+
+    /**
+     * Locks the open requests about runs, in the order of their ids (the order every cancel locks them in). A cancel
+     * locks them before the flow instance and the runs, like a decision that locks its request first.
+     *
+     * @param c      the connection
+     * @param runIds the runs
+     * @return the open requests
+     * @throws SQLException on DB errors
+     */
+    public List<UUID> lockOpenOfRuns(Connection c, Collection<UUID> runIds) throws SQLException {
+        List<UUID> open = new ArrayList<>();
+        for (UUID runId : runIds) {
+            open.addAll(Sql.query(c, "SELECT id FROM dtp_decision_request WHERE subject_id = ? AND state = 'OPEN'",
+                    rs -> Sql.uuid(rs, "id"), runId));
+        }
+        open.sort(null);
+        for (UUID id : open) {
+            lock(c, id);
+        }
+        return open;
+    }
+
+    /**
+     * Withdraws an open request: its subject doesn't wait for it any more (e.g. its run was cancelled).
+     *
+     * @param c      the connection
+     * @param id     the request
+     * @param by     who cancelled the subject
+     * @param reason why
+     * @param now    the DB time
+     * @return {@code false} if it isn't open
+     * @throws SQLException on DB errors
+     */
+    public boolean withdraw(Connection c, UUID id, String by, String reason, Instant now) throws SQLException {
+        return Sql.update(c, "UPDATE dtp_decision_request SET state = 'WITHDRAWN', decided_by = ?, decided_at = ?,"
+                + " decision_comment = ? WHERE id = ? AND state = 'OPEN'", by, now, reason, id) == 1;
     }
 
     /**

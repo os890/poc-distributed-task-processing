@@ -106,6 +106,13 @@ class DtpSecurityTest {
                 .statusCode(200);
         as("ada", "dtp-admin").when().get("/dtp/monitor/steps/trade-enrichment/failures").then().statusCode(200);
 
+        // only operators cancel flow instances (an unknown one: 404)
+        String unknown = "/dtp/flow-instances/" + java.util.UUID.randomUUID() + "/cancel";
+        as("vera", "dtp-viewer").contentType(ContentType.JSON).body(Map.of("reason", "wrong date"))
+                .when().post(unknown).then().statusCode(403);
+        as("otto", "dtp-operator").contentType(ContentType.JSON).body(Map.of("reason", "wrong date"))
+                .when().post(unknown).then().statusCode(404);
+
         // the API is documented
         given().accept(ContentType.JSON).when().get("/q/openapi?format=json").then().statusCode(200)
                 .body("paths", hasKey("/dtp/jobs/{name}/runs"))

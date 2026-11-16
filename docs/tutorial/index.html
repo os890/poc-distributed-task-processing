@@ -885,6 +885,14 @@ completes when none of its runs is pending or active, no join waits and no faile
 rerun or continuation. The runs of an instance are never skipped by the concurrency policy of a job: each belongs to its
 business date. The events <code>FlowInstanceStarted</code>, <code>JoinFired</code> and <code>FlowInstanceCompleted</code> follow
 the commits.</p>
+<p>An end of day that was started by mistake, or that another process replaces, is cancelled by an operator, with a
+reason. Its pending and waiting runs are cancelled, running ones stop softly, open requests about its runs (e.g.
+the sign-off) are withdrawn, and nothing is planned in it any more. A cancelled instance is final
+(<code>FlowInstanceCancelled</code>); a single run that waits for a decision can be cancelled the same way
+(<code>POST /dtp/runs/{id}/cancel</code>):</p>
+<figure class="code"><pre><code class="language-bash">curl -X POST localhost:8080/dtp/flow-instances/&lt;id of the instance&gt;/cancel -H &#x27;X-User: otto&#x27; \
+     -H &#x27;Content-Type: application/json&#x27; -d &#x27;{&quot;reason&quot;: &quot;2026-11-19 was closed by the old system&quot;}&#x27;
+# {&quot;runs&quot;: 1, &quot;withdrawn&quot;: 1}</code></pre></figure>
 </section>
 <section class="step" id="calendar" aria-labelledby="calendar-h"><h2 id="calendar-h"><span class="n">Step 19</span>Plan around business days</h2>
 <p>An end of day only makes sense on business days, and some steps may only work while a partner system is

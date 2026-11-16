@@ -503,10 +503,11 @@ public class DtpEngine {
     }
 
     /**
-     * Cancels a run: a pending run is finished as CANCELLED, a running one is asked to stop softly.
+     * Cancels a run: a pending run or a run that waits for a decision is finished as CANCELLED, a running one is
+     * asked to stop softly.
      *
      * @param runId the run
-     * @return {@code true} if the run was pending or running
+     * @return {@code true} if the run was pending, waiting or running
      */
     public boolean cancel(UUID runId) {
         return requireStarted(jobAdmin).cancel(runId);

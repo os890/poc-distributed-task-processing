@@ -151,7 +151,7 @@ public class Decisions {
      * @param options           the options
      * @param requiredApprovals the quorum (approvals only)
      * @param responsibleGroup  the responsible team, or {@code null}
-     * @param state             OPEN or DECIDED
+     * @param state             OPEN, DECIDED or WITHDRAWN (its run was cancelled)
      * @param votes             the votes (approvals only)
      * @param decidedOption     the decision
      * @param decidedBy         who decided
@@ -590,7 +590,8 @@ public class Decisions {
                     + (kind == DecisionKind.CHOICE ? ", vote instead" : ", decide instead"));
         }
         if (!request.isOpen()) {
-            throw new DtpException("decision request " + request.id() + " was decided already");
+            throw new DtpException("decision request " + request.id() + " was "
+                    + ("WITHDRAWN".equals(request.state()) ? "withdrawn: " + request.comment() : "decided already"));
         }
         if (!who.isMemberOf(request.responsibleGroup())) {
             throw new DtpException("decision request " + request.id() + " is assigned to "

@@ -36,6 +36,7 @@ import org.os890.dtp.core.domain.LeaseLostException;
 import org.os890.dtp.core.domain.RouteModel;
 import org.os890.dtp.core.domain.TransitionDefinition;
 import org.os890.dtp.core.domain.TriggerType;
+import org.os890.dtp.core.jdbc.DecisionStore;
 import org.os890.dtp.core.jdbc.RunStore;
 import org.os890.dtp.core.jdbc.RunStore.RunRecord;
 import org.os890.dtp.core.spi.Telemetry;
@@ -69,6 +70,7 @@ public class RunExecutor {
     }
 
     private final FlowInstances instances;
+    private final DecisionStore decisions = new DecisionStore();
 
     /** How an execution ended; {@code decision} is the request the run waits for instead of finishing. */
     private record Result(RunOutcome outcome, String resultType, String resultStatus, String error, UUID decision) {
@@ -209,22 +211,36 @@ public class RunExecutor {
         return issues > 0 ? RunOutcome.COMPLETED_WITH_ISSUES : RunOutcome.SUCCEEDED;
     }
 
-    private void finish(RunContext run, Result result) {
-        if (result.decision() != null) {
-            waitForDecision(run, result.decision());
-            return;
+    private void finish(RunContext run, Result asked) {
+        Result result = asked;
+        if (asked.decision() != null) {
+            if (waitForDecision(run, asked.decision())) {
+                return;
+            }
+            // cancelled while the handler asked (e.g. with its flow instance): the run doesn't wait, it's cancelled
+            result = new Result(RunOutcome.CANCELLED, asked.resultType(), asked.resultStatus(), null, asked.decision());
         }
+        finishRun(run, result);
+    }
+
+    private void finishRun(RunContext run, Result result) {
         ClaimedRun claimed = run.claimed();
         ctx.tx().required(() -> ctx.tx().withConnection(c -> {
             var now = ctx.clock().now(c);
+            // successors belong to the flow instance of the run (DD-4), as long as it's open: its row is locked
+            // before the run row, like a cancel of the instance does
+            UUID flowInstance = ctx.runs().load(c, claimed.runId()).flowInstanceId();
+            boolean successors = instances.lockForSuccessors(c, flowInstance);
             RunStore.RunEnd end = new RunStore.RunEnd(result.outcome(), result.resultStatus(),
                     run.runInfo().toJson(), result.error(), run.stopReason());
             if (!ctx.runs().finish(c, claimed.runId(), claimed.token(), claimed.attempt(), end, now)) {
                 throw new LeaseLostException(claimed.runId(), claimed.token());
             }
-            // successors belong to the flow instance of the run (DD-4)
-            UUID flowInstance = ctx.runs().load(c, claimed.runId()).flowInstanceId();
-            for (TransitionDefinition transition : run.job().transitions()) {
+            if (result.decision() != null) {
+                decisions.withdraw(c, result.decision(), null, "run cancelled", now);
+            }
+            for (TransitionDefinition transition : successors ? run.job().transitions()
+                    : List.<TransitionDefinition>of()) {
                 if (transition.matches(result.outcome(), result.resultStatus())) {
                     JobDefinition target = ctx.catalog().byId(transition.targetJobId());
                     planner.plan(c, target, new RunPlanner.Trigger(TriggerType.TRANSITION,
@@ -253,19 +269,25 @@ public class RunExecutor {
      * The handler requested a decision: the run waits for it instead of finishing. No transitions, no join arrival;
      * the decision plans the run again or finishes it.
      */
-    private void waitForDecision(RunContext run, UUID decision) {
+    private boolean waitForDecision(RunContext run, UUID decision) {
         ClaimedRun claimed = run.claimed();
-        ctx.tx().required(() -> ctx.tx().withConnection(c -> {
+        boolean waits = ctx.tx().required(() -> ctx.tx().withConnection(c -> {
             if (!ctx.runs().waitForDecision(c, claimed.runId(), claimed.token(), claimed.attempt(),
                     run.runInfo().toJson(), ctx.clock().now(c))) {
+                if (ctx.runs().cancelledDuring(c, claimed.runId(), claimed.token())) {
+                    return false;
+                }
                 throw new LeaseLostException(claimed.runId(), claimed.token());
             }
             if (!ctx.leases().release(c, claimed.jobId(), claimed.runId(), claimed.token())) {
                 throw new LeaseLostException(claimed.runId(), claimed.token());
             }
-            return null;
+            return true;
         }));
-        LOG.log(System.Logger.Level.INFO, "run {0} of job {1} waits for decision request {2}", claimed.runId(),
-                run.job().name(), decision);
+        if (waits) {
+            LOG.log(System.Logger.Level.INFO, "run {0} of job {1} waits for decision request {2}", claimed.runId(),
+                    run.job().name(), decision);
+        }
+        return waits;
     }
 }

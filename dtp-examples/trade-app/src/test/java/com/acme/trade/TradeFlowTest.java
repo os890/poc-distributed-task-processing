@@ -668,6 +668,64 @@ class TradeFlowTest {
         given().when().delete("/dtp/flows/trade-flow/activations/lanes/RETAIL").then().statusCode(401);
     }
 
+    @Test
+    @Order(13)
+    void anOperatorCancelsAnEndOfDayStartedByMistake() {
+        LocalDate date = LocalDate.of(2026, 11, 19);
+        String eod = "/eod/" + date;
+        given().contentType(ContentType.JSON).body(new ImportParams(date, 4))
+               .when().post("/trades/imports").then().statusCode(200);
+        await().atMost(Duration.ofSeconds(30)).until(() -> queries.isIdle()
+                && types("T-2026-11-19-4").contains("ROUTED_BACK"));
+        given().header("X-User", "otto").when().post(eod).then().statusCode(200);
+        await().atMost(Duration.ofSeconds(30)).until(() -> "FAILED".equals(given().when().get(eod)
+                .then().extract().path("runs.find { it.job == 'pnl-report' }.outcome")));
+
+        // the P&L is corrected and run again: the sign-off waits for product control
+        given().contentType(ContentType.JSON).body(new ImportParams(date, 0))
+               .when().post("/trades/imports").then().statusCode(200);
+        await().atMost(Duration.ofSeconds(30)).until(() -> queries.isIdle()
+                && types("T-2026-11-19-4").contains("COMPLETED"));
+        String failed = given().when().get(eod).then().extract().path("runs.find { it.job == 'pnl-report' }.id");
+        given().header("X-User", "otto").when().post("/dtp/runs/" + failed + "/reruns").then().statusCode(200);
+        await().atMost(Duration.ofSeconds(30)).until(() -> "WAITING_FOR_DECISION".equals(given().when().get(eod)
+                .then().extract().path("runs.find { it.job == 'eod-sign-off' }.state")));
+        String signOff = given().header("X-User", "pia").header("X-Groups", "product_control")
+                                .when().get("/dtp/decisions").then().statusCode(200)
+                                .extract().path("find { it.businessKey == 'end-of-day 2026-11-19' }.id");
+
+        // then operations notice that the date was closed by the old system: the end of day is cancelled
+        String id = given().when().get(eod).then().extract().path("id");
+        String cancel = "/dtp/flow-instances/" + id + "/cancel";
+        Map<String, String> reason = Map.of("reason", "2026-11-19 was closed by the old system");
+        given().contentType(ContentType.JSON).body(reason).when().post(cancel).then().statusCode(401);
+        given().header("X-User", "otto").contentType(ContentType.JSON).body(Map.of("reason", " "))
+               .when().post(cancel).then().statusCode(400);
+        given().header("X-User", "otto").contentType(ContentType.JSON).body(reason)
+               .when().post(cancel).then().statusCode(200).body("runs", is(1)).body("withdrawn", is(1));
+
+        given().when().get(eod).then().statusCode(200)
+               .body("state", equalTo("CANCELLED"))
+               .body("cancel.by", equalTo("otto"))
+               .body("cancel.reason", equalTo("2026-11-19 was closed by the old system"))
+               .body("runs.find { it.job == 'eod-sign-off' }.outcome", equalTo("CANCELLED"))
+               .body("runs.job", not(hasItem("settlement-export")));
+        given().header("X-User", "pia").header("X-Groups", "product_control").when().get("/dtp/decisions")
+               .then().statusCode(200).body("businessKey", not(hasItem("end-of-day 2026-11-19")));
+        vote(signOff, "pia", "product_control", "APPROVE").statusCode(409);
+        await().atMost(Duration.ofSeconds(10)).until(() -> notifications.latest().stream().anyMatch(m ->
+                "operations".equals(m.audience()) && "EOD 2026-11-19 cancelled".equals(m.subject())));
+        assertThat(notifications.latest()).anySatisfy(m -> {
+            assertThat(m.audience()).isEqualTo("product_control");
+            assertThat(m.subject()).isEqualTo("EOD 2026-11-19 cancelled");
+            assertThat(m.body()).isEqualTo("Cancelled by otto: 2026-11-19 was closed by the old system."
+                    + " A pending sign-off isn't needed any more.");
+        });
+        given().header("X-User", "otto").when().post("/dtp/runs/" + failed + "/reruns").then().statusCode(409);
+        given().header("X-User", "otto").contentType(ContentType.JSON).body(reason)
+               .when().post(cancel).then().statusCode(409);
+    }
+
     private boolean waitingFor(String custodian) {
         return queries.packages(50).stream().anyMatch(p -> custodian.equals(p.groupKey())
                 && "settlement-sender".equals(p.job()) && "WAITING_FOR_DECISION".equals(p.state()));

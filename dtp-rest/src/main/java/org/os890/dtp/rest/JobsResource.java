@@ -190,20 +190,21 @@ public class JobsResource {
     }
 
     /**
-     * Cancels a run: a pending one is finished as cancelled, a running one stops softly.
+     * Cancels a run: a pending one or one that waits for a decision is finished as cancelled, a running one stops
+     * softly.
      *
      * @param id       the run
      * @param security the security context
      * @param headers  the headers
-     * @return whether the run was pending or running
+     * @return whether the run was pending, waiting or running
      */
     @POST
     @Path("/runs/{id}/cancel")
-    @Operation(summary = "Cancels a run: pending ones are cancelled, running ones stop softly (operators)")
+    @Operation(summary = "Cancels a run: pending and waiting ones are cancelled, running ones stop softly (operators)")
     public Map<String, Boolean> cancel(@PathParam("id") UUID id, @Context SecurityContext security,
                                        @Context HttpHeaders headers) {
-        access.caller(security, headers).require(DtpAccess.OPERATOR);
-        return Map.of("cancelled", jobs.cancel(id));
+        String user = access.caller(security, headers).require(DtpAccess.OPERATOR).requireUser();
+        return Map.of("cancelled", jobs.cancel(id, user));
     }
 
     /**
