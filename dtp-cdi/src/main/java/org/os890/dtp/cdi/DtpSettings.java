@@ -46,6 +46,10 @@ public class DtpSettings {
         string(config, "dtp.namespace").or(() -> string(config, "quarkus.application.name"))
                                        .ifPresent(builder::namespace);
         string(config, "dtp.node-name").ifPresent(builder::nodeName);
+        // red/green deployments (slice 21): the color of this release and its version
+        string(config, "dtp.node.color").filter(v -> !v.isBlank()).map(String::trim).ifPresent(builder::color);
+        string(config, "dtp.node.app-version").or(() -> string(config, "quarkus.application.version"))
+                                              .ifPresent(builder::appVersion);
         duration(config, "dtp.poll-interval", builder::pollInterval);
         duration(config, "dtp.housekeeping-interval", builder::housekeepingInterval);
         duration(config, "dtp.heartbeat-interval", builder::heartbeatInterval);

@@ -199,7 +199,7 @@ Configuration (MP Config, typed via `@ConfigProperties(prefix = "dtp")`), with d
 |----------|---------|---------|
 | `dtp.enabled` | `true` | Engine active by default (G5) |
 | `dtp.namespace` | application name | Namespace of this node (D18) |
-| `dtp.node.color` | `default` | Deployment color for red/green (D21) |
+| `dtp.node.color` | none | Deployment color for red/green (D21); while another color is active the node stands by (first implementation, slice 21) |
 | `dtp.node.max-concurrent-runs` | `64` | Upper bound of runs executed in parallel by this node (virtual threads). A continuous step keeps its long-lived run, and with it a slot, so the default is sized for many steps |
 | `dtp.poll.min-interval` / `dtp.poll.max-interval` | `500ms` / `10s` | Adaptive polling (DD-11) |
 | `dtp.poll.jitter` | `0.25` | ±25% random jitter on every poll and leader attempt (DD-14) |

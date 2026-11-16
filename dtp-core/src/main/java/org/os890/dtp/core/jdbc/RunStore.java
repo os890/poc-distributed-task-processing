@@ -224,18 +224,21 @@ public class RunStore {
      * @param namespace      the namespace
      * @param now            the DB time
      * @param handlerClasses capabilities of the claiming node
+     * @param color          the color of the claiming node (nothing is claimed while another color is active)
      * @param limit          maximum number of candidates
      * @return the candidates
      * @throws SQLException on DB errors
      */
     public List<Candidate> claimCandidates(Connection c, String namespace, Instant now,
-                                           Collection<String> handlerClasses, int limit) throws SQLException {
+                                           Collection<String> handlerClasses, String color, int limit)
+            throws SQLException {
         if (handlerClasses.isEmpty()) {
             return List.of();
         }
         String in = String.join(", ", handlerClasses.stream().map(h -> "?").toList());
         List<Object> params = new ArrayList<>(List.of(namespace, now, now));
         params.addAll(handlerClasses);
+        params.add(color == null ? "" : color);
         params.add(limit);
         List<Candidate> rows = Sql.query(c, "SELECT r.id, r.job_id, CASE WHEN r.not_before > r.created_at"
                 + " THEN r.not_before ELSE r.created_at END AS due_at FROM dtp_run r"
@@ -247,6 +250,9 @@ public class RunStore {
                 + " AND NOT EXISTS (SELECT 1 FROM dtp_window_paused_job wp JOIN dtp_window_occurrence wo"
                 + " ON wo.window_id = wp.window_id WHERE wp.job_id = r.job_id"
                 + " AND wo.state IN ('QUIESCING', 'OPEN', 'WAITING_FOR_DECISION'))"
+                // red/green: while another color is active, this node claims nothing (slice 21)
+                + " AND NOT EXISTS (SELECT 1 FROM dtp_namespace_control nc WHERE nc.namespace = r.namespace"
+                + " AND nc.active_color IS NOT NULL AND nc.active_color <> ?)"
                 + " ORDER BY r.priority DESC, r.created_at, r.id LIMIT ?",
                 rs -> new Candidate(Sql.uuid(rs, "id"), Sql.uuid(rs, "job_id"), Sql.instant(rs, "due_at")),
                 params.toArray());

@@ -289,7 +289,8 @@ itself. Threads are never interrupted.
 - Definitions in the DB are independent of the code version. Each run stores the definition snapshot it was created with.
 - Nodes advertise **color/version + capabilities**. Runs are only claimed by nodes that have the handler.
 - An **activation switch** per namespace (DB/REST) lets the new color take over new runs while the old color drains.
-  Takeover rules still apply if the old color is killed hard. Who flips the switch is defined later **[Q-1]**.
+  Takeover rules still apply if the old color is killed hard. Who flips the switch is defined later **[Q-1]**; the
+  first implementation proposes an answer (slice 21).
 - Because different app versions may run at the same time, definitions must **not** be provisioned by code at startup
   (e.g. the builder API). In such setups definitions come from SQL/Flyway or the REST admin API only.
 - Framework schema migrations (Flyway) follow **expand/contract**, so old and new versions can run against the same schema.
@@ -642,6 +643,10 @@ Only MicroProfile/Jakarta APIs are used. There is no UI in the PoC.
 
 ### Deferred
 - **Q-1** Red/green activation: who flips the switch, and what does the old color still finish? → *Defined later.*
+  Proposal of the first implementation (slice 21, to be confirmed): an administrator or the deployment pipeline
+  switches (REST, role `dtp-admin`), refused without a live node of the color; the old color stops claiming at once
+  and finishes only the current unit of work of its runs (soft stop `DRAIN`), the new color continues them; the
+  switch activates the flow versions of the new color, switching back is the rollback.
 - **Q-10** Typed `JobType<P, R>` keys in addition to class literals → *continued as design DQ-5.*
 
 ### Open

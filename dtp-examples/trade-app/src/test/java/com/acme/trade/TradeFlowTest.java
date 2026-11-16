@@ -28,6 +28,7 @@ import static org.hamcrest.Matchers.hasItem;
 import static org.hamcrest.Matchers.hasItems;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.not;
+import static org.hamcrest.Matchers.nullValue;
 import static org.hamcrest.Matchers.startsWith;
 
 import java.net.URI;
@@ -724,6 +725,45 @@ class TradeFlowTest {
         given().header("X-User", "otto").when().post("/dtp/runs/" + failed + "/reruns").then().statusCode(409);
         given().header("X-User", "otto").contentType(ContentType.JSON).body(reason)
                .when().post(cancel).then().statusCode(409);
+    }
+
+    @Test
+    @Order(14)
+    void thePipelineSwitchesTheActiveColorOfARedGreenDeployment() {
+        // the test node is of color blue; no color is active yet, so all colors claim
+        String node = given().when().get("/dtp/nodes").then().statusCode(200)
+                             .body("color", everyItem(equalTo("blue"))).extract().path("[0].name");
+        given().when().get("/dtp/cluster/color").then().statusCode(200).body("activeColor", nullValue());
+        String color = "/dtp/cluster/color";
+        given().header("X-User", "pipeline").contentType(ContentType.JSON)
+               .body(Map.of("color", "green", "reason", "release 2")).when().post(color).then().statusCode(409);
+        given().header("X-User", "pipeline").contentType(ContentType.JSON).body(Map.of("color", "Green!"))
+               .when().post(color).then().statusCode(400);
+
+        // blue becomes the active color: the node stays active, operations are informed
+        given().header("X-User", "pipeline").contentType(ContentType.JSON)
+               .body(Map.of("color", "blue", "reason", "release 1.1")).when().post(color).then().statusCode(200)
+               .body("changed", is(true)).body("activeColor", equalTo("blue")).body("nodes", hasItem(node))
+               .body("warnings", empty());
+        given().header("X-User", "pipeline").contentType(ContentType.JSON).body(Map.of("color", "blue"))
+               .when().post(color).then().statusCode(200).body("changed", is(false));
+        given().when().get(color).then().statusCode(200).body("activeColor", equalTo("blue"))
+               .body("switches[0].switchedBy", equalTo("pipeline"))
+               .body("switches[0].reason", equalTo("release 1.1"));
+        await().atMost(Duration.ofSeconds(10)).until(() -> notifications.latest().stream().anyMatch(m ->
+                "operations".equals(m.audience()) && "Active color: blue".equals(m.subject())));
+        assertThat(notifications.latest()).anySatisfy(m -> assertThat(m.body())
+                .isEqualTo("Switched from all colors by pipeline: release 1.1. Flow versions activated: none."));
+        given().when().get("/q/health/ready").then().statusCode(200)
+               .body("checks.find { it.name == 'dtp' }.data.color", equalTo("blue"))
+               .body("checks.find { it.name == 'dtp' }.data.standby", is(false));
+
+        // the active node keeps working
+        LocalDate date = LocalDate.of(2026, 11, 27);
+        given().contentType(ContentType.JSON).body(new ImportParams(date, 3))
+               .when().post("/trades/imports").then().statusCode(200);
+        await().atMost(Duration.ofSeconds(30)).until(() -> queries.isIdle()
+                && types("T-2026-11-27-1").contains("COMPLETED"));
     }
 
     private boolean waitingFor(String custodian) {

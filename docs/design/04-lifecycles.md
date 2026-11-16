@@ -187,6 +187,10 @@ stateDiagram-v2
     [*] --> ACTIVE : registered on startup
     ACTIVE --> ACTIVE : heartbeat
     ACTIVE --> DRAINING : shutdown signal or REST drain
+    ACTIVE --> STANDBY : another color activated, own runs stop after their unit of work
+    STANDBY --> ACTIVE : own color activated
+    STANDBY --> DRAINING : shutdown signal
+    STANDBY --> DEAD : heartbeat older than dead-after
     DRAINING --> LEFT : own runs finished or released
     ACTIVE --> DEAD : heartbeat older than dead-after, set by reaper
     DRAINING --> DEAD : heartbeat older than dead-after
@@ -194,7 +198,8 @@ stateDiagram-v2
     DEAD --> [*]
 ```
 
-Node liveness is used for monitoring and fast takeover. **Correctness relies only on leases and fencing tokens.** A node
+A node is `STANDBY` while another color than its own is active (red/green, 05 §5.9): it serves requests but
+doesn't claim runs and doesn't lead. Node liveness is used for monitoring and fast takeover. **Correctness relies only on leases and fencing tokens.** A node
 wrongly marked `DEAD` cannot cause damage.
 
 ## 4.8 Flow Instance

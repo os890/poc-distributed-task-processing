@@ -36,8 +36,12 @@ import jakarta.ws.rs.core.SecurityContext;
 import org.eclipse.microprofile.openapi.annotations.Operation;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 import org.os890.dtp.api.BusinessCalendars;
+import org.os890.dtp.core.DtpConfig;
 import org.os890.dtp.core.engine.CollectionWindows;
 import org.os890.dtp.core.engine.CollectionWindows.OccurrenceView;
+import org.os890.dtp.core.engine.ColorAdmin;
+import org.os890.dtp.core.engine.ColorAdmin.ColorState;
+import org.os890.dtp.core.engine.ColorAdmin.ColorSwitch;
 import org.os890.dtp.core.engine.FlowInstances;
 import org.os890.dtp.core.engine.FlowInstances.Cancelled;
 import org.os890.dtp.core.engine.FlowInstances.InstanceView;
@@ -46,11 +50,13 @@ import org.os890.dtp.core.query.DtpQueries.ItemCount;
 import org.os890.dtp.core.query.DtpQueries.NodeView;
 
 /**
- * The cluster: nodes, items per job, flow instances (and cancelling one), collection windows and business calendars.
+ * The cluster: nodes, the active color (red/green), items per job, flow instances (and cancelling one), collection
+ * windows and business calendars.
  */
 @Path("/dtp")
 @Produces(MediaType.APPLICATION_JSON)
-@Tag(name = "dtp cluster", description = "Nodes, items, flow instances, collection windows, business calendars")
+@Tag(name = "dtp cluster", description = "Nodes, active color, items, flow instances, collection windows,"
+        + " business calendars")
 public class ClusterResource {
 
     @Inject
@@ -68,6 +74,9 @@ public class ClusterResource {
     @Inject
     BusinessCalendars calendars;
 
+    @Inject
+    ColorAdmin colors;
+
     /**
      * The nodes of the cluster.
      *
@@ -81,6 +90,60 @@ public class ClusterResource {
     public List<NodeView> nodes(@Context SecurityContext security, @Context HttpHeaders headers) {
         access.caller(security, headers).require(DtpAccess.VIEWER);
         return queries.nodes();
+    }
+
+    /**
+     * The active color of red/green deployments and the latest switches.
+     *
+     * @param security the security context
+     * @param headers  the headers
+     * @return the state
+     */
+    @GET
+    @Path("/cluster/color")
+    @Operation(summary = "The active color (red/green deployments) and the latest switches")
+    public ColorState color(@Context SecurityContext security, @Context HttpHeaders headers) {
+        access.caller(security, headers).require(DtpAccess.VIEWER);
+        return colors.state(10);
+    }
+
+    /**
+     * Switches the active color, e.g. by the deployment pipeline once the nodes of the new release are up: only its
+     * nodes claim runs and lead from now on, the nodes of the old color finish the current unit of work of their runs
+     * and stand by; the flow versions of the new color are activated. Refused (409) if the color has no live node.
+     *
+     * @param request  the color ({@code null}: all colors claim) and the reason
+     * @param security the security context
+     * @param headers  the headers
+     * @return the switch, with warnings (e.g. jobs no node of the color can run)
+     */
+    @POST
+    @Path("/cluster/color")
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Operation(summary = "Switches the active color of red/green deployments (administrators)")
+    public ColorSwitch switchColor(ColorRequest request, @Context SecurityContext security,
+                                   @Context HttpHeaders headers) {
+        String user = access.caller(security, headers).require(DtpAccess.ADMIN).requireUser();
+        if (request == null) {
+            throw new BadRequestException("a switch needs a body, e.g. {\"color\": \"green\"}");
+        }
+        if (request.color() != null) {
+            try {
+                DtpConfig.requireColor(request.color());
+            } catch (IllegalArgumentException e) {
+                throw new BadRequestException(e.getMessage(), e);
+            }
+        }
+        return DtpErrors.call(() -> colors.activate(request.color(), user, request.reason()));
+    }
+
+    /**
+     * The body of a switch.
+     *
+     * @param color  the color to activate, or {@code null}: all colors claim
+     * @param reason why, e.g. the release
+     */
+    public record ColorRequest(String color, String reason) {
     }
 
     /**

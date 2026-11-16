@@ -40,6 +40,7 @@ import org.os890.dtp.api.ProcessStep;
 import org.os890.dtp.core.DtpEngine;
 import org.os890.dtp.core.engine.Acknowledgements;
 import org.os890.dtp.core.engine.CollectionWindows;
+import org.os890.dtp.core.engine.ColorAdmin;
 import org.os890.dtp.core.engine.Decisions;
 import org.os890.dtp.core.engine.FlowAdmin;
 import org.os890.dtp.core.engine.FlowInstances;
@@ -192,6 +193,11 @@ public class DtpBootstrap {
     @Produces
     JobAdmin jobAdmin() {
         return engine().jobAdmin();
+    }
+
+    @Produces
+    ColorAdmin colors() {
+        return engine().colors();
     }
 
     @Produces

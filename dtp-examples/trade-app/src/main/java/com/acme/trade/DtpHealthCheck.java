@@ -24,7 +24,10 @@ import org.eclipse.microprofile.health.Readiness;
 import org.os890.dtp.cdi.DtpBootstrap;
 import org.os890.dtp.core.DtpEngine;
 
-/** Ready once this node runs the dtp engine (MP Health). */
+/**
+ * Ready once this node runs the dtp engine (MP Health). A node on standby (another color is active, red/green) is
+ * ready as well: it serves REST and only finishes the current units of work of its runs.
+ */
 @Readiness
 @ApplicationScoped
 public class DtpHealthCheck implements HealthCheck {
@@ -40,6 +43,8 @@ public class DtpHealthCheck implements HealthCheck {
                                   .withData("node", engine.config().nodeName())
                                   .withData("namespace", engine.config().namespace())
                                   .withData("leader", engine.isLeader())
+                                  .withData("color", String.valueOf(engine.config().color()))
+                                  .withData("standby", engine.isStandby())
                                   .withData("activeRuns", engine.activeRuns())
                                   .build();
     }

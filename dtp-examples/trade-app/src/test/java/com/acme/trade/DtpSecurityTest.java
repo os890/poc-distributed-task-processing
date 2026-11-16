@@ -113,10 +113,18 @@ class DtpSecurityTest {
         as("otto", "dtp-operator").contentType(ContentType.JSON).body(Map.of("reason", "wrong date"))
                 .when().post(unknown).then().statusCode(404);
 
+        // red/green: everybody with a role reads the active color, only administrators switch it
+        as("vera", "dtp-viewer").when().get("/dtp/cluster/color").then().statusCode(200);
+        as("otto", "dtp-operator").contentType(ContentType.JSON).body(Map.of("color", "blue"))
+                .when().post("/dtp/cluster/color").then().statusCode(403);
+        as("ada", "dtp-admin").contentType(ContentType.JSON).body(Map.of("color", "blue", "reason", "release 1.1"))
+                .when().post("/dtp/cluster/color").then().statusCode(200).body("activeColor", equalTo("blue"));
+
         // the API is documented
         given().accept(ContentType.JSON).when().get("/q/openapi?format=json").then().statusCode(200)
                 .body("paths", hasKey("/dtp/jobs/{name}/runs"))
                 .body("paths", hasKey("/dtp/decisions/{id}/votes"))
+                .body("paths", hasKey("/dtp/cluster/color"))
                 .body("tags.name", hasItem("dtp jobs and runs"));
     }
 

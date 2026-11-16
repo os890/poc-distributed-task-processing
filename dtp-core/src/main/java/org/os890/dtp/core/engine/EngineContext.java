@@ -25,6 +25,7 @@ import org.os890.dtp.api.ProcessStep;
 import org.os890.dtp.core.DtpConfig;
 import org.os890.dtp.core.domain.FailureKind;
 import org.os890.dtp.core.domain.ItemEventType;
+import org.os890.dtp.core.jdbc.ColorStore;
 import org.os890.dtp.core.jdbc.DbClock;
 import org.os890.dtp.core.jdbc.FlowStore;
 import org.os890.dtp.core.jdbc.ItemStore;
@@ -61,12 +62,14 @@ import org.os890.dtp.core.spi.Transactions;
  * @param steps    the validated step infos by class
  * @param events    the publisher of the domain events
  * @param telemetry the telemetry
+ * @param colors    the store of the active color
+ * @param color     the color of this node and the active color as last read (red/green)
  */
 public record EngineContext(DtpConfig config, UUID nodeId, Transactions tx, SqlDialect dialect, DbClock clock,
                             JobStore jobs, LeaseStore leases, RunStore runs, NodeStore nodes, LeaderStore leaders,
                             ItemStore items, FlowStore flows, JobCatalog catalog, JsonCodec json, StepRegistry registry,
                             Map<Class<? extends ProcessStep>, StepInfo> steps, DomainEventPublisher events,
-                            Telemetry telemetry) {
+                            Telemetry telemetry, ColorStore colors, NodeColor color) {
 
     /** The namespace. */
     public String namespace() {

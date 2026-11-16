@@ -65,8 +65,12 @@ public class RunClaimer {
      * @return the claimed runs, this node holds their leases
      */
     public List<ClaimedRun> claim(int max) {
+        if (ctx.color().standby()) {
+            // another color is active (red/green); the query checks the switch as well, so it applies at once
+            return List.of();
+        }
         List<Candidate> candidates = ctx.tx().withConnection(c -> ctx.runs().claimCandidates(c, ctx.namespace(),
-                ctx.clock().now(c), capabilities, max * 3));
+                ctx.clock().now(c), capabilities, ctx.color().color(), max * 3));
         candidates = new ArrayList<>(candidates);
         Collections.shuffle(candidates, random);
         List<ClaimedRun> claimed = new ArrayList<>();

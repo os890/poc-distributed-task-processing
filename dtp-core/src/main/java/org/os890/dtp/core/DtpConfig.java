@@ -41,14 +41,23 @@ import java.util.Objects;
  * @param flowExportPath      file of the export
  * @param definitionPlaceholders Flyway placeholders of the application's job definitions, e.g. a fallback delay
  * @param monitoring          the monitoring read model ({@code dtp.monitoring.*})
+ * @param color               the color of this node's release for red/green deployments ({@code dtp.node.color}),
+ *                            or {@code null}: only nodes of the active color claim runs (slice 21)
+ * @param appVersion          the version of the application, shown with the nodes ({@code dtp.node.app-version})
  */
 public record DtpConfig(String namespace, String nodeName, Duration pollInterval, Duration housekeepingInterval,
                         Duration heartbeatInterval, Duration leaseDuration, Duration leaderLeaseDuration,
                         Duration deadAfter, Duration misfireGrace, Duration definitionRefresh, Duration drainTimeout,
                         int maxConcurrentRuns, boolean migrateSchema, Long randomSeed, FlowExport flowExport,
-                        Path flowExportPath, Map<String, String> definitionPlaceholders, Monitoring monitoring) {
+                        Path flowExportPath, Map<String, String> definitionPlaceholders, Monitoring monitoring,
+                        String color, String appVersion) {
+
+    private static final java.util.regex.Pattern COLOR = java.util.regex.Pattern.compile("[a-z0-9][a-z0-9-]{0,19}");
 
     public DtpConfig {
+        if (color != null) {
+            requireColor(color);
+        }
         Objects.requireNonNull(monitoring, "monitoring");
         definitionPlaceholders = Map.copyOf(definitionPlaceholders);
         Objects.requireNonNull(namespace, "namespace");
@@ -59,6 +68,21 @@ public record DtpConfig(String namespace, String nodeName, Duration pollInterval
         if (heartbeatInterval.multipliedBy(2).compareTo(leaseDuration) > 0) {
             throw new IllegalArgumentException("leaseDuration must be at least twice the heartbeatInterval");
         }
+    }
+
+    /**
+     * Checks the name of a color: lower case letters, digits and dashes, at most 20 characters (e.g. {@code green}).
+     *
+     * @param color the color
+     * @return the color
+     * @throws IllegalArgumentException if it isn't a valid color
+     */
+    public static String requireColor(String color) {
+        if (color == null || !COLOR.matcher(color).matches()) {
+            throw new IllegalArgumentException("invalid color " + color
+                    + ": lower case letters, digits and dashes, at most 20 characters");
+        }
+        return color;
     }
 
     /**
@@ -203,6 +227,8 @@ public record DtpConfig(String namespace, String nodeName, Duration pollInterval
         private Path flowExportPath = Path.of("target", "dtp-flows.md");
         private Map<String, String> definitionPlaceholders = Map.of();
         private Monitoring monitoring = Monitoring.defaults();
+        private String color;
+        private String appVersion;
 
         public Builder namespace(String value) {
             namespace = value;
@@ -319,11 +345,34 @@ public record DtpConfig(String namespace, String nodeName, Duration pollInterval
             return this;
         }
 
+        /**
+         * The color of this node's release for red/green deployments (slice 21): while another color is active, the
+         * node is on standby (it doesn't claim runs and doesn't lead).
+         *
+         * @param value the color, e.g. {@code green}, or {@code null} for none
+         * @return this builder
+         */
+        public Builder color(String value) {
+            color = value;
+            return this;
+        }
+
+        /**
+         * The version of the application, shown with the nodes.
+         *
+         * @param value the version, or {@code null}
+         * @return this builder
+         */
+        public Builder appVersion(String value) {
+            appVersion = value;
+            return this;
+        }
+
         public DtpConfig build() {
             return new DtpConfig(namespace, nodeName, pollInterval, housekeepingInterval, heartbeatInterval,
                     leaseDuration, leaderLeaseDuration, deadAfter, misfireGrace, definitionRefresh, drainTimeout,
                     maxConcurrentRuns, migrateSchema, randomSeed, flowExport, flowExportPath, definitionPlaceholders,
-                    monitoring);
+                    monitoring, color, appVersion);
         }
 
         private static String defaultNodeName() {

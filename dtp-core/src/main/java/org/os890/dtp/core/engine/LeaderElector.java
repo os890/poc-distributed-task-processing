@@ -59,8 +59,19 @@ public class LeaderElector {
         }));
     }
 
-    /** Acquires or renews the leadership. */
+    /**
+     * Acquires or renews the leadership. A node on standby (another color is active, red/green) resigns and doesn't
+     * try: the leaders run the code of the active release.
+     */
     public void tick() {
+        if (ctx.color().standby()) {
+            if (term >= 0) {
+                LOG.log(System.Logger.Level.INFO, "node {0} resigns as {1}: color {2} is active",
+                        ctx.config().nodeName(), title, ctx.color().activeColor());
+                resign();
+            }
+            return;
+        }
         long duration = ctx.config().leaderLeaseDuration().toNanos();
         long started = System.nanoTime();
         try {

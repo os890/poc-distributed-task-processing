@@ -183,14 +183,17 @@ erDiagram
         varchar host
         varchar color
         varchar app_version
-        varchar state "ACTIVE DRAINING LEFT DEAD"
+        varchar state "ACTIVE STANDBY DRAINING LEFT DEAD"
         json capabilities "handler classes"
+        json flow_versions "flow name to version hash"
         timestamp started_at
         timestamp heartbeat_at
     }
     DTP_NAMESPACE_CONTROL {
         varchar namespace PK
         varchar active_color "red/green activation switch"
+        timestamp switched_at
+        varchar switched_by
     }
     DTP_LEADER {
         varchar namespace PK

@@ -117,11 +117,15 @@ public class DtpQueries {
      *
      * @param id          the node id
      * @param name        the node name
-     * @param state       the state
+     * @param state       the state ({@code ACTIVE}, {@code STANDBY} while another color is active, {@code DRAINING},
+     *                    {@code LEFT}, {@code DEAD})
      * @param heartbeatAt last heartbeat
      * @param leader      {@code true} if it leads the housekeeping
+     * @param color       the color of its release (red/green), or {@code null}
+     * @param appVersion  the version of the application, or {@code null}
      */
-    public record NodeView(UUID id, String name, String state, Instant heartbeatAt, boolean leader) {
+    public record NodeView(UUID id, String name, String state, Instant heartbeatAt, boolean leader, String color,
+                           String appVersion) {
     }
 
     /**
@@ -235,12 +239,14 @@ public class DtpQueries {
      * @return the nodes
      */
     public List<NodeView> nodes() {
-        return tx.withConnection(c -> Sql.query(c, "SELECT n.id, n.name, n.state, n.heartbeat_at,"
+        return tx.withConnection(c -> Sql.query(c, "SELECT n.id, n.name, n.state, n.heartbeat_at, n.color,"
+                + " n.app_version,"
                 + " CASE WHEN l.holder_node_id = n.id THEN TRUE ELSE FALSE END AS leader FROM dtp_node n"
                 + " LEFT JOIN dtp_leader l ON l.namespace = n.namespace AND l.role = 'housekeeping'"
                 + " WHERE n.namespace = ? ORDER BY n.started_at",
                 rs -> new NodeView(Sql.uuid(rs, "id"), rs.getString("name"), rs.getString("state"),
-                        Sql.instant(rs, "heartbeat_at"), rs.getBoolean("leader")), namespace));
+                        Sql.instant(rs, "heartbeat_at"), rs.getBoolean("leader"), rs.getString("color"),
+                        rs.getString("app_version")), namespace));
     }
 
     /**

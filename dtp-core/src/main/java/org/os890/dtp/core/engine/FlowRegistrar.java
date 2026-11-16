@@ -41,7 +41,8 @@ import org.os890.dtp.core.jdbc.FlowStore.VersionRow;
  * Registers the flows defined in Java at startup: generates the missing jobs of their steps, stores each flow as an
  * immutable version (identified by its content hash) and activates a new version unless an operator activated a
  * version manually. Registering a known version never activates it, so nodes of different releases (red/green) and
- * restarts don't switch the active version back and forth.
+ * restarts don't switch the active version back and forth. A node on standby (another color is active) activates
+ * nothing: the switch to its color does.
  */
 public class FlowRegistrar {
 
@@ -114,7 +115,14 @@ public class FlowRegistrar {
         }
         List<ActivationRow> activations = flows.activations(c, flowId);
         boolean manual = !activations.isEmpty() && !activations.getFirst().generated();
-        if (activations.isEmpty() || (created && !manual)) {
+        if (ctx.color().standby()) {
+            // red/green: the release on standby doesn't change the flows of the active one, the switch to its color
+            // activates the versions its nodes run (slice 21)
+            if (!versionId.equals(flows.activeVersion(c, flowId, now).orElse(null))) {
+                LOG.log(System.Logger.Level.INFO, "flow {0}: version {1} of color {2} is a candidate until {2} is"
+                        + " the active color", model.name(), hash, ctx.color().color());
+            }
+        } else if (activations.isEmpty() || (created && !manual)) {
             flows.activate(c, flowId, new ActivationRow(versionId, now, true, ctx.config().nodeName(),
                     created ? "new version deployed" : "first activation", now, null));
             LOG.log(System.Logger.Level.INFO, "flow {0}: version {1} is active", model.name(), hash);

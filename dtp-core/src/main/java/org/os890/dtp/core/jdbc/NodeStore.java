@@ -25,21 +25,35 @@ import java.util.UUID;
 public class NodeStore {
 
     /**
-     * Registers a node.
+     * A node to register.
      *
-     * @param c            the connection
      * @param id           the node id
      * @param namespace    the namespace
      * @param name         a human-readable name
      * @param host         the host name
+     * @param color        the color of its release (red/green), or {@code null}
+     * @param appVersion   the version of the application, or {@code null}
+     * @param state        {@code ACTIVE}, or {@code STANDBY} while another color is active
      * @param capabilities handler classes as JSON array
-     * @param now          the DB time
+     * @param flowVersions the flow versions it runs as JSON object (flow name to hash)
+     */
+    public record Registration(UUID id, String namespace, String name, String host, String color, String appVersion,
+                               String state, String capabilities, String flowVersions) {
+    }
+
+    /**
+     * Registers a node.
+     *
+     * @param c    the connection
+     * @param node the node
+     * @param now  the DB time
      * @throws SQLException on DB errors
      */
-    public void register(Connection c, UUID id, String namespace, String name, String host, String capabilities,
-                         Instant now) throws SQLException {
-        Sql.update(c, "INSERT INTO dtp_node (id, namespace, name, host, state, capabilities, started_at, heartbeat_at)"
-                + " VALUES (?, ?, ?, ?, 'ACTIVE', ?, ?, ?)", id, namespace, name, host, capabilities, now, now);
+    public void register(Connection c, Registration node, Instant now) throws SQLException {
+        Sql.update(c, "INSERT INTO dtp_node (id, namespace, name, host, color, app_version, state, capabilities,"
+                + " flow_versions, started_at, heartbeat_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", node.id(),
+                node.namespace(), node.name(), node.host(), node.color(), node.appVersion(), node.state(),
+                node.capabilities(), node.flowVersions(), now, now);
     }
 
     /**
@@ -48,7 +62,7 @@ public class NodeStore {
      *
      * @param c       the connection
      * @param id      the node id
-     * @param state   ACTIVE or DRAINING
+     * @param state   ACTIVE, STANDBY or DRAINING
      * @param now     the DB time
      * @throws SQLException on DB errors
      */
@@ -79,7 +93,7 @@ public class NodeStore {
      */
     public int markDead(Connection c, String namespace, Instant cutOff) throws SQLException {
         return Sql.update(c, "UPDATE dtp_node SET state = 'DEAD' WHERE namespace = ? AND state IN ('ACTIVE',"
-                + " 'DRAINING') AND heartbeat_at < ?", namespace, cutOff);
+                + " 'STANDBY', 'DRAINING') AND heartbeat_at < ?", namespace, cutOff);
     }
 
     /**
@@ -93,5 +107,57 @@ public class NodeStore {
     public List<String> activeCapabilities(Connection c, String namespace) throws SQLException {
         return Sql.query(c, "SELECT capabilities FROM dtp_node WHERE namespace = ? AND state = 'ACTIVE'",
                 rs -> rs.getString("capabilities"), namespace);
+    }
+
+    /**
+     * A live node of a color.
+     *
+     * @param id           the node id
+     * @param name         its name
+     * @param state        {@code ACTIVE} or {@code STANDBY}
+     * @param capabilities its handler classes as JSON array
+     * @param flowVersions its flow versions as JSON object, or {@code null}
+     */
+    public record ColorNode(UUID id, String name, String state, String capabilities, String flowVersions) {
+    }
+
+    /**
+     * The live nodes of a color: active or on standby, with a recent heartbeat (draining nodes don't count).
+     *
+     * @param c          the connection
+     * @param namespace  the namespace
+     * @param color      the color
+     * @param aliveAfter heartbeats before this time are too old
+     * @return the nodes
+     * @throws SQLException on DB errors
+     */
+    public List<ColorNode> liveNodes(Connection c, String namespace, String color, Instant aliveAfter)
+            throws SQLException {
+        return Sql.query(c, "SELECT id, name, state, capabilities, flow_versions FROM dtp_node WHERE namespace = ?"
+                + " AND color = ? AND state IN ('ACTIVE', 'STANDBY') AND heartbeat_at >= ? ORDER BY started_at",
+                rs -> new ColorNode(Sql.uuid(rs, "id"), rs.getString("name"), rs.getString("state"),
+                        rs.getString("capabilities"), rs.getString("flow_versions")), namespace, color, aliveAfter);
+    }
+
+    /**
+     * Applies a switch of the active color to the states of the nodes at once (their heartbeats keep them): nodes of
+     * the active color are {@code ACTIVE}, all others {@code STANDBY}; without an active color all are {@code ACTIVE}.
+     * Draining, left and dead nodes keep their state.
+     *
+     * @param c           the connection
+     * @param namespace   the namespace
+     * @param activeColor the active color, or {@code null}
+     * @return number of nodes that are active now
+     * @throws SQLException on DB errors
+     */
+    public int applyActiveColor(Connection c, String namespace, String activeColor) throws SQLException {
+        if (activeColor == null) {
+            return Sql.update(c, "UPDATE dtp_node SET state = 'ACTIVE' WHERE namespace = ? AND state IN ('ACTIVE',"
+                    + " 'STANDBY')", namespace);
+        }
+        Sql.update(c, "UPDATE dtp_node SET state = 'STANDBY' WHERE namespace = ? AND state = 'ACTIVE'"
+                + " AND (color IS NULL OR color <> ?)", namespace, activeColor);
+        return Sql.update(c, "UPDATE dtp_node SET state = 'ACTIVE' WHERE namespace = ? AND state IN ('ACTIVE',"
+                + " 'STANDBY') AND color = ?", namespace, activeColor);
     }
 }

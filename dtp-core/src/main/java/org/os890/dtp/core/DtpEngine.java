@@ -26,6 +26,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Random;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.UUID;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -48,6 +49,7 @@ import org.os890.dtp.core.engine.Acknowledgements;
 import org.os890.dtp.core.engine.BusinessCalendarsImpl;
 import org.os890.dtp.core.engine.ClaimedRun;
 import org.os890.dtp.core.engine.CollectionWindows;
+import org.os890.dtp.core.engine.ColorAdmin;
 import org.os890.dtp.core.engine.Decisions;
 import org.os890.dtp.core.engine.EngineContext;
 import org.os890.dtp.core.engine.FlowAdmin;
@@ -63,11 +65,13 @@ import org.os890.dtp.core.engine.JobEngineImpl;
 import org.os890.dtp.core.engine.JsonCodec;
 import org.os890.dtp.core.engine.LeaderElector;
 import org.os890.dtp.core.engine.MonitoringProjector;
+import org.os890.dtp.core.engine.NodeColor;
 import org.os890.dtp.core.engine.RunClaimer;
 import org.os890.dtp.core.engine.RunContext;
 import org.os890.dtp.core.engine.RunExecutor;
 import org.os890.dtp.core.engine.RunPlanner;
 import org.os890.dtp.core.engine.StepInfo;
+import org.os890.dtp.core.jdbc.ColorStore;
 import org.os890.dtp.core.jdbc.DbClock;
 import org.os890.dtp.core.jdbc.FlowStore;
 import org.os890.dtp.core.jdbc.ItemStore;
@@ -130,6 +134,7 @@ public class DtpEngine {
     private JourneyQueries journeys;
     private Acknowledgements acknowledgements;
     private JobAdmin jobAdmin;
+    private ColorAdmin colorAdmin;
     private MonitoringFeed monitoringFeed;
     private LeaderElector projectionLeader;
     private ScheduledExecutorService scheduler;
@@ -241,7 +246,8 @@ public class DtpEngine {
                 new RunStore(dialect), new NodeStore(), new LeaderStore(dialect), new ItemStore(dialect, telemetry),
                 new FlowStore(dialect),
                 new JobCatalog(tx, jobStore, config.namespace(), config.definitionRefresh().toNanos()),
-                new JsonCodec(), registry, Map.copyOf(steps), events, telemetry);
+                new JsonCodec(), registry, Map.copyOf(steps), events, telemetry, new ColorStore(),
+                new NodeColor(config.color()));
         RunPlanner planner = new RunPlanner(ctx);
         ItemRouting routing = new ItemRouting(ctx);
         List<FlowModel> flowModels = FlowRegistrar.compile(registry.flowDefinitions());
@@ -259,6 +265,7 @@ public class DtpEngine {
         decisions = routing.decisions();
         acknowledgements = new Acknowledgements(ctx, routing);
         jobAdmin = new JobAdmin(ctx, planner);
+        colorAdmin = new ColorAdmin(ctx);
         flowInstances = new FlowInstances(ctx);
         windows = new CollectionWindows(ctx);
         Set<String> capabilities = steps.keySet().stream().map(Class::getName).collect(Collectors.toSet());
@@ -274,9 +281,15 @@ public class DtpEngine {
         journeys = new JourneyQueries(tx, config.namespace(), queries);
         monitoringFeed = new MonitoringFeed(monitoring, config.monitoring().feedInterval());
 
+        Map<String, String> flowVersions = new TreeMap<>();
+        flowModels.forEach(model -> flowVersions.put(model.name(), model.hash()));
         tx.required(() -> tx.withConnection(c -> {
-            ctx.nodes().register(c, nodeId, config.namespace(), config.nodeName(), hostName(),
-                    ctx.json().write(capabilities.stream().sorted().toList()), ctx.clock().now(c));
+            // red/green: a node of another color than the active one starts on standby
+            ctx.color().update(ctx.colors().activeColor(c, config.namespace()).orElse(null));
+            ctx.nodes().register(c, new NodeStore.Registration(nodeId, config.namespace(), config.nodeName(),
+                    hostName(), config.color(), config.appVersion(), ctx.color().standby() ? "STANDBY" : "ACTIVE",
+                    ctx.json().write(capabilities.stream().sorted().toList()),
+                    flowVersions.isEmpty() ? null : ctx.json().write(flowVersions)), ctx.clock().now(c));
             return null;
         }));
         new FlowRegistrar(ctx).register(flowModels);
@@ -296,8 +309,10 @@ public class DtpEngine {
         }
         running = true;
         scheduler.schedule(this::claimLoop, jitter(config.pollInterval().toMillis()), TimeUnit.MILLISECONDS);
-        LOG.log(System.Logger.Level.INFO, "dtp node {0} ({1}) started in namespace {2} with {3} process steps",
-                config.nodeName(), nodeId, config.namespace(), steps.size());
+        LOG.log(System.Logger.Level.INFO, "dtp node {0} ({1}) started in namespace {2} with {3} process steps{4}",
+                config.nodeName(), nodeId, config.namespace(), steps.size(), config.color() == null ? ""
+                : ", color " + config.color() + (ctx.color().standby() ? " (standby, " + ctx.color().activeColor()
+                + " is active)" : ""));
         return this;
     }
 
@@ -514,6 +529,20 @@ public class DtpEngine {
     }
 
     /**
+     * The activation switch of red/green deployments: which color claims runs and leads.
+     *
+     * @return the color admin
+     */
+    public ColorAdmin colors() {
+        return requireStarted(colorAdmin);
+    }
+
+    /** {@code true} while another color than the one of this node is active (red/green). */
+    public boolean isStandby() {
+        return ctx != null && ctx.color().standby();
+    }
+
+    /**
      * Operations on jobs and runs by name, e.g. for REST.
      *
      * @return the job admin
@@ -524,10 +553,14 @@ public class DtpEngine {
 
     private void heartbeat() {
         try {
-            tx.required(() -> tx.withConnection(c -> {
-                ctx.nodes().heartbeat(c, nodeId, draining ? "DRAINING" : "ACTIVE", ctx.clock().now(c));
-                return null;
+            NodeColor.Change change = tx.required(() -> tx.withConnection(c -> {
+                NodeColor.Change changed = ctx.color().update(ctx.colors().activeColor(c, config.namespace())
+                        .orElse(null));
+                ctx.nodes().heartbeat(c, nodeId, draining ? "DRAINING" : ctx.color().standby() ? "STANDBY" : "ACTIVE",
+                        ctx.clock().now(c));
+                return changed;
             }));
+            colorChanged(change);
             for (RunContext run : executor.active()) {
                 ClaimedRun claimed = run.claimed();
                 boolean renewed = tx.required(() -> tx.withConnection(c -> ctx.leases().renew(c, claimed.jobId(),
@@ -568,6 +601,26 @@ public class DtpEngine {
             }
         } catch (RuntimeException e) {
             LOG.log(System.Logger.Level.WARNING, "heartbeat failed", e);
+        }
+    }
+
+    /**
+     * Red/green: a node whose color isn't active any more stands by. Its runs finish their current unit of work and
+     * end (soft stop {@code DRAIN}, work left is continued by the active color); runs it claimed while the switch
+     * committed are stopped on the next heartbeat. The leader electors resign on their next tick.
+     */
+    private void colorChanged(NodeColor.Change change) {
+        if (change == NodeColor.Change.BECAME_STANDBY) {
+            LOG.log(System.Logger.Level.INFO, "dtp node {0} (color {1}) stands by, color {2} is active; its"
+                    + " running runs ({3}) finish their current unit of work", config.nodeName(), config.color(),
+                    ctx.color().activeColor(), executor.active().size());
+        } else if (change == NodeColor.Change.BECAME_ACTIVE) {
+            LOG.log(System.Logger.Level.INFO, "dtp node {0} (color {1}) is active", config.nodeName(),
+                    config.color());
+            claimSoon();
+        }
+        if (ctx.color().standby()) {
+            executor.active().forEach(run -> run.requestStop(StopReason.DRAIN));
         }
     }
 

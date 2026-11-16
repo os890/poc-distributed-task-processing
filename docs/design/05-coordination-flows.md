@@ -288,9 +288,10 @@ sequenceDiagram
     BL->>DB: register, color green, capabilities of v2
     BL->>DB: no claiming, green is not the active color yet
     OPS->>DB: activation switch, active_color = green
+    OPS->>DB: the same transaction activates the flow versions of green
     G->>DB: read active_color, stop claiming new runs
-    G->>G: finish own runs (handling of the old color is defined later, mission Q-1)
-    BL->>DB: claim new runs whose handler class is in the v2 capabilities
+    G->>G: stop own runs after their current unit of work, DRAIN (proposal for mission Q-1, slice 21)
+    BL->>DB: claim new and deferred runs whose handler class is in the v2 capabilities
     G->>DB: drain, finish, release leases, state LEFT
     Note over G,BL: if red is killed hard, its leases expire and green takes over via the reaper
     Note over DB: contract migration only after red has left

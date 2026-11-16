@@ -1210,7 +1210,7 @@ members of the risk desk see and decide its approvals.</p>
 <tr><td><code>dtp-viewer</code></td><td>Read nodes, jobs, runs, items, journeys, flows, the heat map</td></tr>
 <tr><td><code>dtp-operator</code></td><td>Trigger, cancel and rerun runs, answer for sent packages, see technical details and failures, decide technical failures</td></tr>
 <tr><td><code>dtp-business</code> + team</td><td>Decide and vote on the requests of the team</td></tr>
-<tr><td><code>dtp-admin</code></td><td>Enable and disable jobs, activate flow versions, overrides, migrations; everything else</td></tr>
+<tr><td><code>dtp-admin</code></td><td>Enable and disable jobs, activate flow versions, overrides, migrations, switch the active color (red/green); everything else</td></tr>
 </tbody></table>
 <figure class="code"><pre><code class="language-bash">TOKEN=...   # an MP JWT with &quot;groups&quot;: [&quot;dtp-operator&quot;]
 curl -H &quot;Authorization: Bearer $TOKEN&quot; localhost:8081/dtp/jobs
@@ -1250,6 +1250,20 @@ the old node is refused, because its token no longer matches:</p>
 </tbody></table>
 <p>A normal shutdown drains the node: its runs stop softly after the current batch (outcome <code>DEFERRED</code> if
 work is left), it hands over the leadership, and another node continues.</p>
+<h3>Switch to a new release (red/green)</h3>
+<p>Give the nodes of each release a color (<code>dtp.node.color=green</code>). As long as no color is active, all nodes
+claim runs. Once the nodes of the new release are up, the pipeline or an administrator switches the active color.
+From then on only the nodes of that color claim runs and lead. The nodes of the old color finish the current unit of
+work of their runs (soft stop <code>DRAIN</code>), then stand by (<code>STANDBY</code>) and can be shut down. The new color
+continues the work they left. The switch also activates the flow versions that the new release runs, so switching
+back is the rollback:</p>
+<figure class="code"><pre><code class="language-bash">COLORS=&quot;red red green&quot; dtp-examples/trade-app/run-cluster.sh 3      # node-3 is the new release
+curl -X POST localhost:8081/dtp/cluster/color -H &#x27;Content-Type: application/json&#x27; -H &#x27;X-User: pipeline&#x27; \
+     -d &#x27;{&quot;color&quot;:&quot;green&quot;,&quot;reason&quot;:&quot;release 2.4&quot;}&#x27;
+curl localhost:8082/dtp/nodes                # color, version and state per node
+curl localhost:8082/dtp/cluster/color        # the active color and the latest switches</code></pre></figure>
+<p>The switch is refused if the color has no live node, and it warns about jobs that no node of the color can
+run. Your app can observe <code>ActiveColorSwitched</code>, e.g. to inform operations.</p>
 <p class="note"><strong>Exactly once</strong> applies to what your step commits to the database. Calls to
 external systems (sending a file, a mail) can repeat after a takeover, so give them an idempotency key, e.g. a
 deterministic file name.</p>
@@ -1301,6 +1315,8 @@ The core's own tests run three such engines in one JVM on a shared in-memory H2 
 <tbody><tr><td><code>dtp.enabled</code></td><td>true</td><td>Start the engine with the CDI container</td></tr>
 <tr><td><code>dtp.namespace</code></td><td>application name</td><td>Deployments with the same namespace form one cluster</td></tr>
 <tr><td><code>dtp.node-name</code></td><td>host + process id</td><td>Name shown in runs, journeys and logs</td></tr>
+<tr><td><code>dtp.node.color</code></td><td>none</td><td>Color of the release for red/green deployments: while another color is active, the node stands by</td></tr>
+<tr><td><code>dtp.node.app-version</code></td><td>quarkus.application.version</td><td>Version of the application, shown with the nodes</td></tr>
 <tr><td><code>dtp.poll-interval</code></td><td>1s</td><td>Base interval of the run claimer, jittered ±25 %, up to 4× while idle</td></tr>
 <tr><td><code>dtp.housekeeping-interval</code></td><td>1s</td><td>Interval of the leader&#x27;s planner and lease takeover</td></tr>
 <tr><td><code>dtp.heartbeat-interval</code></td><td>2s</td><td>Node heartbeat and lease renewal</td></tr>
@@ -1351,7 +1367,7 @@ The core's own tests run three such engines in one JVM on a shared in-memory H2 
 <tr><td><code>CANCELLED</code></td><td>The run was cancelled</td></tr>
 <tr><td><code>SKIPPED</code></td><td>A trigger arrived while the job was busy and the policy is SKIP</td></tr></tbody></table></div>
 <h3 id="ref-scope">Not implemented yet</h3>
-<p>Activations of a flow version per tenant, and the red/green switch of whole deployments. The engine's tests run
+<p>Activations of a flow version per tenant. The engine's tests run
 on H2 and PostgreSQL 17; on PostgreSQL, set <code>lock_timeout</code> (e.g. 5 s) and
 <code>idle_in_transaction_session_timeout</code> for the database role of your app, so a hanging node can't block the
 others.</p>

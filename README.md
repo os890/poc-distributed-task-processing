@@ -44,11 +44,13 @@
 |------|---------|
 | **Core** | Leases, fencing, takeover, leader election (PostgreSQL + H2) · job definitions via SQL/REST · triggers (ASAP, cron + calendar, external, successor) · transitions and run joins · items with routing, back-routing, loop limit, defer and journey · decision requests with fallback · soft stop · red/green capabilities · business vs. technical failures · monitoring read model (heat map, live feed) · telemetry metrics and traces · MP Health, REST · Quarkus |
 | **Showcase extensions** | Work packages, processing slots and limits · collection windows · approvals with quorum and responsible teams · item fork/join · lanes · parallel batches · optional acknowledgements |
-| **Later / out** | Further databases and coordination providers (e.g. Kubernetes Lease) · fine-grained checkpoints · UI · archiving · Helidon/Meecrowave (only if the spike is positive) · red/green activation details (mission Q-1) |
+| **Later / out** | Further databases and coordination providers (e.g. Kubernetes Lease) · fine-grained checkpoints · UI · archiving · Helidon/Meecrowave (only if the spike is positive) |
 
 ## Open Questions
 
-- Mission **Q-1**: who flips the red/green activation switch, and what does the old color still finish? (deferred)
+- Mission **Q-1**: who flips the red/green activation switch, and what does the old color still finish? The first
+  implementation proposes an answer (slice 21, to be confirmed in the review): an administrator or the pipeline
+  switches, and the old color finishes only the current unit of work of its runs.
 - Design **DQ-1…DQ-6** in [docs/design/README.md](docs/design/README.md#open-design-questions): final terms
   (Run vs. Task), the model for continuous runs, item uniqueness per version, the retry scope, one step for several
   jobs, and how an `ItemProcessor` finds its item type.
@@ -64,8 +66,8 @@ heat map, jam detection, alerts and a live feed (slice 11), the journey diagram 
 metrics and traces with OpenTelemetry (slice 13), acknowledgements of sent work packages (slice 14), lane weights
 with flow versions per lane (slice 15), the REST adapter with MP OpenAPI and MP JWT roles (slice 16), the tests
 of the engine on PostgreSQL 17 (slice 17), continued deferred runs in flow instances (slice 18), decisions
-requested by job runs, e.g. a four-eyes sign-off of an end of day (slice 19), and cancelling flow instances, e.g.
-an end of day started by mistake (slice 20): see
+requested by job runs, e.g. a four-eyes sign-off of an end of day (slice 19), cancelling flow instances, e.g.
+an end of day started by mistake (slice 20), and red/green deployments with an activation switch (slice 21): see
 [IMPLEMENTATION.md](IMPLEMENTATION.md).
 
 ## License
