@@ -15,7 +15,7 @@
     <modelVersion>4.0.0</modelVersion>
     <groupId>org.os890.dtp</groupId>
     <artifactId>dtp-parent</artifactId>
-    <version>0.0.19</version>
+    <version>0.0.20-SNAPSHOT</version>
     <packaging>pom</packaging>
     <name>dtp (parent)</name>
     <description>dtp - distributed task processing. First PoC implementation (slice 1).</description>
