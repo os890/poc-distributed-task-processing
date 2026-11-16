@@ -13,9 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.os890.dtp.core.testsupport;
+package org.os890.dtp.core;
 
+import java.sql.Connection;
+import java.sql.SQLException;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalTime;
 import java.util.ArrayList;
@@ -28,21 +31,43 @@ import org.os890.dtp.api.RunOutcome;
 import org.os890.dtp.core.domain.CalendarShift;
 import org.os890.dtp.core.domain.ConcurrencyPolicy;
 import org.os890.dtp.core.domain.TakeoverPolicy;
+import org.os890.dtp.core.jdbc.DbClock;
 import org.os890.dtp.core.jdbc.Sql;
+import org.os890.dtp.core.jdbc.SqlDialect;
 import org.os890.dtp.core.spi.Transactions;
 
 /**
- * Test-only builder for job definitions (the design's builder API for tests, D23). Writes the same rows as the SQL
- * definition scripts of an application.
+ * Builder for job definitions, for tests and small applications (D23): larger applications keep their definitions in
+ * SQL scripts ({@code db/dtp-definitions}, DD-15), which operators can read and change. Writes the same rows as such a
+ * script, revision 1 of each job. The job is named like the simple name of its class.
  */
 public class JobDefinitions {
 
+    private static final String CHANGED_BY = "builder";
+
     private final Transactions tx;
     private final String namespace;
+    private final DbClock clock;
 
     public JobDefinitions(Transactions tx, String namespace) {
+        this(tx, namespace, null);
+    }
+
+    /**
+     * A builder that stamps the definitions with the time of a clock, e.g. the shifted clock of a test cluster.
+     *
+     * @param tx        the transactions
+     * @param namespace the namespace
+     * @param clock     the clock, or {@code null} for the DB time
+     */
+    public JobDefinitions(Transactions tx, String namespace, DbClock clock) {
         this.tx = tx;
         this.namespace = namespace;
+        this.clock = clock;
+    }
+
+    private Instant now(Connection c) throws SQLException {
+        return (clock != null ? clock : new DbClock(SqlDialect.detect(c))).now(c);
     }
 
     /**
@@ -71,7 +96,8 @@ public class JobDefinitions {
                     + " VALUES (?, ?, ?, ?, ?)", id, namespace, name, zone, weekdays);
             for (Map.Entry<LocalDate, Boolean> exception : exceptions.entrySet()) {
                 Sql.update(c, "INSERT INTO dtp_calendar_exception (calendar_id, calendar_day, business_day,"
-                        + " description) VALUES (?, ?, ?, 'test')", id, exception.getKey(), exception.getValue());
+                        + " description) VALUES (?, ?, ?, ?)", id, exception.getKey(), exception.getValue(),
+                        CHANGED_BY);
             }
             return null;
         }));
@@ -104,7 +130,7 @@ public class JobDefinitions {
         return id;
     }
 
-    private UUID jobId(java.sql.Connection c, Class<? extends ProcessStep> step) throws java.sql.SQLException {
+    private UUID jobId(Connection c, Class<? extends ProcessStep> step) throws SQLException {
         return Sql.queryOne(c, "SELECT j.id FROM dtp_job j JOIN dtp_job_revision r ON r.job_id = j.id"
                 + " AND r.revision = j.current_revision WHERE j.namespace = ? AND r.handler_class = ?",
                 rs -> Sql.uuid(rs, "id"), namespace, step.getName())
@@ -292,17 +318,18 @@ public class JobDefinitions {
         public UUID save() {
             UUID id = UUID.randomUUID();
             tx.required(() -> tx.withConnection(c -> {
+                Instant now = now(c);
                 Sql.update(c, "INSERT INTO dtp_job (id, namespace, name, current_revision, enabled, created_at,"
-                        + " updated_at) VALUES (?, ?, ?, 1, TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)", id, namespace,
-                        step.getSimpleName());
+                        + " updated_at) VALUES (?, ?, ?, 1, TRUE, ?, ?)", id, namespace, step.getSimpleName(), now,
+                        now);
                 Sql.update(c, "INSERT INTO dtp_job_revision (job_id, revision, handler_class, trigger_asap,"
                         + " cron_expression, cron_zone, trigger_external, inbox_min_items, concurrency_policy,"
                         + " takeover_policy, retry_max, retry_backoff, max_item_visits, lease_duration,"
                         + " default_parameters, changed_by, changed_at)"
-                        + " VALUES (?, 1, ?, ?, ?, 'UTC', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'test', CURRENT_TIMESTAMP)",
+                        + " VALUES (?, 1, ?, ?, ?, 'UTC', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         id, step.getName(), asap, cron, external, inboxMinItems, concurrency, takeover, retryMax,
                         retryBackoff.toString(), maxItemVisits, leaseDuration == null ? null : leaseDuration.toString(),
-                        defaultParameters);
+                        defaultParameters, CHANGED_BY, now);
                 Sql.update(c, "UPDATE dtp_job_revision SET calendar_shift = ?, cron_flow_instance = ?,"
                         + " item_limit = ?, time_limit = ?, ack_required = ?, ack_timeout = ?,"
                         + " cron_calendar_id = (SELECT id FROM dtp_calendar WHERE namespace = ? AND name = ?)"

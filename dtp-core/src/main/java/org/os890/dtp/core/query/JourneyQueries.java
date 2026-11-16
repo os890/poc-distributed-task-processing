@@ -53,10 +53,22 @@ public class JourneyQueries {
      * @param queries   the queries of the journal
      */
     public JourneyQueries(Transactions tx, String namespace, DtpQueries queries) {
+        this(tx, namespace, queries, null);
+    }
+
+    /**
+     * Creates the queries with the clock of an engine.
+     *
+     * @param tx        the transactions
+     * @param namespace the namespace
+     * @param queries   the queries of the journal
+     * @param clock     the clock, or {@code null} for the DB time
+     */
+    public JourneyQueries(Transactions tx, String namespace, DtpQueries queries, DbClock clock) {
         this.tx = tx;
         this.namespace = namespace;
         this.queries = queries;
-        this.clock = new DbClock(tx.withConnection(SqlDialect::detect));
+        this.clock = clock != null ? clock : new DbClock(tx.withConnection(SqlDialect::detect));
     }
 
     /** How much the diagram shows. */

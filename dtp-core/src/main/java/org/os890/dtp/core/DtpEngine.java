@@ -20,6 +20,7 @@ import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -32,6 +33,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 import javax.sql.DataSource;
@@ -112,6 +114,7 @@ public class DtpEngine {
     private final DtpConfig config;
     private final DomainEventPublisher events;
     private final Telemetry telemetry;
+    private final Supplier<Duration> clockShift;
     private final UUID nodeId = UUID.randomUUID();
     private final Random random;
     private final ReentrantLock claimLock = new ReentrantLock();
@@ -151,6 +154,7 @@ public class DtpEngine {
         this.tx = builder.transactions != null ? builder.transactions : new JdbcTransactions(dataSource);
         this.events = builder.events != null ? builder.events : DomainEventPublisher.NONE;
         this.telemetry = builder.telemetry != null ? builder.telemetry : Telemetry.NONE;
+        this.clockShift = builder.clockShift;
         long seed = config.randomSeed() != null ? config.randomSeed() ^ nodeId.getLeastSignificantBits()
                                                  : new Random().nextLong();
         this.random = new Random(seed);
@@ -174,6 +178,7 @@ public class DtpEngine {
         private DtpConfig config;
         private DomainEventPublisher events;
         private Telemetry telemetry;
+        private Supplier<Duration> clockShift;
 
         public Builder dataSource(DataSource value) {
             dataSource = value;
@@ -218,6 +223,18 @@ public class DtpEngine {
             return this;
         }
 
+        /**
+         * Test support ({@code dtp-test}): shifts the clock of the node, the DB time plus the shift. The nodes of a
+         * test cluster share one shift, so they move forward in time together.
+         *
+         * @param value the shift
+         * @return this builder
+         */
+        public Builder clockShift(Supplier<Duration> value) {
+            clockShift = value;
+            return this;
+        }
+
         public DtpEngine build() {
             return new DtpEngine(this);
         }
@@ -242,9 +259,9 @@ public class DtpEngine {
         Map<Class<? extends ProcessStep>, StepInfo> steps = new LinkedHashMap<>();
         registry.stepClasses().forEach(step -> steps.put(step, StepInfo.of(step)));
         JobStore jobStore = new JobStore();
-        ctx = new EngineContext(config, nodeId, tx, dialect, new DbClock(dialect), jobStore, new LeaseStore(dialect),
-                new RunStore(dialect), new NodeStore(), new LeaderStore(dialect), new ItemStore(dialect, telemetry),
-                new FlowStore(dialect),
+        ctx = new EngineContext(config, nodeId, tx, dialect, new DbClock(dialect, clockShift), jobStore,
+                new LeaseStore(dialect), new RunStore(dialect), new NodeStore(), new LeaderStore(dialect),
+                new ItemStore(dialect, telemetry), new FlowStore(dialect),
                 new JobCatalog(tx, jobStore, config.namespace(), config.definitionRefresh().toNanos()),
                 new JsonCodec(), registry, Map.copyOf(steps), events, telemetry, new ColorStore(),
                 new NodeColor(config.color()));
@@ -275,10 +292,10 @@ public class DtpEngine {
         executor = new RunExecutor(ctx, planner, routing, flowRouting, this::claimSoon);
         jobEngine = new JobEngineImpl(ctx, planner);
         items = new ItemsImpl(ctx, routing, null);
-        queries = new DtpQueries(tx, config.namespace());
-        flowQueries = new FlowQueries(tx, config.namespace());
-        monitoring = new MonitoringQueries(tx, config.namespace(), flowQueries);
-        journeys = new JourneyQueries(tx, config.namespace(), queries);
+        queries = new DtpQueries(tx, config.namespace(), ctx.clock());
+        flowQueries = new FlowQueries(tx, config.namespace(), ctx.clock());
+        monitoring = new MonitoringQueries(tx, config.namespace(), flowQueries, ctx.clock());
+        journeys = new JourneyQueries(tx, config.namespace(), queries, ctx.clock());
         monitoringFeed = new MonitoringFeed(monitoring, config.monitoring().feedInterval());
 
         Map<String, String> flowVersions = new TreeMap<>();

@@ -70,9 +70,21 @@ public class MonitoringQueries {
      * @param flows     the flow queries (for the diagram)
      */
     public MonitoringQueries(Transactions tx, String namespace, FlowQueries flows) {
+        this(tx, namespace, flows, null);
+    }
+
+    /**
+     * Creates the queries with the clock of an engine.
+     *
+     * @param tx        the transactions
+     * @param namespace the namespace
+     * @param flows     the flow queries (for the diagram)
+     * @param clock     the clock, or {@code null} for the DB time
+     */
+    public MonitoringQueries(Transactions tx, String namespace, FlowQueries flows, DbClock clock) {
         this.tx = tx;
         this.namespace = namespace;
-        this.clock = new DbClock(tx.withConnection(SqlDialect::detect));
+        this.clock = clock != null ? clock : new DbClock(tx.withConnection(SqlDialect::detect));
         this.flows = flows;
     }
 

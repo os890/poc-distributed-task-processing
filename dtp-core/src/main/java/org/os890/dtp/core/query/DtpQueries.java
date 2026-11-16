@@ -15,6 +15,7 @@
  */
 package org.os890.dtp.core.query;
 
+import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Instant;
@@ -23,7 +24,9 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
+import org.os890.dtp.core.jdbc.DbClock;
 import org.os890.dtp.core.jdbc.Sql;
+import org.os890.dtp.core.jdbc.SqlDialect;
 import org.os890.dtp.core.spi.Transactions;
 
 /** Read-only views for operators, REST resources and tests. */
@@ -31,10 +34,32 @@ public class DtpQueries {
 
     private final Transactions tx;
     private final String namespace;
+    private volatile DbClock clock;
 
     public DtpQueries(Transactions tx, String namespace) {
+        this(tx, namespace, null);
+    }
+
+    /**
+     * Creates the queries with the clock of an engine.
+     *
+     * @param tx        the transactions
+     * @param namespace the namespace
+     * @param clock     the clock, or {@code null} for the DB time
+     */
+    public DtpQueries(Transactions tx, String namespace, DbClock clock) {
         this.tx = tx;
         this.namespace = namespace;
+        this.clock = clock;
+    }
+
+    private Instant now(Connection c) throws SQLException {
+        DbClock current = clock;
+        if (current == null) {
+            current = new DbClock(SqlDialect.detect(c));
+            clock = current;
+        }
+        return current.now(c);
     }
 
     /**
@@ -136,6 +161,35 @@ public class DtpQueries {
      * @param count the number of items
      */
     public record ItemCount(String job, String state, int count) {
+    }
+
+    /**
+     * Where an item is now.
+     *
+     * @param id          the item
+     * @param itemType    the name of the item type
+     * @param businessKey the business key
+     * @param state       the item state, e.g. {@code QUEUED} or {@code COMPLETED}
+     * @param job         the job whose inbox holds it (or that finished it), or {@code null}
+     * @param lane        the lane, or {@code null}
+     */
+    public record ItemView(UUID id, String itemType, String businessKey, String state, String job, String lane) {
+    }
+
+    /**
+     * The item with a business key (the most recent one if several items share it, e.g. versions of a reference).
+     *
+     * @param itemType    name of the item type
+     * @param businessKey the business key
+     * @return the item, or empty
+     */
+    public Optional<ItemView> item(String itemType, String businessKey) {
+        return tx.withConnection(c -> Sql.query(c, "SELECT i.id, i.item_type, i.business_key, i.state, j.name AS job,"
+                + " i.lane FROM dtp_item i LEFT JOIN dtp_job j ON j.id = i.current_job_id WHERE i.namespace = ?"
+                + " AND i.item_type = ? AND i.business_key = ? ORDER BY i.created_at DESC, i.id",
+                rs -> new ItemView(Sql.uuid(rs, "id"), rs.getString("item_type"), rs.getString("business_key"),
+                        rs.getString("state"), rs.getString("job"), rs.getString("lane")),
+                namespace, itemType, businessKey).stream().findFirst());
     }
 
     /**
@@ -278,29 +332,30 @@ public class DtpQueries {
      */
     public boolean isIdle() {
         return tx.withConnection(c -> {
+            Instant now = now(c);
             int open = Sql.queryOne(c, "SELECT COUNT(*) FROM dtp_run WHERE namespace = ? AND state IN ('PENDING',"
                     + " 'RUNNING', 'STOPPING')", rs -> rs.getInt(1), namespace).orElse(0);
             int due = Sql.queryOne(c, "SELECT COUNT(*) FROM dtp_item i JOIN dtp_job j ON j.id = i.current_job_id"
                     + " JOIN dtp_job_revision r ON r.job_id = j.id AND r.revision = j.current_revision"
                     + " WHERE i.namespace = ? AND i.state = 'QUEUED' AND r.inbox_min_items IS NOT NULL"
-                    + " AND (i.next_attempt_at IS NULL OR i.next_attempt_at <= CURRENT_TIMESTAMP)",
-                    rs -> rs.getInt(1), namespace).orElse(0);
+                    + " AND (i.next_attempt_at IS NULL OR i.next_attempt_at <= ?)",
+                    rs -> rs.getInt(1), namespace, now).orElse(0);
             int branches = Sql.queryOne(c, "SELECT COUNT(*) FROM dtp_item_branch b"
                     + " JOIN dtp_job j ON j.id = b.branch_job_id"
                     + " JOIN dtp_job_revision r ON r.job_id = j.id AND r.revision = j.current_revision"
                     + " WHERE b.namespace = ? AND b.state = 'QUEUED' AND r.inbox_min_items IS NOT NULL"
-                    + " AND (b.next_attempt_at IS NULL OR b.next_attempt_at <= CURRENT_TIMESTAMP)",
-                    rs -> rs.getInt(1), namespace).orElse(0);
+                    + " AND (b.next_attempt_at IS NULL OR b.next_attempt_at <= ?)",
+                    rs -> rs.getInt(1), namespace, now).orElse(0);
             int fallbacks = Sql.queryOne(c, "SELECT COUNT(*) FROM dtp_decision_request d"
                     + " JOIN dtp_job j ON j.id = d.fallback_job_id AND j.enabled = TRUE WHERE d.namespace = ?"
-                    + " AND d.state = 'OPEN' AND d.fallback_due_at <= CURRENT_TIMESTAMP AND d.fallback_run_id IS NULL",
-                    rs -> rs.getInt(1), namespace).orElse(0);
+                    + " AND d.state = 'OPEN' AND d.fallback_due_at <= ? AND d.fallback_run_id IS NULL",
+                    rs -> rs.getInt(1), namespace, now).orElse(0);
             int packages = Sql.queryOne(c, "SELECT COUNT(*) FROM dtp_work_package p"
                     + " JOIN dtp_job j ON j.id = p.job_id"
                     + " JOIN dtp_job_revision r ON r.job_id = j.id AND r.revision = j.current_revision"
                     + " WHERE p.namespace = ? AND p.state = 'PENDING' AND r.inbox_min_items IS NOT NULL"
-                    + " AND (p.next_attempt_at IS NULL OR p.next_attempt_at <= CURRENT_TIMESTAMP)",
-                    rs -> rs.getInt(1), namespace).orElse(0);
+                    + " AND (p.next_attempt_at IS NULL OR p.next_attempt_at <= ?)",
+                    rs -> rs.getInt(1), namespace, now).orElse(0);
             // a window occurrence that is quiescing or open moves on by itself (one waiting for a decision doesn't)
             int windows = Sql.queryOne(c, "SELECT COUNT(*) FROM dtp_window_occurrence o JOIN dtp_window w"
                     + " ON w.id = o.window_id WHERE w.namespace = ? AND o.state IN ('QUIESCING', 'OPEN')",

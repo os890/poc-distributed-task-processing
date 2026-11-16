@@ -34,6 +34,7 @@
         <module>dtp-cdi</module>
         <module>dtp-telemetry</module>
         <module>dtp-rest</module>
+        <module>dtp-test</module>
         <module>dtp-examples/trade-app</module>
     </modules>
 
@@ -117,6 +118,11 @@
             <dependency>
                 <groupId>org.os890.dtp</groupId>
                 <artifactId>dtp-rest</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.os890.dtp</groupId>
+                <artifactId>dtp-test</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

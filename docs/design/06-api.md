@@ -329,3 +329,10 @@ revision table from the user.
 - `@DtpTest` JUnit 5 extension: H2 in-memory, an engine with **N simulated nodes** in one JVM, and a controllable `DbClock`.
 - `engine.advanceTo(Instant)`, `engine.awaitIdle()`, `engine.killNode(nodeId)`, `engine.freezeNode(nodeId)`
 - Assertions: `assertThat(engine.journey(Order.ITEM, number)).hasPath(OrderValidation.class, …).isCompleted()`
+
+> **First implementation (slice 22, [IMPLEMENTATION.md](../../IMPLEMENTATION.md)):** `@DtpTest` resolves a
+> `DtpTestCluster` parameter per test (no CDI injection). `cluster.start(n, steps and flows…)`, `kill(node)` (also
+> covers a frozen node: its handlers continue as zombies), `advance(Duration)`/`advanceTo(Instant)`, `awaitIdle()`,
+> `DtpAssertions.assertThat(cluster.journey(Order.ITEM, number)).hasPath(…).isCompleted()`. The clock is the DB time
+> plus a shift shared by all nodes; `advance` moves heartbeats and leases with it, so a jump in time doesn't look
+> like a crash. The job definition builder (`JobDefinitions`) lives in `dtp-core`.

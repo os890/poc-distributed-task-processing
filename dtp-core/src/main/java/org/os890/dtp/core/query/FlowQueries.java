@@ -72,11 +72,22 @@ public class FlowQueries {
      * @param namespace the namespace
      */
     public FlowQueries(Transactions tx, String namespace) {
+        this(tx, namespace, null);
+    }
+
+    /**
+     * Creates the queries with the clock of an engine.
+     *
+     * @param tx        the transactions
+     * @param namespace the namespace
+     * @param clock     the clock, or {@code null} for the DB time
+     */
+    public FlowQueries(Transactions tx, String namespace, DbClock clock) {
         this.tx = tx;
         this.namespace = namespace;
         SqlDialect dialect = tx.withConnection(SqlDialect::detect);
         this.flows = new FlowStore(dialect);
-        this.clock = new DbClock(dialect);
+        this.clock = clock != null ? clock : new DbClock(dialect);
     }
 
     /**

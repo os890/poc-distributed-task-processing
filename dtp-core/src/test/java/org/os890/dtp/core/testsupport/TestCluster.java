@@ -33,6 +33,7 @@ import org.os890.dtp.api.FlowDefinition;
 import org.os890.dtp.api.ProcessStep;
 import org.os890.dtp.core.DtpConfig;
 import org.os890.dtp.core.DtpEngine;
+import org.os890.dtp.core.JobDefinitions;
 import org.os890.dtp.core.jdbc.DbClock;
 import org.os890.dtp.core.jdbc.JdbcTransactions;
 import org.os890.dtp.core.jdbc.SchemaMigrator;
