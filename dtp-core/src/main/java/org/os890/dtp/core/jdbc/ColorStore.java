@@ -32,8 +32,22 @@ public class ColorStore {
      * @param switchedAt  when
      * @param switchedBy  who
      * @param reason      why, or {@code null}
+     * @param unavailableSince since when the active color has no live node, or {@code null} (slice 24)
      */
-    public record Control(String activeColor, Instant switchedAt, String switchedBy, String reason) {
+    public record Control(String activeColor, Instant switchedAt, String switchedBy, String reason,
+                          Instant unavailableSince) {
+
+        /**
+         * A new switch.
+         *
+         * @param activeColor the active color, or {@code null}
+         * @param switchedAt  when
+         * @param switchedBy  who
+         * @param reason      why, or {@code null}
+         */
+        public Control(String activeColor, Instant switchedAt, String switchedBy, String reason) {
+            this(activeColor, switchedAt, switchedBy, reason, null);
+        }
     }
 
     /**
@@ -73,10 +87,11 @@ public class ColorStore {
      * @throws SQLException on DB errors
      */
     public Optional<Control> control(Connection c, String namespace, boolean lock) throws SQLException {
-        return Sql.queryOne(c, "SELECT active_color, switched_at, switched_by, reason FROM dtp_namespace_control"
-                + " WHERE namespace = ?" + (lock ? " FOR UPDATE" : ""),
+        return Sql.queryOne(c, "SELECT active_color, switched_at, switched_by, reason, unavailable_since"
+                + " FROM dtp_namespace_control WHERE namespace = ?" + (lock ? " FOR UPDATE" : ""),
                 rs -> new Control(rs.getString("active_color"), Sql.instant(rs, "switched_at"),
-                        rs.getString("switched_by"), rs.getString("reason")), namespace);
+                        rs.getString("switched_by"), rs.getString("reason"), Sql.instant(rs, "unavailable_since")),
+                namespace);
     }
 
     /**
@@ -92,8 +107,8 @@ public class ColorStore {
     public void switchTo(Connection c, String namespace, String previousColor, Control control, String activatedFlows)
             throws SQLException {
         int updated = Sql.update(c, "UPDATE dtp_namespace_control SET active_color = ?, switched_at = ?,"
-                + " switched_by = ?, reason = ? WHERE namespace = ?", control.activeColor(), control.switchedAt(),
-                control.switchedBy(), control.reason(), namespace);
+                + " switched_by = ?, reason = ?, unavailable_since = NULL WHERE namespace = ?", control.activeColor(),
+                control.switchedAt(), control.switchedBy(), control.reason(), namespace);
         if (updated == 0) {
             Sql.update(c, "INSERT INTO dtp_namespace_control (namespace, active_color, switched_at, switched_by,"
                     + " reason) VALUES (?, ?, ?, ?, ?)", namespace, control.activeColor(), control.switchedAt(),
@@ -103,6 +118,37 @@ public class ColorStore {
                 + " switched_by, reason, activated_flows) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", UUID.randomUUID(),
                 namespace, previousColor, control.activeColor(), control.switchedAt(), control.switchedBy(),
                 control.reason(), activatedFlows);
+    }
+
+    /**
+     * Records that the active color has no live node, once for the cluster: only the first node that notices it
+     * changes the row.
+     *
+     * @param c           the connection
+     * @param namespace   the namespace
+     * @param activeColor the active color as the node read it
+     * @param since       the DB time
+     * @return {@code true} if this call recorded it
+     * @throws SQLException on DB errors
+     */
+    public boolean markUnavailable(Connection c, String namespace, String activeColor, Instant since)
+            throws SQLException {
+        return Sql.update(c, "UPDATE dtp_namespace_control SET unavailable_since = ? WHERE namespace = ?"
+                + " AND active_color = ? AND unavailable_since IS NULL", since, namespace, activeColor) == 1;
+    }
+
+    /**
+     * A node of the active color is live again.
+     *
+     * @param c           the connection
+     * @param namespace   the namespace
+     * @param activeColor the color of the node
+     * @return {@code true} if the color was marked as unavailable
+     * @throws SQLException on DB errors
+     */
+    public boolean markAvailable(Connection c, String namespace, String activeColor) throws SQLException {
+        return Sql.update(c, "UPDATE dtp_namespace_control SET unavailable_since = NULL WHERE namespace = ?"
+                + " AND active_color = ? AND unavailable_since IS NOT NULL", namespace, activeColor) == 1;
     }
 
     /**

@@ -1281,7 +1281,10 @@ curl -X POST localhost:8081/dtp/cluster/color -H &#x27;Content-Type: application
 curl localhost:8082/dtp/nodes                # color, version and state per node
 curl localhost:8082/dtp/cluster/color        # the active color and the latest switches</code></pre></figure>
 <p>The switch is refused if the color has no live node, and it warns about jobs that no node of the color can
-run. Your app can observe <code>ActiveColorSwitched</code>, e.g. to inform operations.</p>
+run. Your app can observe <code>ActiveColorSwitched</code>, e.g. to inform operations. Once <code>draining</code> in the
+color state is empty, the old nodes hold no runs any more and can be shut down. If all nodes of the active color are
+gone, the nodes on standby announce it (<code>ActiveColorUnavailable</code>); with <code>dtp.color.fallback-after</code> one of
+them switches back to its own color.</p>
 <p class="note"><strong>Exactly once</strong> applies to what your step commits to the database. Calls to
 external systems (sending a file, a mail) can repeat after a takeover, so give them an idempotency key, e.g. a
 deterministic file name.</p>
@@ -1386,6 +1389,7 @@ after 2 s. <code>cluster.config(&quot;green-1&quot;)</code> returns these settin
 <tr><td><code>dtp.namespace</code></td><td>application name</td><td>Deployments with the same namespace form one cluster</td></tr>
 <tr><td><code>dtp.node-name</code></td><td>host + process id</td><td>Name shown in runs, journeys and logs</td></tr>
 <tr><td><code>dtp.node.color</code></td><td>none</td><td>Color of the release for red/green deployments: while another color is active, the node stands by</td></tr>
+<tr><td><code>dtp.color.fallback-after</code></td><td>none</td><td>Red/green: once the active color has no live node for this long, a node on standby switches to its own color</td></tr>
 <tr><td><code>dtp.node.app-version</code></td><td>quarkus.application.version</td><td>Version of the application, shown with the nodes</td></tr>
 <tr><td><code>dtp.poll-interval</code></td><td>1s</td><td>Base interval of the run claimer, jittered ±25 %, up to 4× while idle</td></tr>
 <tr><td><code>dtp.housekeeping-interval</code></td><td>1s</td><td>Interval of the leader&#x27;s planner and lease takeover</td></tr>

@@ -163,6 +163,20 @@ public class NodeStore {
     }
 
     /**
+     * The latest heartbeat of the nodes of a color, whatever their state.
+     *
+     * @param c         the connection
+     * @param namespace the namespace
+     * @param color     the color
+     * @return the heartbeat, or {@code null} if the color never had a node
+     * @throws SQLException on DB errors
+     */
+    public Instant lastHeartbeat(Connection c, String namespace, String color) throws SQLException {
+        return Sql.queryOne(c, "SELECT MAX(heartbeat_at) AS last_heartbeat FROM dtp_node WHERE namespace = ?"
+                + " AND color = ?", rs -> Sql.instant(rs, "last_heartbeat"), namespace, color).orElse(null);
+    }
+
+    /**
      * Applies a switch of the active color to the states of the nodes at once (their heartbeats keep them): nodes of
      * the active color are {@code ACTIVE}, all others {@code STANDBY}; without an active color all are {@code ACTIVE}.
      * Draining, left and dead nodes keep their state.

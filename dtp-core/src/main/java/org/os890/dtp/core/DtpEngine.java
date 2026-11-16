@@ -148,6 +148,7 @@ public class DtpEngine {
 
     private volatile boolean running;
     private volatile boolean draining;
+    private volatile List<FlowModel> pendingFlows = List.of();
 
     private DtpEngine(Builder builder) {
         this.dataSource = Objects.requireNonNull(builder.dataSource, "dataSource");
@@ -313,7 +314,7 @@ public class DtpEngine {
                     ctx.color().standby()));
             return null;
         }));
-        new FlowRegistrar(ctx).register(flowModels);
+        pendingFlows = new FlowRegistrar(ctx).register(flowModels);
         exportFlows();
         leader.init();
 
@@ -573,16 +574,24 @@ public class DtpEngine {
         return requireStarted(jobAdmin);
     }
 
+    /** What a heartbeat read: the change of this node's standby state and the switch. */
+    private record Beat(NodeColor.Change change, ColorStore.Control control) {
+    }
+
     private void heartbeat() {
         try {
-            NodeColor.Change change = tx.required(() -> tx.withConnection(c -> {
-                NodeColor.Change changed = ctx.color().update(ctx.colors().activeColor(c, config.namespace())
-                        .orElse(null));
+            Beat beat = tx.required(() -> tx.withConnection(c -> {
+                ColorStore.Control control = ctx.colors().control(c, config.namespace(), false).orElse(null);
+                NodeColor.Change changed = ctx.color().update(control == null ? null : control.activeColor());
                 ctx.nodes().heartbeat(c, nodeId, draining ? "DRAINING" : ctx.color().standby() ? "STANDBY" : "ACTIVE",
                         ctx.clock().now(c));
-                return changed;
+                return new Beat(changed, control);
             }));
-            colorChanged(change);
+            colorChanged(beat.change());
+            if (!draining) {
+                // red/green: an active color without live node is noticed by the nodes on standby (slice 24)
+                colorAdmin.watch(beat.control());
+            }
             for (RunContext run : executor.active()) {
                 ClaimedRun claimed = run.claimed();
                 boolean renewed = tx.required(() -> tx.withConnection(c -> ctx.leases().renew(c, claimed.jobId(),
@@ -639,6 +648,10 @@ public class DtpEngine {
         } else if (change == NodeColor.Change.BECAME_ACTIVE) {
             LOG.log(System.Logger.Level.INFO, "dtp node {0} (color {1}) is active", config.nodeName(),
                     config.color());
+            if (!pendingFlows.isEmpty()) {
+                // flows whose step jobs a node on standby doesn't generate (slice 24)
+                pendingFlows = new FlowRegistrar(ctx).registerAfterSwitch(pendingFlows);
+            }
             claimSoon();
         }
         if (ctx.color().standby()) {

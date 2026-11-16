@@ -72,24 +72,61 @@ public class FlowRegistrar {
 
     /**
      * Registers the flows. Each flow in its own transaction, retried once if another node registered it meanwhile.
+     * A node on standby doesn't generate the missing jobs of flow steps (red/green, slice 24): definitions of the
+     * release that isn't active yet come from SQL; its flows with steps without job are registered once its color is
+     * active.
      *
      * @param models the flows
+     * @return the flows that weren't registered, because this node is on standby and steps have no job
      */
-    public void register(List<FlowModel> models) {
+    public List<FlowModel> register(List<FlowModel> models) {
+        return register(models, false);
+    }
+
+    /**
+     * Registers the flows that weren't registered on standby, once the color of this node is active: the switch
+     * couldn't activate their versions, so they are activated now, as the switch would have.
+     *
+     * @param models the pending flows
+     * @return the flows that still weren't registered (the color is on standby again)
+     */
+    public List<FlowModel> registerAfterSwitch(List<FlowModel> models) {
+        return register(models, true);
+    }
+
+    private List<FlowModel> register(List<FlowModel> models, boolean afterSwitch) {
+        List<FlowModel> pending = new ArrayList<>();
         for (FlowModel model : models) {
+            boolean registered;
             try {
-                ctx.tx().requiresNew(() -> ctx.tx().withConnection(c -> register(c, model)));
+                registered = ctx.tx().requiresNew(() -> ctx.tx().withConnection(c -> register(c, model,
+                        afterSwitch)));
             } catch (DtpException e) {
                 LOG.log(System.Logger.Level.DEBUG, "registering flow " + model.name() + " again", e);
-                ctx.tx().requiresNew(() -> ctx.tx().withConnection(c -> register(c, model)));
+                registered = ctx.tx().requiresNew(() -> ctx.tx().withConnection(c -> register(c, model,
+                        afterSwitch)));
+            }
+            if (!registered) {
+                pending.add(model);
             }
         }
         ctx.catalog().invalidate();
+        return List.copyOf(pending);
     }
 
-    private Object register(Connection c, FlowModel model) throws SQLException {
+    private boolean register(Connection c, FlowModel model, boolean afterSwitch) throws SQLException {
         Instant now = ctx.clock().now(c);
         FlowStore flows = ctx.flows();
+        if (ctx.color().standby()) {
+            List<String> missing = model.steps().stream().filter(step -> existingJob(c, step).isEmpty())
+                                        .map(Class::getName).toList();
+            if (!missing.isEmpty()) {
+                LOG.log(System.Logger.Level.WARNING, "flow {0}: the steps {1} have no job definition; a node on"
+                        + " standby doesn't generate them, define them in the DB, or the flow is registered when"
+                        + " color {2} is active", model.name(), missing, ctx.color().color());
+                return false;
+            }
+        }
         Map<Class<? extends ProcessStep>, UUID> jobs = new LinkedHashMap<>();
         for (Class<? extends ProcessStep> step : model.steps()) {
             jobs.put(step, jobOf(c, model, step, now));
@@ -122,6 +159,11 @@ public class FlowRegistrar {
                 LOG.log(System.Logger.Level.INFO, "flow {0}: version {1} of color {2} is a candidate until {2} is"
                         + " the active color", model.name(), hash, ctx.color().color());
             }
+        } else if (afterSwitch && !versionId.equals(flows.activeVersion(c, flowId, now).orElse(null))) {
+            flows.activate(c, flowId, new ActivationRow(versionId, now, false, ctx.config().nodeName(), "color "
+                    + ctx.color().color() + " activated, the flow was registered after the switch", now, null));
+            LOG.log(System.Logger.Level.INFO, "flow {0}: version {1} of color {2} is active", model.name(), hash,
+                    ctx.color().color());
         } else if (activations.isEmpty() || (created && !manual)) {
             flows.activate(c, flowId, new ActivationRow(versionId, now, true, ctx.config().nodeName(),
                     created ? "new version deployed" : "first activation", now, null));
@@ -130,13 +172,21 @@ public class FlowRegistrar {
             LOG.log(System.Logger.Level.WARNING, "flow {0}: the deployed version {1} is a candidate, the active"
                     + " version was {2}", model.name(), hash, manual ? "activated manually" : "deployed later");
         }
-        return null;
+        return true;
+    }
+
+    private Optional<JobDefinition> existingJob(Connection c, Class<? extends ProcessStep> step) {
+        try {
+            return ctx.jobs().loadCurrent(c, ctx.namespace()).stream()
+                      .filter(j -> j.handlerClass().equals(step.getName())).findFirst();
+        } catch (SQLException e) {
+            throw new DtpException(e);
+        }
     }
 
     private UUID jobOf(Connection c, FlowModel model, Class<? extends ProcessStep> step, Instant now)
             throws SQLException {
-        Optional<JobDefinition> job = ctx.jobs().loadCurrent(c, ctx.namespace()).stream()
-                .filter(j -> j.handlerClass().equals(step.getName())).findFirst();
+        Optional<JobDefinition> job = existingJob(c, step);
         if (job.isPresent()) {
             return job.get().id();
         }

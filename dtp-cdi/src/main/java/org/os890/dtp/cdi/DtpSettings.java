@@ -50,6 +50,7 @@ public class DtpSettings {
         string(config, "dtp.node.color").filter(v -> !v.isBlank()).map(String::trim).ifPresent(builder::color);
         string(config, "dtp.node.app-version").or(() -> string(config, "quarkus.application.version"))
                                               .ifPresent(builder::appVersion);
+        duration(config, "dtp.color.fallback-after", builder::colorFallbackAfter);
         duration(config, "dtp.poll-interval", builder::pollInterval);
         duration(config, "dtp.housekeeping-interval", builder::housekeepingInterval);
         duration(config, "dtp.heartbeat-interval", builder::heartbeatInterval);

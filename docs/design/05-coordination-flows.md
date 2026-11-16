@@ -297,6 +297,11 @@ sequenceDiagram
     Note over DB: contract migration only after red has left
 ```
 
+> **First implementation (slices 21 and 24, [IMPLEMENTATION.md](../../IMPLEMENTATION.md)):** the switch state lists
+> the runs the old color still holds (`draining`), so the pipeline knows when red can leave. If the active color has
+> no live node, the nodes on standby announce it once (`ActiveColorUnavailable`); with `dtp.color.fallback-after` one
+> of them switches back to its color. A release on standby doesn't generate job definitions.
+
 ## 5.10 Leader Election (DD-3)
 
 ```mermaid

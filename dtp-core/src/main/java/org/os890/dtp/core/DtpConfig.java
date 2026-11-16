@@ -44,13 +44,16 @@ import java.util.Objects;
  * @param color               the color of this node's release for red/green deployments ({@code dtp.node.color}),
  *                            or {@code null}: only nodes of the active color claim runs (slice 21)
  * @param appVersion          the version of the application, shown with the nodes ({@code dtp.node.app-version})
+ * @param colorFallbackAfter  red/green: once the active color has no live node for this long, a node on standby
+ *                            switches to its own color ({@code dtp.color.fallback-after}), or {@code null}: only an
+ *                            operator switches (slice 24)
  */
 public record DtpConfig(String namespace, String nodeName, Duration pollInterval, Duration housekeepingInterval,
                         Duration heartbeatInterval, Duration leaseDuration, Duration leaderLeaseDuration,
                         Duration deadAfter, Duration misfireGrace, Duration definitionRefresh, Duration drainTimeout,
                         int maxConcurrentRuns, boolean migrateSchema, Long randomSeed, FlowExport flowExport,
                         Path flowExportPath, Map<String, String> definitionPlaceholders, Monitoring monitoring,
-                        String color, String appVersion) {
+                        String color, String appVersion, Duration colorFallbackAfter) {
 
     private static final java.util.regex.Pattern COLOR = java.util.regex.Pattern.compile("[a-z0-9][a-z0-9-]{0,19}");
 
@@ -64,6 +67,9 @@ public record DtpConfig(String namespace, String nodeName, Duration pollInterval
         Objects.requireNonNull(nodeName, "nodeName");
         if (maxConcurrentRuns < 1) {
             throw new IllegalArgumentException("maxConcurrentRuns must be at least 1");
+        }
+        if (colorFallbackAfter != null && colorFallbackAfter.isNegative()) {
+            throw new IllegalArgumentException("colorFallbackAfter must not be negative");
         }
         if (heartbeatInterval.multipliedBy(2).compareTo(leaseDuration) > 0) {
             throw new IllegalArgumentException("leaseDuration must be at least twice the heartbeatInterval");
@@ -228,6 +234,7 @@ public record DtpConfig(String namespace, String nodeName, Duration pollInterval
         private Map<String, String> definitionPlaceholders = Map.of();
         private Monitoring monitoring = Monitoring.defaults();
         private String color;
+        private Duration colorFallbackAfter;
         private String appVersion;
 
         public Builder namespace(String value) {
@@ -368,11 +375,24 @@ public record DtpConfig(String namespace, String nodeName, Duration pollInterval
             return this;
         }
 
+        /**
+         * Red/green (slice 24): once the active color has no live node for this long, a node on standby switches to
+         * its own color, e.g. back to the old release after the new one crashed on all nodes. Off by default: only an
+         * operator or the pipeline switches.
+         *
+         * @param value the delay, or {@code null} for no automatic fallback
+         * @return this builder
+         */
+        public Builder colorFallbackAfter(Duration value) {
+            colorFallbackAfter = value;
+            return this;
+        }
+
         public DtpConfig build() {
             return new DtpConfig(namespace, nodeName, pollInterval, housekeepingInterval, heartbeatInterval,
                     leaseDuration, leaderLeaseDuration, deadAfter, misfireGrace, definitionRefresh, drainTimeout,
                     maxConcurrentRuns, migrateSchema, randomSeed, flowExport, flowExportPath, definitionPlaceholders,
-                    monitoring, color, appVersion);
+                    monitoring, color, appVersion, colorFallbackAfter);
         }
 
         private static String defaultNodeName() {

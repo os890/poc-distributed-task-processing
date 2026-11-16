@@ -17,6 +17,7 @@ package org.os890.dtp.core.engine;
 
 import java.sql.Connection;
 import java.sql.SQLException;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -29,6 +30,8 @@ import java.util.TreeSet;
 import java.util.UUID;
 
 import org.os890.dtp.api.event.ActiveColorSwitched;
+import org.os890.dtp.api.event.ActiveColorUnavailable;
+import org.os890.dtp.api.event.RunRef;
 import org.os890.dtp.core.DtpConfig;
 import org.os890.dtp.core.DtpException;
 import org.os890.dtp.core.domain.JobDefinition;
@@ -44,7 +47,9 @@ import org.os890.dtp.core.jdbc.NodeStore.ColorNode;
  * ({@code dtp.node.color}); an operator or the deployment pipeline switches the active color once the nodes of the new
  * release are up. From then on only nodes of the active color claim runs and lead; the nodes of the old color finish
  * the current unit of work of their runs (soft stop {@code DRAIN}), stand by and can be shut down. The switch
- * activates the flow versions that the nodes of the new color run, so switching back is the rollback.
+ * activates the flow versions that the nodes of the new color run, so switching back is the rollback. A color without
+ * live node is noticed by the nodes on standby (slice 24): announced once, and optionally switched back to a color that
+ * is live ({@code dtp.color.fallback-after}).
  */
 public class ColorAdmin {
 
@@ -64,9 +69,12 @@ public class ColorAdmin {
      * @param switchedBy  who switched it, or {@code null}
      * @param reason      why, or {@code null}
      * @param switches    the latest switches, newest first
+     * @param unavailableSince since when the active color has no live node, or {@code null}
+     * @param draining    the runs that nodes of other colors still hold: once there are none, their nodes can be
+     *                    shut down
      */
     public record ColorState(String activeColor, Instant switchedAt, String switchedBy, String reason,
-                             List<SwitchView> switches) {
+                             List<SwitchView> switches, Instant unavailableSince, List<RunRef> draining) {
     }
 
     /**
@@ -112,9 +120,17 @@ public class ColorAdmin {
                         row.switchedBy(), row.reason(), row.activatedFlows() == null ? List.of()
                         : List.of(ctx.json().read(row.activatedFlows(), String[].class))));
             }
-            return new ColorState(control.map(Control::activeColor).orElse(null),
-                    control.map(Control::switchedAt).orElse(null), control.map(Control::switchedBy).orElse(null),
-                    control.map(Control::reason).orElse(null), List.copyOf(switches));
+            String active = control.map(Control::activeColor).orElse(null);
+            List<RunRef> draining = new ArrayList<>();
+            if (active != null) {
+                for (UUID run : ctx.runs().heldByOtherColors(c, ctx.namespace(), active)) {
+                    draining.add(ctx.runRef(c, run));
+                }
+            }
+            return new ColorState(active, control.map(Control::switchedAt).orElse(null),
+                    control.map(Control::switchedBy).orElse(null), control.map(Control::reason).orElse(null),
+                    List.copyOf(switches), control.map(Control::unavailableSince).orElse(null),
+                    List.copyOf(draining));
         });
     }
 
@@ -134,13 +150,94 @@ public class ColorAdmin {
             DtpConfig.requireColor(color);
         }
         ColorSwitch result = ctx.tx().required(() -> ctx.tx().withConnection(c -> switchTo(c, color, by, reason)));
+        log(result, by);
+        return result;
+    }
+
+    private static void log(ColorSwitch result, String by) {
         if (result.changed()) {
             LOG.log(System.Logger.Level.INFO, "active color switched from {0} to {1} by {2}, flows activated: {3}",
                     Objects.requireNonNullElse(result.previousColor(), "all colors"),
                     Objects.requireNonNullElse(result.activeColor(), "all colors"), by, result.activatedFlows());
-            result.warnings().forEach(w -> LOG.log(System.Logger.Level.WARNING, "switch to {0}: {1}", color, w));
+            result.warnings().forEach(w -> LOG.log(System.Logger.Level.WARNING, "switch to {0}: {1}",
+                    result.activeColor(), w));
         }
-        return result;
+    }
+
+    /**
+     * Watches the active color after a heartbeat of this node, with the switch the heartbeat read (slice 24). A node of
+     * the active color clears a mark of its color as unavailable. A node on standby notices that the active color has
+     * no live node: the first one records it and publishes {@link ActiveColorUnavailable}. With
+     * {@code dtp.color.fallback-after}, once the color is unavailable that long, it switches to its own color.
+     *
+     * @param control the switch as read by the heartbeat, or {@code null} if the namespace never had one
+     */
+    public void watch(Control control) {
+        if (control == null || control.activeColor() == null) {
+            return;
+        }
+        String active = control.activeColor();
+        if (!NodeColor.standby(ctx.color().color(), active)) {
+            if (control.unavailableSince() != null && ctx.tx().required(() -> ctx.tx().withConnection(c -> ctx.colors()
+                    .markAvailable(c, ctx.namespace(), active)))) {
+                LOG.log(System.Logger.Level.INFO, "color {0} has a live node again: {1}", active,
+                        ctx.config().nodeName());
+            }
+            return;
+        }
+        if (control.unavailableSince() == null) {
+            ctx.tx().required(() -> ctx.tx().withConnection(c -> noticeUnavailable(c, active)));
+        } else if (ctx.config().colorFallbackAfter() != null) {
+            fallback(active);
+        }
+    }
+
+    private Object noticeUnavailable(Connection c, String active) throws SQLException {
+        Instant now = ctx.clock().now(c);
+        if (!ctx.nodes().liveNodes(c, ctx.namespace(), active, now.minus(ctx.config().deadAfter())).isEmpty()
+                || !ctx.colors().markUnavailable(c, ctx.namespace(), active, now)) {
+            return null;
+        }
+        Instant last = ctx.nodes().lastHeartbeat(c, ctx.namespace(), active);
+        Duration after = ctx.config().colorFallbackAfter();
+        LOG.log(System.Logger.Level.ERROR, "the active color {0} has no live node (last heartbeat {1}): nobody claims"
+                + " runs or leads until the color is switched{2}", active, last, after == null ? ""
+                : ", a node on standby switches after " + after);
+        ctx.publishAfterCommit(new ActiveColorUnavailable(active, now, last, ctx.config().nodeName(), after));
+        return null;
+    }
+
+    /**
+     * Switches from an unavailable active color to the color of this node, once it is unavailable for
+     * {@code dtp.color.fallback-after}. The switch is checked again under the lock: a node of the color that came
+     * back, or another node that switched first, cancels it.
+     *
+     * @param unavailable the active color without live node
+     * @return the switch, or empty if nothing was switched
+     */
+    public Optional<ColorSwitch> fallback(String unavailable) {
+        Duration after = ctx.config().colorFallbackAfter();
+        if (after == null) {
+            return Optional.empty();
+        }
+        String by = "dtp (" + ctx.config().nodeName() + ")";
+        ColorSwitch result = ctx.tx().required(() -> ctx.tx().withConnection(c -> {
+            Instant now = ctx.clock().now(c);
+            Control current = ctx.colors().control(c, ctx.namespace(), true).orElse(null);
+            if (current == null || !unavailable.equals(current.activeColor()) || current.unavailableSince() == null
+                    || now.isBefore(current.unavailableSince().plus(after))
+                    || !ctx.nodes().liveNodes(c, ctx.namespace(), unavailable, now.minus(ctx.config().deadAfter()))
+                           .isEmpty()) {
+                return null;
+            }
+            return switchTo(c, ctx.color().color(), by, "fallback: color " + unavailable + " has no live node since "
+                    + current.unavailableSince());
+        }));
+        if (result == null) {
+            return Optional.empty();
+        }
+        log(result, by);
+        return Optional.of(result);
     }
 
     private ColorSwitch switchTo(Connection c, String color, String by, String reason) throws SQLException {
@@ -192,7 +289,9 @@ public class ColorAdmin {
             Optional<VersionRow> version = row.isEmpty() ? Optional.empty()
                     : ctx.flows().version(c, row.get().id(), hash);
             if (version.isEmpty()) {
-                warnings.add("flow " + flow + " has no version " + hash);
+                // a node on standby doesn't register flows whose step jobs are missing: its nodes do once active
+                warnings.add("flow " + flow + " has no version " + hash + " yet, the nodes of color " + color
+                        + " register and activate it once active");
                 continue;
             }
             UUID active = ctx.flows().activeVersion(c, row.get().id(), now).orElse(null);

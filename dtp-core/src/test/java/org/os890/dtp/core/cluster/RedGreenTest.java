@@ -23,6 +23,8 @@ import static org.awaitility.Awaitility.await;
 import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import org.assertj.core.groups.Tuple;
 import org.junit.jupiter.api.Test;
@@ -38,9 +40,11 @@ import org.os890.dtp.api.NoParams;
 import org.os890.dtp.api.ProcessStep;
 import org.os890.dtp.api.TrackedItem;
 import org.os890.dtp.api.event.ActiveColorSwitched;
+import org.os890.dtp.api.event.ActiveColorUnavailable;
 import org.os890.dtp.core.DtpEngine;
 import org.os890.dtp.core.DtpException;
 import org.os890.dtp.core.domain.ConcurrencyPolicy;
+import org.os890.dtp.core.engine.ColorAdmin.ColorState;
 import org.os890.dtp.core.engine.ColorAdmin.ColorSwitch;
 import org.os890.dtp.core.engine.ColorAdmin.SwitchView;
 import org.os890.dtp.core.query.FlowQueries.ActivationView;
@@ -169,22 +173,28 @@ class RedGreenTest {
             red.colors().activate("red", "pipeline", "release 1");
             String v1 = flow(red).activeVersion();
 
-            // green deploys version 2 on standby: stored as a candidate, red keeps version 1
+            // green deploys version 2 on standby. Its new step manual-repair has no job: a node on standby doesn't
+            // generate jobs (slice 24), so version 2 isn't registered yet and red keeps version 1
             DtpEngine green = node(cluster, "green-1", "green", new FlowSwitchTest.TradeFlowV2(),
                     new FlowSwitchTest.TradeImport(tx), new FlowSwitchTest.TradeValidation(tx),
                     new FlowSwitchTest.ManualRepair());
             assertThat(flow(red).activeVersion()).isEqualTo(v1);
-            String v2 = flow(red).versions().stream().map(v -> v.hash()).filter(h -> !h.equals(v1)).findFirst()
-                    .orElseThrow();
+            assertThat(flow(red).versions()).hasSize(1);
+            assertThat(cluster.count("SELECT COUNT(*) FROM dtp_job WHERE name = 'manual-repair'")).isZero();
 
-            // the switch activates version 2: trades without ISIN are repaired instead of re-imported
+            // the switch can't activate version 2 yet; green registers and activates it as soon as it is active:
+            // trades without ISIN are repaired instead of re-imported
             ColorSwitch toGreen = red.colors().activate("green", "pipeline", "release 2");
-            assertThat(toGreen.activatedFlows()).containsExactly(FLOW + " " + v2);
-            assertThat(toGreen.warnings()).isEmpty();
-            assertThat(flow(red).activeVersion()).isEqualTo(v2);
+            assertThat(toGreen.activatedFlows()).isEmpty();
+            assertThat(toGreen.warnings()).singleElement().asString().contains("flow " + FLOW + " has no version")
+                    .contains("the nodes of color green register and activate it once active");
+            await().atMost(Duration.ofSeconds(5)).until(() -> !flow(red).activeVersion().equals(v1));
+            String v2 = flow(red).activeVersion();
+            assertThat(cluster.count("SELECT COUNT(*) FROM dtp_job WHERE name = 'manual-repair'")).isEqualTo(1);
             assertThat(red.flowQueries().activations(FLOW).getFirst()).extracting(ActivationView::version,
                     ActivationView::generated, ActivationView::activatedBy, ActivationView::reason)
-                    .containsExactly(v2, false, "pipeline", "color green activated: release 2");
+                    .containsExactly(v2, false, "green-1",
+                            "color green activated, the flow was registered after the switch");
             await().atMost(Duration.ofSeconds(5)).until(red::isStandby);
             green.jobEngine().trigger(FlowSwitchTest.TradeImport.class,
                     new FlowSwitchTest.ImportParams(List.of("")));
@@ -198,6 +208,12 @@ class RedGreenTest {
             assertThat(back.warnings()).singleElement().asString()
                     .contains("no node of color red can run job manual-repair");
             assertThat(flow(red).activeVersion()).isEqualTo(v1);
+
+            // a switch to green now activates version 2 at once (its jobs exist): switch it back to red
+            ColorSwitch again = red.colors().activate("green", "pipeline", "release 2, again");
+            assertThat(again.activatedFlows()).containsExactly(FLOW + " " + v2);
+            assertThat(again.warnings()).isEmpty();
+            red.colors().activate("red", "ops", "repair bug in release 2, again");
 
             // a green node with the old version: the nodes of green disagree, no version is activated
             node(cluster, "green-2", "green", new FlowSwitchTest.TradeFlowV1(), new FlowSwitchTest.TradeImport(tx),
@@ -221,7 +237,7 @@ class RedGreenTest {
             await().atMost(Duration.ofSeconds(5)).until(() -> red.isStandby() && green.isLeader());
 
             cluster.tx().required(() -> {
-                for (int i = 1; i <= 40; i++) {
+                for (int i = 1; i <= 200; i++) {
                     green.items().track(ItemRef.of(TestTrade.ITEM, UUID.randomUUID()), "T-" + i)
                             .routeTo(SlowStep.class);
                 }
@@ -231,14 +247,33 @@ class RedGreenTest {
                     && cluster.count("SELECT COUNT(*) FROM dtp_item WHERE state = 'COMPLETED'") > 3);
             assertThat(red.activeRuns()).isZero();
 
-            // green crashes: red is still live on standby, so the operator switches back; red leads, its reaper takes
-            // the expired lease of green over and reruns the run (RERUN)
+            // green crashes (its run goes on as a zombie until its lease is taken over): nobody claims or leads.
+            // Red, on standby, notices that green has no live node any more (after dead-after) and announces it
+            // once (slice 24)
             green.kill();
+            await().atMost(Duration.ofSeconds(10)).until(() -> red.colors().state(1).unavailableSince() != null);
+            assertThat(cluster.events(ActiveColorUnavailable.class)).singleElement().satisfies(e -> {
+                assertThat(e.activeColor()).isEqualTo("green");
+                assertThat(e.noticedBy()).isEqualTo("red-1");
+                assertThat(e.lastHeartbeat()).isBefore(e.since());
+                assertThat(e.fallbackAfter()).isNull();
+            });
+            // a green node that comes back makes green available again, the next crash is announced again (it only
+            // has Ping, so the items wait for red)
+            DtpEngine green2 = node(cluster, "green-2", "green", new Ping());
+            await().atMost(Duration.ofSeconds(5)).until(() -> red.colors().state(1).unavailableSince() == null);
+            green2.kill();
+            await().atMost(Duration.ofSeconds(10)).until(() -> cluster.events(ActiveColorUnavailable.class)
+                    .size() == 2);
+
+            // the operator switches back: red leads, its reaper takes the expired lease of green over and reruns
+            // the run (RERUN)
             ColorSwitch back = red.colors().activate("red", "ops", "green crashed");
+            assertThat(red.colors().state(1).unavailableSince()).isNull();
             assertThat(back.changed()).isTrue();
             await().atMost(Duration.ofSeconds(10)).until(red::isLeader);
             cluster.awaitIdle(Duration.ofSeconds(30));
-            assertThat(cluster.count("SELECT COUNT(*) FROM dtp_item WHERE state = 'COMPLETED'")).isEqualTo(40);
+            assertThat(cluster.count("SELECT COUNT(*) FROM dtp_item WHERE state = 'COMPLETED'")).isEqualTo(200);
             assertThat(cluster.count("SELECT COUNT(*) FROM dtp_run WHERE owner_node_id = ? AND outcome = 'SUCCEEDED'",
                     red.nodeId())).isPositive();
 
@@ -246,6 +281,98 @@ class RedGreenTest {
             assertThat(red.colors().activate(null, "ops", "only red is left").activeColor()).isNull();
             assertThat(red.isStandby()).isFalse();
         }
+    }
+
+    /** Ignores stop requests: it runs until it is released, as a handler that never checks shouldContinue(). */
+    static class Stubborn implements JobHandler<NoParams, DefaultOutcome> {
+
+        final CountDownLatch started = new CountDownLatch(1);
+        final CountDownLatch release = new CountDownLatch(1);
+
+        @Override
+        public JobResult<DefaultOutcome> execute(JobContext<NoParams> ctx) {
+            started.countDown();
+            try {
+                release.await(20, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return JobResult.success();
+        }
+    }
+
+    @Test
+    void theColorStateShowsTheRunsTheOldColorStillHolds() throws InterruptedException {
+        try (TestCluster cluster = new TestCluster()) {
+            Stubborn stubborn = new Stubborn();
+            DtpEngine red = node(cluster, "red-1", "red", stubborn, new Ping());
+            cluster.definitions().define(Stubborn.class).external().save();
+            cluster.definitions().define(Ping.class).external().save();
+            red.colors().activate("red", "pipeline", "release 1");
+            DtpEngine green = node(cluster, "green-1", "green", new Stubborn(), new Ping());
+            UUID run = UUID.fromString(red.jobEngine().trigger(Stubborn.class, new NoParams()).runId());
+            assertThat(stubborn.started.await(10, TimeUnit.SECONDS)).isTrue();
+            assertThat(red.colors().state(1).draining()).isEmpty();
+
+            // green is activated: red's run doesn't stop by itself, the pipeline waits until red holds no runs
+            green.colors().activate("green", "pipeline", "release 2");
+            await().atMost(Duration.ofSeconds(5)).until(red::isStandby);
+            assertThat(green.colors().state(1).draining()).singleElement().satisfies(r -> {
+                assertThat(r.id()).isEqualTo(run);
+                assertThat(r.job()).isEqualTo("Stubborn");
+                assertThat(r.node()).isEqualTo("red-1");
+            });
+            stubborn.release.countDown();
+            await().atMost(Duration.ofSeconds(10)).until(() -> green.colors().state(1).draining().isEmpty());
+            assertThat(cluster.count("SELECT COUNT(*) FROM dtp_run WHERE id = ? AND outcome = 'DEFERRED'"
+                    + " AND stop_reason = 'DRAIN'", run)).isEqualTo(1);
+        }
+    }
+
+    @Test
+    void withAFallbackDelayAStandbyColorTakesOverACrashedActiveColor() {
+        try (TestCluster cluster = new TestCluster()) {
+            DtpEngine red1 = fallbackNode(cluster, "red-1");
+            DtpEngine red2 = fallbackNode(cluster, "red-2");
+            cluster.definitions().define(SlowStep.class).inbox(1).save();
+            DtpEngine green = node(cluster, "green-1", "green");
+            red1.colors().activate("green", "pipeline", "release 2");
+            await().atMost(Duration.ofSeconds(5)).until(() -> red1.isStandby() && red2.isStandby()
+                    && green.isLeader());
+            cluster.tx().required(() -> {
+                for (int i = 1; i <= 30; i++) {
+                    green.items().track(ItemRef.of(TestTrade.ITEM, UUID.randomUUID()), "T-" + i)
+                            .routeTo(SlowStep.class);
+                }
+                return null;
+            });
+            await().atMost(Duration.ofSeconds(10)).until(() -> green.activeRuns() == 1);
+
+            // green crashes: after dead-after a red node notices it, 500 ms later one red node switches back to red
+            green.kill();
+            await().atMost(Duration.ofSeconds(15)).until(() -> !red1.isStandby() && !red2.isStandby());
+            cluster.awaitIdle(Duration.ofSeconds(30));
+            assertThat(cluster.count("SELECT COUNT(*) FROM dtp_item WHERE state = 'COMPLETED'")).isEqualTo(30);
+            assertThat(cluster.events(ActiveColorUnavailable.class)).singleElement().satisfies(e -> {
+                assertThat(e.activeColor()).isEqualTo("green");
+                assertThat(e.fallbackAfter()).isEqualTo(Duration.ofMillis(500));
+            });
+            assertThat(cluster.events(ActiveColorSwitched.class)).hasSize(2).last().satisfies(e -> {
+                assertThat(e.previousColor()).isEqualTo("green");
+                assertThat(e.activeColor()).isEqualTo("red");
+                assertThat(e.by()).isIn("dtp (red-1)", "dtp (red-2)");
+                assertThat(e.reason()).startsWith("fallback: color green has no live node since ");
+            });
+            ColorState state = red1.colors().state(5);
+            assertThat(state.activeColor()).isEqualTo("red");
+            assertThat(state.unavailableSince()).isNull();
+            assertThat(state.switches()).hasSize(2);
+        }
+    }
+
+    private static DtpEngine fallbackNode(TestCluster cluster, String name) {
+        return cluster.start(TestCluster.config(name).color("red").colorFallbackAfter(Duration.ofMillis(500)).build(),
+                new MapStepRegistry(new SlowStep(), new Ping()));
     }
 
     private static DtpEngine node(TestCluster cluster, String name, String color, ProcessStep... steps) {

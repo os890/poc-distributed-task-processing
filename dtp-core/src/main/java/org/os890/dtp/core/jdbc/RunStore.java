@@ -487,6 +487,22 @@ public class RunStore {
     }
 
     /**
+     * The runs that nodes of another color than the active one still hold (red/green, slice 24): once there are none,
+     * the old release can be shut down.
+     *
+     * @param c           the connection
+     * @param namespace   the namespace
+     * @param activeColor the active color
+     * @return the run ids, oldest start first
+     * @throws SQLException on DB errors
+     */
+    public List<UUID> heldByOtherColors(Connection c, String namespace, String activeColor) throws SQLException {
+        return Sql.query(c, "SELECT r.id FROM dtp_run r JOIN dtp_node n ON n.id = r.owner_node_id"
+                + " WHERE r.namespace = ? AND r.state IN ('RUNNING', 'STOPPING') AND (n.color IS NULL OR n.color <> ?)"
+                + " ORDER BY r.started_at, r.id", rs -> Sql.uuid(rs, "id"), namespace, activeColor);
+    }
+
+    /**
      * What the domain events tell about a run.
      *
      * @param jobId          the job

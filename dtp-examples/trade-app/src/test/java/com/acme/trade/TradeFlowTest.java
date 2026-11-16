@@ -753,7 +753,8 @@ class TradeFlowTest {
                .when().post(color).then().statusCode(200).body("changed", is(false));
         given().when().get(color).then().statusCode(200).body("activeColor", equalTo("blue"))
                .body("switches[0].switchedBy", equalTo("pipeline"))
-               .body("switches[0].reason", equalTo("release 1.1"));
+               .body("switches[0].reason", equalTo("release 1.1")).body("unavailableSince", nullValue())
+               .body("draining", empty());
         await().atMost(Duration.ofSeconds(10)).until(() -> notifications.latest().stream().anyMatch(m ->
                 "operations".equals(m.audience()) && "Active color: blue".equals(m.subject())));
         assertThat(notifications.latest()).anySatisfy(m -> assertThat(m.body())
