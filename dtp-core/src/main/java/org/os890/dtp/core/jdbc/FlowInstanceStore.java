@@ -19,7 +19,9 @@ import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -239,6 +241,24 @@ public class FlowInstanceStore {
                 + " WHERE flow_instance_id = ?"
                 + " AND state IN ('PENDING', 'RUNNING', 'STOPPING', 'WAITING_FOR_DECISION')",
                 now, id);
+    }
+
+    /**
+     * The runs that {@link #cancelRuns} changed, read in its transaction (its rows stay locked until the commit).
+     *
+     * @param c   the connection
+     * @param id  the instance
+     * @param now the DB time of the cancel
+     * @return per run: {@code true} if it finished as {@code CANCELLED}, {@code false} if it was asked to stop
+     * @throws SQLException on DB errors
+     */
+    public Map<UUID, Boolean> cancelledRuns(Connection c, UUID id, Instant now) throws SQLException {
+        Map<UUID, Boolean> runs = new LinkedHashMap<>();
+        Sql.query(c, "SELECT id, state FROM dtp_run WHERE flow_instance_id = ? AND stop_reason = 'CANCEL'"
+                + " AND (state = 'STOPPING' OR (state = 'FINISHED' AND outcome = 'CANCELLED' AND finished_at = ?))"
+                + " ORDER BY created_at, id", rs -> runs.put(Sql.uuid(rs, "id"), "FINISHED".equals(rs.getString(
+                        "state"))), id, now);
+        return runs;
     }
 
     /**

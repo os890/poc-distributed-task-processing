@@ -39,6 +39,8 @@ import org.os890.dtp.api.event.DecisionFallbackDue;
 import org.os890.dtp.api.event.DecisionMade;
 import org.os890.dtp.api.event.DecisionRequested;
 import org.os890.dtp.api.event.DecisionWithdrawn;
+import org.os890.dtp.api.event.RunFinished;
+import org.os890.dtp.api.event.RunRequeued;
 import org.os890.dtp.api.event.VoteCast;
 import org.os890.dtp.api.event.WindowClosed;
 import org.os890.dtp.core.DtpException;
@@ -500,6 +502,10 @@ public class Decisions {
             }
             if (outcome == null) {
                 slotAfterDecision(c, request.subjectId(), now);
+                ctx.publishAfterCommit(new RunRequeued(ctx.runRef(c, request.subjectId()), RunRequeued.Cause.DECISION,
+                        user));
+            } else {
+                ctx.publishAfterCommit(new RunFinished(ctx.runRef(c, request.subjectId()), outcome, null, null, null));
             }
             new FlowInstances(ctx).runEnded(c, request.subjectId(), now);
             return;

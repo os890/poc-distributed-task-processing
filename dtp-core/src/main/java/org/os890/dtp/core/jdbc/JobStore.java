@@ -187,4 +187,53 @@ public class JobStore {
                 timeLimit == null ? null : Duration.parse(timeLimit), rs.getBoolean("ack_required"),
                 ackTimeout == null ? null : Duration.parse(ackTimeout), List.of(), List.of());
     }
+    /**
+     * A revision of a job that wasn't announced yet (slice 26).
+     *
+     * @param jobId            the job
+     * @param job              its name
+     * @param revision         the revision
+     * @param previousRevision the revision before, or {@code null}: a new job
+     * @param handlerClass     the class of its process step
+     * @param changedBy        who wrote it, or {@code null}
+     * @param changedAt        when it was written, or {@code null}
+     */
+    public record UnannouncedRevision(UUID jobId, String job, int revision, Integer previousRevision,
+                                      String handlerClass, String changedBy, java.time.Instant changedAt) {
+    }
+
+    /**
+     * The revisions not announced yet, up to the current one of each job (a revision written ahead waits until it is
+     * current), oldest first.
+     *
+     * @param c         the connection
+     * @param namespace the namespace
+     * @return the revisions
+     * @throws SQLException on DB errors
+     */
+    public List<UnannouncedRevision> unannounced(Connection c, String namespace) throws SQLException {
+        return Sql.query(c, "SELECT j.id, j.name, r.revision, r.handler_class, r.changed_by, r.changed_at,"
+                + " (SELECT MAX(p.revision) FROM dtp_job_revision p WHERE p.job_id = r.job_id"
+                + " AND p.revision < r.revision) AS previous_revision FROM dtp_job j JOIN dtp_job_revision r"
+                + " ON r.job_id = j.id WHERE j.namespace = ? AND r.announced_at IS NULL"
+                + " AND r.revision <= j.current_revision ORDER BY j.created_at, j.name, r.revision",
+                rs -> new UnannouncedRevision(Sql.uuid(rs, "id"), rs.getString("name"), rs.getInt("revision"),
+                        rs.getObject("previous_revision", Integer.class), rs.getString("handler_class"),
+                        rs.getString("changed_by"), Sql.instant(rs, "changed_at")), namespace);
+    }
+
+    /**
+     * Marks a revision as announced, once for the cluster.
+     *
+     * @param c        the connection
+     * @param jobId    the job
+     * @param revision the revision
+     * @param now      the DB time
+     * @return {@code true} if this call marked it
+     * @throws SQLException on DB errors
+     */
+    public boolean announce(Connection c, UUID jobId, int revision, java.time.Instant now) throws SQLException {
+        return Sql.update(c, "UPDATE dtp_job_revision SET announced_at = ? WHERE job_id = ? AND revision = ?"
+                + " AND announced_at IS NULL", now, jobId, revision) == 1;
+    }
 }

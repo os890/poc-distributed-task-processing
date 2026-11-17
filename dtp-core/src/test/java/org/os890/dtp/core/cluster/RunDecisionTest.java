@@ -42,6 +42,7 @@ import org.os890.dtp.api.Responsibility;
 import org.os890.dtp.api.RunOutcome;
 import org.os890.dtp.api.event.DecisionMade;
 import org.os890.dtp.api.event.DecisionRequested;
+import org.os890.dtp.api.event.RunFinished;
 import org.os890.dtp.core.DtpEngine;
 import org.os890.dtp.core.DtpException;
 import org.os890.dtp.core.engine.Decisions;
@@ -286,6 +287,13 @@ class RunDecisionTest {
             a.decisions().decide(a.decisions().open(CLARA).getFirst().id(), "FAIL", CLARA, "wrong day");
             cluster.awaitIdle(Duration.ofSeconds(10));
             assertThat(signOffRun(day(a, "2026-11-23")).outcome()).isEqualTo("FAILED");
+            UUID failed = signOffRun(day(a, "2026-11-23")).id();
+            assertThat(cluster.events(RunFinished.class)).filteredOn(e -> e.run().id().equals(failed))
+                    .singleElement().satisfies(e -> {
+                        assertThat(e.outcome()).isEqualTo(RunOutcome.FAILED);
+                        assertThat(e.run().attempt()).isEqualTo(1);
+                        assertThat(e.elapsed()).isNull();
+                    });
             assertThat(signOff.executions.get("2026-11-23")).hasValue(1);
             assertThat(day(a, "2026-11-23").state()).isEqualTo("OPEN");
             assertThat(notify.sent).isEmpty();

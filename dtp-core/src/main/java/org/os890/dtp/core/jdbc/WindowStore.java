@@ -315,4 +315,49 @@ public class WindowStore {
                 Sql.instant(rs, "cut_off"), Sql.uuid(rs, "collector_run_id"), rs.getInt("collector_attempts"),
                 Sql.instant(rs, "state_changed_at"));
     }
+    /**
+     * A window that wasn't announced yet (slice 26).
+     *
+     * @param id             the window
+     * @param name           its name
+     * @param collectorJobId its collector job
+     * @param scheduleCron   its schedule, or {@code null}
+     * @param zone           the zone of its schedule
+     * @param createdAt      when it was written
+     */
+    public record UnannouncedWindow(UUID id, String name, UUID collectorJobId, String scheduleCron, String zone,
+                                    Instant createdAt) {
+    }
+
+    /**
+     * The windows not announced yet, oldest first.
+     *
+     * @param c         the connection
+     * @param namespace the namespace
+     * @return the windows
+     * @throws SQLException on DB errors
+     */
+    public List<UnannouncedWindow> unannounced(Connection c, String namespace) throws SQLException {
+        return Sql.query(c, "SELECT w.id, w.name, w.collector_job_id, w.schedule_cron,"
+                + " COALESCE(k.zone, w.schedule_zone) AS zone, w.created_at FROM dtp_window w"
+                + " LEFT JOIN dtp_calendar k ON k.id = w.calendar_id WHERE w.namespace = ? AND w.announced_at IS NULL"
+                + " ORDER BY w.created_at, w.name",
+                rs -> new UnannouncedWindow(Sql.uuid(rs, "id"), rs.getString("name"),
+                        Sql.uuid(rs, "collector_job_id"), rs.getString("schedule_cron"), rs.getString("zone"),
+                        Sql.instant(rs, "created_at")), namespace);
+    }
+
+    /**
+     * Marks a window as announced, once for the cluster.
+     *
+     * @param c        the connection
+     * @param windowId the window
+     * @param now      the DB time
+     * @return {@code true} if this call marked it
+     * @throws SQLException on DB errors
+     */
+    public boolean announce(Connection c, UUID windowId, Instant now) throws SQLException {
+        return Sql.update(c, "UPDATE dtp_window SET announced_at = ? WHERE id = ? AND announced_at IS NULL", now,
+                windowId) == 1;
+    }
 }

@@ -20,8 +20,12 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
+import org.os890.dtp.api.event.JobDefined;
+import org.os890.dtp.api.event.JobRevised;
 import org.os890.dtp.api.event.LeaseExpired;
 import org.os890.dtp.api.event.NodeLost;
+import org.os890.dtp.api.event.RunRequeued;
+import org.os890.dtp.api.event.WindowDefined;
 import org.os890.dtp.core.domain.BuiltInOption;
 import org.os890.dtp.core.domain.CalendarDefinition;
 import org.os890.dtp.core.domain.CronExpression;
@@ -32,16 +36,18 @@ import org.os890.dtp.core.domain.ProcessingSlots;
 import org.os890.dtp.core.domain.SubjectType;
 import org.os890.dtp.core.domain.TakeoverPolicy;
 import org.os890.dtp.core.domain.TriggerType;
+import org.os890.dtp.core.jdbc.JobStore;
 import org.os890.dtp.core.jdbc.LeaseStore.ExpiredLease;
 import org.os890.dtp.core.jdbc.NodeStore;
 import org.os890.dtp.core.jdbc.PackageStore;
 import org.os890.dtp.core.jdbc.RunStore;
+import org.os890.dtp.core.jdbc.WindowStore;
 
 /**
  * The tasks of the housekeeping leader (DD-3): creating lease rows, planning time and inbox triggers (cron slots with
  * their business calendar) and decision fallbacks, moving runs that missed their processing slot, taking over expired
- * leases, marking dead nodes and coordinating collection windows. Every action is idempotent (run keys) or conditional
- * (tokens), so two leaders for a short moment do no harm.
+ * leases, marking dead nodes, coordinating collection windows and announcing new definitions. Every action is
+ * idempotent (run keys) or conditional (tokens), so two leaders for a short moment do no harm.
  */
 public class Housekeeping {
 
@@ -58,6 +64,7 @@ public class Housekeeping {
     private final Map<UUID, Instant> examinedSlots = new ConcurrentHashMap<>();
     private final WindowCoordinator windows;
     private final Acknowledgements acknowledgements;
+    private final WindowStore windowStore = new WindowStore();
 
     public Housekeeping(EngineContext ctx, RunPlanner planner) {
         this.ctx = ctx;
@@ -71,6 +78,7 @@ public class Housekeeping {
 
     /** One housekeeping cycle. Each step runs in its own transaction, so one failure doesn't block the others. */
     public void tick() {
+        guarded("definitions", this::announceDefinitions);
         guarded("lease rows", () -> ctx.tx().required(() -> ctx.tx().withConnection(
                 c -> ctx.leases().createMissing(c, ctx.namespace()))));
         for (JobDefinition job : ctx.catalog().all()) {
@@ -93,6 +101,39 @@ public class Housekeeping {
         guarded("lease takeover", this::reapLeases);
         guarded("acknowledgement timeouts", acknowledgements::timeOut);
         guarded("dead nodes", this::markDeadNodes);
+    }
+
+    /**
+     * Announces new job revisions and windows once (slice 26), whatever wrote them: a definition script (DD-15), the
+     * builder or a flow registration. A revision written ahead of the current one waits until it is current.
+     */
+    private Object announceDefinitions() {
+        return ctx.tx().required(() -> ctx.tx().withConnection(c -> {
+            Instant now = ctx.clock().now(c);
+            for (JobStore.UnannouncedRevision r : ctx.jobs().unannounced(c, ctx.namespace())) {
+                if (!ctx.jobs().announce(c, r.jobId(), r.revision(), now)) {
+                    continue;
+                }
+                if (r.previousRevision() == null) {
+                    LOG.log(System.Logger.Level.INFO, "job {0} defined (revision {1}) by {2}", r.job(), r.revision(),
+                            r.changedBy());
+                    ctx.publishAfterCommit(new JobDefined(r.job(), r.revision(), r.handlerClass(), r.changedBy(),
+                            r.changedAt()));
+                } else {
+                    LOG.log(System.Logger.Level.INFO, "job {0} revised from revision {1} to {2} by {3}", r.job(),
+                            r.previousRevision(), r.revision(), r.changedBy());
+                    ctx.publishAfterCommit(new JobRevised(r.job(), r.previousRevision(), r.revision(),
+                            r.handlerClass(), r.changedBy(), r.changedAt()));
+                }
+            }
+            for (WindowStore.UnannouncedWindow w : windowStore.unannounced(c, ctx.namespace())) {
+                if (windowStore.announce(c, w.id(), now)) {
+                    ctx.publishAfterCommit(new WindowDefined(w.name(), ctx.catalog().byId(w.collectorJobId()).name(),
+                            w.scheduleCron(), w.zone(), w.createdAt()));
+                }
+            }
+            return null;
+        }));
     }
 
     private Object planCron(JobDefinition job) {
@@ -204,7 +245,12 @@ public class Housekeeping {
                 }
                 // read before the takeover: it still names the node whose lease expired
                 ctx.publishAfterCommit(new LeaseExpired(ctx.runRef(c, lease.runId()), rerun));
-                if (ctx.runs().afterLeaseExpired(c, lease.runId(), rerun, now) && !rerun) {
+                boolean active = ctx.runs().afterLeaseExpired(c, lease.runId(), rerun, now);
+                if (active && rerun) {
+                    ctx.publishAfterCommit(new RunRequeued(ctx.runRef(c, lease.runId()), RunRequeued.Cause.TAKEOVER,
+                            ctx.config().nodeName()));
+                }
+                if (active && !rerun) {
                     // takeover policy ABANDON: an operator decides (DD-5)
                     decisions.request(c, new Decisions.NewRequest(DecisionKind.CHOICE, SubjectType.RUN,
                             lease.runId(), lease.jobId(), lease.runId(), "lease of node " + lease.owner()

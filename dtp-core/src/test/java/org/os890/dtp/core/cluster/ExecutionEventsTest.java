@@ -41,7 +41,9 @@ import org.os890.dtp.api.event.NodeDrained;
 import org.os890.dtp.api.event.NodeJoined;
 import org.os890.dtp.api.event.NodeLost;
 import org.os890.dtp.api.event.RunFinished;
+import org.os890.dtp.api.event.RunPlanned;
 import org.os890.dtp.api.event.RunRef;
+import org.os890.dtp.api.event.RunRequeued;
 import org.os890.dtp.api.event.RunSkipped;
 import org.os890.dtp.api.event.RunStarted;
 import org.os890.dtp.api.event.RunStopRequested;
@@ -115,6 +117,18 @@ class ExecutionEventsTest {
             assertThat(cluster.events(RunStarted.class)).extracting(RunStarted::run).extracting(RunRef::id,
                     RunRef::job, RunRef::attempt, RunRef::node).containsExactly(tuple(runId, "Hold", 1, crashedName),
                     tuple(runId, "Hold", 2, survivorName));
+            assertThat(cluster.events(RunPlanned.class)).singleElement().satisfies(e -> {
+                assertThat(e.run()).isEqualTo(new RunRef(runId, "Hold", 0, null, null));
+                assertThat(e.triggerType()).isEqualTo("EXTERNAL");
+                assertThat(e.notBefore()).isNull();
+                assertThat(e.slotEnd()).isNull();
+            });
+            // the survivor is the leader that took the lease over: it planned the run again
+            assertThat(cluster.events(RunRequeued.class)).singleElement().satisfies(e -> {
+                assertThat(e.run()).isEqualTo(new RunRef(runId, "Hold", 1, null, null));
+                assertThat(e.cause()).isEqualTo(RunRequeued.Cause.TAKEOVER);
+                assertThat(e.by()).isEqualTo(survivorName);
+            });
             assertThat(cluster.events(NodeLost.class)).singleElement().satisfies(e -> {
                 assertThat(e.nodeId()).isEqualTo(crashed.nodeId());
                 assertThat(e.node()).isEqualTo(crashedName);
@@ -213,6 +227,11 @@ class ExecutionEventsTest {
                             tuple("Queued", RunOutcome.SUCCEEDED));
             assertThat(cluster.events(RunStarted.class)).extracting(e -> e.run().job()).containsExactly("Hold",
                     "Queued");
+            // the skipped trigger isn't planned
+            assertThat(cluster.events(RunPlanned.class)).extracting(e -> e.run().job(), e -> e.run().id())
+                    .containsExactly(tuple("Hold", holding), tuple("Queued", cluster.events(RunStarted.class).get(1)
+                            .run().id()), tuple("Queued", pending));
+            assertThat(cluster.events(RunRequeued.class)).isEmpty();
             assertThat(cluster.events(RunStarted.class)).allSatisfy(e -> assertThat(e.run().node()).isEqualTo("a"));
         }
     }

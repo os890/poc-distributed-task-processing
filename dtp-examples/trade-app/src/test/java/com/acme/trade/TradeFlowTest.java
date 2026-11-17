@@ -432,11 +432,8 @@ class TradeFlowTest {
         }
         given().when().get("/dtp/monitor/heatmap").then()
                .body("steps.find { it.step == 'trade-enrichment' }.alertState", equalTo("FAILING"));
-        given().header("X-Groups", "dtp-operator").when().get("/dtp/monitor/steps/trade-enrichment/failures")
-               .then().statusCode(200)
-               .body("[0].errorType", equalTo(IllegalStateException.class.getName()))
-               .body("[0].occurrences", greaterThan(2))
-               .body("[0].sampleMessage", containsString("market data service unavailable"));
+        // the alert can be a projection cycle ahead of the failure groups
+        await().atMost(Duration.ofSeconds(10)).untilAsserted(this::enrichmentFailuresAreGrouped);
 
         // the service is back: the retry policy of the enrichment (3 retries, 10 s backoff) completes the trades,
         // the step recovers after the calm period and isn't counted as stuck when the retries become due
@@ -448,6 +445,14 @@ class TradeFlowTest {
         given().when().get("/dtp/monitor/heatmap").then()
                .body("steps.find { it.step == 'trade-enrichment' }.alertState", equalTo("OK"));
         assertThat(notifications.latest()).noneMatch(m -> m.subject().equals("Step congested: trade-enrichment"));
+    }
+
+    private void enrichmentFailuresAreGrouped() {
+        given().header("X-Groups", "dtp-operator").when().get("/dtp/monitor/steps/trade-enrichment/failures")
+               .then().statusCode(200)
+               .body("[0].errorType", equalTo(IllegalStateException.class.getName()))
+               .body("[0].occurrences", greaterThan(2))
+               .body("[0].sampleMessage", containsString("market data service unavailable"));
     }
 
     @Test

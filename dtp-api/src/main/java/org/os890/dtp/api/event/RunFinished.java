@@ -21,9 +21,10 @@ import org.os890.dtp.api.RunOutcome;
 import org.os890.dtp.api.StopReason;
 
 /**
- * A run ended: published by the node that ran it once the end was committed, or by the node of the operator who
- * cancelled it before it started (then without node and duration). A run that waits for a decision hasn't ended
- * ({@link DecisionRequested}); a run that an operator's decision ends is announced by {@link DecisionMade}.
+ * A run ended, exactly once per run: published by the node that ran it once the end was committed, by the node of the
+ * operator who cancelled it before it started, or by the node of the user whose decision ended a waiting run (then
+ * without duration). A run that waits for a decision hasn't ended ({@link DecisionRequested}), a decision that runs it
+ * again is announced by {@link RunRequeued}.
  *
  * @param run          the run
  * @param outcome      the outcome, e.g. {@code SUCCEEDED}, {@code DEFERRED} or {@code FAILED}

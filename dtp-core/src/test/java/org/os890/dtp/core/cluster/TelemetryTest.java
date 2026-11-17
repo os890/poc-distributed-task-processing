@@ -242,12 +242,13 @@ class TelemetryTest {
                               .orElseThrow();
             assertThat(checkNode.traceIds()).isNotEmpty().allSatisfy(id -> assertThat(id).isIn(traces));
 
-            // cluster gauges: only the projection leader reports them; a stopped leader stops at once
-            DtpEngine leader = a.isProjectionLeader() ? a : b;
+            // cluster gauges: only the projection leader reports them; a stopped leader stops at once (a revoked
+            // one on its next cycle, so the leader is the node that reports them)
+            await().atMost(Duration.ofSeconds(10)).until(() -> ta.cluster().isPresent() != tb.cluster().isPresent());
+            RecordingTelemetry leading = ta.cluster().isPresent() ? ta : tb;
+            RecordingTelemetry following = leading == ta ? tb : ta;
+            DtpEngine leader = leading == ta ? a : b;
             DtpEngine other = leader == a ? b : a;
-            RecordingTelemetry leading = leader == a ? ta : tb;
-            RecordingTelemetry following = leader == a ? tb : ta;
-            await().atMost(Duration.ofSeconds(10)).until(() -> leading.cluster().isPresent());
             ClusterState state = leading.cluster().orElseThrow();
             assertThat(state.steps()).extracting(ClusterState.Step::step).contains(intake, checkJob);
             assertThat(state.nodes()).contains(new ClusterState.Nodes("", "ACTIVE", 2));

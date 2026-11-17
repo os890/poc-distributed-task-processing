@@ -1110,7 +1110,7 @@ public class AlertNotifier {
     }
 }</code></pre></figure>
 <p>The cluster itself fires events as well, each one by the node that committed the change: runs, leases, nodes,
-collection windows, work packages and jobs. The example tells operations when a node stopped sending heartbeats.
+collection windows, work packages and definitions. The example tells operations when a node stopped sending heartbeats.
 Its runs are taken over anyway, but the node needs a look:</p>
 <figure class="code"><figcaption>NodeLostNotifier.java</figcaption><pre><code class="language-java">void onLost(@ObservesAsync NodeLost event) {
     team.send(&quot;dtp-operator&quot;, &quot;Node lost: &quot; + event.node(), &quot;No heartbeat since &quot; + event.lastHeartbeat());
@@ -1118,13 +1118,15 @@ Its runs are taken over anyway, but the node needs a look:</p>
 <table>
 <thead><tr><th>Event</th><th>When</th></tr></thead>
 <tbody>
-<tr><td><code>RunStarted</code>, <code>RunFinished</code></td><td>A node claimed a run; a run ended, with outcome, stop reason and duration</td></tr>
+<tr><td><code>RunPlanned</code>, <code>RunRequeued</code></td><td>A run was planned; a run is planned again after a takeover or a decision</td></tr>
+<tr><td><code>RunStarted</code>, <code>RunFinished</code></td><td>A node claimed a run; a run ended (once per run), with outcome, stop reason and duration</td></tr>
 <tr><td><code>RunSkipped</code>, <code>RunStopRequested</code></td><td>A trigger of a <code>SKIP</code> job while a run was open; an operator cancelled a running run</td></tr>
 <tr><td><code>LeaseExpired</code>, <code>LeaseLost</code></td><td>The leader took over the lease of a silent node; that node noticed it later</td></tr>
 <tr><td><code>NodeJoined</code>, <code>NodeDrained</code>, <code>NodeLost</code></td><td>A node started, was shut down gracefully, stopped sending heartbeats</td></tr>
 <tr><td><code>WindowQuiescing</code>, <code>WindowOpened</code>, <code>WindowClosed</code></td><td>A collection window started, opened with its cut-off, closed or was skipped</td></tr>
 <tr><td><code>PackageCompleted</code>, <code>PackageRejected</code></td><td>A work package is done or acknowledged; the receiver rejected it or didn't answer in time</td></tr>
 <tr><td><code>JobEnabled</code>, <code>JobDisabled</code></td><td>An operator switched a job on or off</td></tr>
+<tr><td><code>JobDefined</code>, <code>JobRevised</code>, <code>WindowDefined</code></td><td>A new job, revision or collection window, announced once by the leader, whatever wrote it</td></tr>
 </tbody></table>
 <p>For a dashboard, the live feed sends the changed steps after every projection cycle. A node polls the projection
 only while clients are connected. The example exposes it as Server-Sent Events:</p>

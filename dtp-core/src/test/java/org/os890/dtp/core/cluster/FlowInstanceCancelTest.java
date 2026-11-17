@@ -17,6 +17,7 @@ package org.os890.dtp.core.cluster;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.tuple;
 import static org.awaitility.Awaitility.await;
 
 import java.time.Duration;
@@ -36,9 +37,13 @@ import org.os890.dtp.api.JobResult;
 import org.os890.dtp.api.Responsibility;
 import org.os890.dtp.api.RunHandle;
 import org.os890.dtp.api.RunOutcome;
+import org.os890.dtp.api.StopReason;
 import org.os890.dtp.api.event.DecisionWithdrawn;
 import org.os890.dtp.api.event.FlowInstanceCancelled;
 import org.os890.dtp.api.event.FlowInstanceCompleted;
+import org.os890.dtp.api.event.RunFinished;
+import org.os890.dtp.api.event.RunPlanned;
+import org.os890.dtp.api.event.RunStopRequested;
 import org.os890.dtp.core.DtpEngine;
 import org.os890.dtp.core.DtpException;
 import org.os890.dtp.core.engine.Decisions.Decider;
@@ -247,6 +252,21 @@ class FlowInstanceCancelTest {
             assertThatThrownBy(() -> a.decisions().decide(request.id(), "RELEASE", CLARA, null))
                     .isInstanceOf(DtpException.class).hasMessageContaining("withdrawn");
             assertThat(pnl.decided).hasValue(0);
+
+            // each run of the instance ended once: the cancel finished the waiting and the pending run, the running
+            // one ended on its node after the stop request
+            assertThat(cluster.events(RunPlanned.class)).filteredOn(e -> day.id().equals(e.run().flowInstanceId()))
+                    .hasSize(4);
+            assertThat(cluster.events(RunStopRequested.class)).singleElement().satisfies(e -> {
+                assertThat(e.run().job()).isEqualTo("Positions");
+                assertThat(e.reason()).isEqualTo(StopReason.CANCEL);
+                assertThat(e.by()).isEqualTo("otto");
+            });
+            assertThat(cluster.events(RunFinished.class)).filteredOn(e -> day.id().equals(e.run().flowInstanceId()))
+                    .extracting(e -> e.run().job(), RunFinished::outcome, e -> e.elapsed() == null)
+                    .containsExactlyInAnyOrder(tuple("CutOff", RunOutcome.SUCCEEDED, false),
+                            tuple("Positions", RunOutcome.CANCELLED, false), tuple("Pnl", RunOutcome.CANCELLED, true),
+                            tuple("Archive", RunOutcome.CANCELLED, true));
 
             // a cancelled instance stays cancelled: no second cancel, no rerun, starting it finds it
             assertThatThrownBy(() -> a.flowInstances().cancel(day.id(), "otto", "again"))

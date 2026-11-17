@@ -26,10 +26,14 @@ import java.util.UUID;
 
 import org.os890.dtp.api.FlowInstance;
 import org.os890.dtp.api.RunOutcome;
+import org.os890.dtp.api.StopReason;
 import org.os890.dtp.api.event.FlowInstanceCancelled;
 import org.os890.dtp.api.event.FlowInstanceCompleted;
 import org.os890.dtp.api.event.FlowInstanceStarted;
 import org.os890.dtp.api.event.JoinFired;
+import org.os890.dtp.api.event.RunFinished;
+import org.os890.dtp.api.event.RunRef;
+import org.os890.dtp.api.event.RunStopRequested;
 import org.os890.dtp.core.DtpException;
 import org.os890.dtp.core.domain.CronSchedule;
 import org.os890.dtp.core.domain.JobDefinition;
@@ -346,6 +350,12 @@ public class FlowInstances {
                         + " is " + instance.state().toLowerCase(Locale.ROOT) + " already");
             }
             int runs = store.cancelRuns(c, instanceId, now);
+            for (var run : store.cancelledRuns(c, instanceId, now).entrySet()) {
+                RunRef ref = ctx.runRef(c, run.getKey());
+                ctx.publishAfterCommit(run.getValue()
+                        ? new RunFinished(ref, RunOutcome.CANCELLED, null, StopReason.CANCEL, null)
+                        : new RunStopRequested(ref, StopReason.CANCEL, by));
+            }
             int withdrawn = 0;
             for (UUID request : requests) {
                 if (decisionRequests.withdraw(c, request, by, "flow instance cancelled: " + reason, now)) {

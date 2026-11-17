@@ -44,6 +44,7 @@ import org.os890.dtp.api.NoParams;
 import org.os890.dtp.api.Responsibility;
 import org.os890.dtp.api.RunHandle;
 import org.os890.dtp.api.TrackedItem;
+import org.os890.dtp.api.event.RunRequeued;
 import org.os890.dtp.core.DtpEngine;
 import org.os890.dtp.core.DtpException;
 import org.os890.dtp.core.domain.TakeoverPolicy;
@@ -271,6 +272,13 @@ class DecisionTest {
             assertThat(cluster.count("SELECT COUNT(*) FROM dtp_run WHERE id = ? AND outcome = 'SUCCEEDED'"
                     + " AND attempt = 2", runId)).isEqualTo(1);
             job.release.countDown();
+            // takeover policy ABANDON: the decision plans the run again, not the takeover
+            assertThat(cluster.events(RunRequeued.class)).singleElement().satisfies(e -> {
+                assertThat(e.run().id()).isEqualTo(runId);
+                assertThat(e.run().attempt()).isEqualTo(1);
+                assertThat(e.cause()).isEqualTo(RunRequeued.Cause.DECISION);
+                assertThat(e.by()).isEqualTo("otto");
+            });
 
             assertThatThrownBy(() -> survivor.decisions().decide(abandoned.id(), "SKIP", OPS, null))
                     .isInstanceOf(DtpException.class);

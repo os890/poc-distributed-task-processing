@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.UUID;
 
 import org.os890.dtp.api.RunOutcome;
+import org.os890.dtp.api.event.RunPlanned;
 import org.os890.dtp.api.event.RunRef;
 import org.os890.dtp.api.event.RunSkipped;
 import org.os890.dtp.core.domain.ConcurrencyPolicy;
@@ -151,9 +152,12 @@ public class RunPlanner {
                 job.revision(), job.handlerClass(), state, outcome, trigger.type(), trigger.triggeredBy(), parameters,
                 notBefore, trigger.flowInstanceId(), trigger.cronSlot(), slotEnd), now);
         if (created) {
+            RunRef ref = new RunRef(id, job.name(), 0, null, trigger.flowInstanceId());
             if (outcome == RunOutcome.SKIPPED) {
-                ctx.publishAfterCommit(new RunSkipped(new RunRef(id, job.name(), 0, null, trigger.flowInstanceId()),
-                        trigger.type().name(), trigger.triggeredBy()));
+                ctx.publishAfterCommit(new RunSkipped(ref, trigger.type().name(), trigger.triggeredBy()));
+            } else {
+                ctx.publishAfterCommit(new RunPlanned(ref, trigger.type().name(), trigger.triggeredBy(), notBefore,
+                        slotEnd));
             }
             return new Planned(id, true);
         }
