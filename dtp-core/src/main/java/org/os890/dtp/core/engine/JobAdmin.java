@@ -53,9 +53,11 @@ public class JobAdmin {
     private final RunPlanner planner;
     private final FlowInstances instances;
     private final DecisionStore decisions = new DecisionStore();
+    private final Decisions decisionRequests;
 
     public JobAdmin(EngineContext ctx, RunPlanner planner) {
         this.ctx = ctx;
+        this.decisionRequests = new Decisions(ctx);
         this.planner = planner;
         this.instances = new FlowInstances(ctx);
     }
@@ -193,7 +195,7 @@ public class JobAdmin {
             RunStore.Cancelled cancelled = ctx.runs().cancel(c, runId, now);
             if (cancelled != RunStore.Cancelled.NONE) {
                 for (UUID request : requests) {
-                    decisions.withdraw(c, request, by, "run cancelled", now);
+                    decisionRequests.withdraw(c, request, by, "run cancelled", now);
                 }
                 RunRef run = ctx.runRef(c, runId);
                 ctx.publishAfterCommit(cancelled == RunStore.Cancelled.FINISHED

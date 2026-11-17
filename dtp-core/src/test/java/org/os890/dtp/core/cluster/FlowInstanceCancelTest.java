@@ -36,6 +36,7 @@ import org.os890.dtp.api.JobResult;
 import org.os890.dtp.api.Responsibility;
 import org.os890.dtp.api.RunHandle;
 import org.os890.dtp.api.RunOutcome;
+import org.os890.dtp.api.event.DecisionWithdrawn;
 import org.os890.dtp.api.event.FlowInstanceCancelled;
 import org.os890.dtp.api.event.FlowInstanceCompleted;
 import org.os890.dtp.core.DtpEngine;
@@ -237,6 +238,12 @@ class FlowInstanceCancelTest {
             assertThat(withdrawn.state()).isEqualTo("WITHDRAWN");
             assertThat(withdrawn.decidedBy()).isEqualTo("otto");
             assertThat(withdrawn.comment()).isEqualTo("flow instance cancelled: started for the wrong date");
+            assertThat(cluster.events(DecisionWithdrawn.class)).singleElement().satisfies(e -> {
+                assertThat(e.request().id()).isEqualTo(request.id());
+                assertThat(e.request().subjectType()).isEqualTo("RUN");
+                assertThat(e.by()).isEqualTo("otto");
+                assertThat(e.reason()).isEqualTo("flow instance cancelled: started for the wrong date");
+            });
             assertThatThrownBy(() -> a.decisions().decide(request.id(), "RELEASE", CLARA, null))
                     .isInstanceOf(DtpException.class).hasMessageContaining("withdrawn");
             assertThat(pnl.decided).hasValue(0);
@@ -286,6 +293,11 @@ class FlowInstanceCancelTest {
             assertThat(withdrawn.state()).isEqualTo("WITHDRAWN");
             assertThat(withdrawn.decidedBy()).isEqualTo("otto");
             assertThat(withdrawn.comment()).isEqualTo("run cancelled");
+            assertThat(cluster.events(DecisionWithdrawn.class)).singleElement().satisfies(e -> {
+                assertThat(e.request().id()).isEqualTo(request.id());
+                assertThat(e.by()).isEqualTo("otto");
+                assertThat(e.reason()).isEqualTo("run cancelled");
+            });
             assertThat(a.decisions().open(CLARA)).isEmpty();
             assertThat(a.jobAdmin().cancel(runId, "otto")).isFalse();
             cluster.awaitIdle(Duration.ofSeconds(10));

@@ -70,8 +70,8 @@ requested by job runs, e.g. a four-eyes sign-off of an end of day (slice 19), ca
 an end of day started by mistake (slice 20), red/green deployments with an activation switch (slice 21), the
 test support `dtp-test` for applications, a JUnit 5 extension with simulated nodes and a clock the test moves
 forward (slice 22), the domain events of the execution (runs, leases, nodes, windows, packages, jobs; slice 23),
-and red/green follow-ups (runs the old color holds, an active color without live node, slice 24): see
-[IMPLEMENTATION.md](IMPLEMENTATION.md).
+red/green follow-ups (runs the old color holds, an active color without live node, slice 24), and corrections of
+decisions and journeys (slice 25): see [IMPLEMENTATION.md](IMPLEMENTATION.md).
 
 ## License
 

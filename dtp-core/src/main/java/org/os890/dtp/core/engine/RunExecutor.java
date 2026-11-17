@@ -38,7 +38,6 @@ import org.os890.dtp.core.domain.LeaseLostException;
 import org.os890.dtp.core.domain.RouteModel;
 import org.os890.dtp.core.domain.TransitionDefinition;
 import org.os890.dtp.core.domain.TriggerType;
-import org.os890.dtp.core.jdbc.DecisionStore;
 import org.os890.dtp.core.jdbc.RunStore;
 import org.os890.dtp.core.jdbc.RunStore.RunRecord;
 import org.os890.dtp.core.spi.Telemetry;
@@ -64,6 +63,7 @@ public class RunExecutor {
     public RunExecutor(EngineContext ctx, RunPlanner planner, ItemRouting routing, FlowRouting flows,
                        Runnable onFinished) {
         this.ctx = ctx;
+        this.requests = new Decisions(ctx);
         this.planner = planner;
         this.routing = routing;
         this.onFinished = onFinished;
@@ -72,7 +72,7 @@ public class RunExecutor {
     }
 
     private final FlowInstances instances;
-    private final DecisionStore decisions = new DecisionStore();
+    private final Decisions requests;
 
     /** How an execution ended; {@code decision} is the request the run waits for instead of finishing. */
     private record Result(RunOutcome outcome, String resultType, String resultStatus, String error, UUID decision) {
@@ -244,7 +244,7 @@ public class RunExecutor {
                 throw new LeaseLostException(claimed.runId(), claimed.token());
             }
             if (result.decision() != null) {
-                decisions.withdraw(c, result.decision(), null, "run cancelled", now);
+                requests.withdraw(c, result.decision(), null, "run cancelled", now);
             }
             for (TransitionDefinition transition : successors ? run.job().transitions()
                     : List.<TransitionDefinition>of()) {

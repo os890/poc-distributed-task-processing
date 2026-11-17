@@ -218,6 +218,20 @@ public class RunStore {
     }
 
     /**
+     * Sets the processing slot of a pending run, e.g. one that a decision planned again.
+     *
+     * @param c         the connection
+     * @param runId     the run
+     * @param notBefore start of the slot, or {@code null} if it is open
+     * @param slotEnd   end of the slot
+     * @throws SQLException on DB errors
+     */
+    public void setSlot(Connection c, UUID runId, Instant notBefore, Instant slotEnd) throws SQLException {
+        Sql.update(c, "UPDATE dtp_run SET not_before = ?, slot_end = ? WHERE id = ? AND state = 'PENDING'", notBefore,
+                slotEnd, runId);
+    }
+
+    /**
      * Pending runs whose job lease is free, oldest first, at most one per job.
      *
      * @param c              the connection

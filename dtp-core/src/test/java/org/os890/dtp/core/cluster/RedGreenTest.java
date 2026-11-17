@@ -21,6 +21,7 @@ import static org.assertj.core.api.Assertions.tuple;
 import static org.awaitility.Awaitility.await;
 
 import java.time.Duration;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
@@ -47,8 +48,11 @@ import org.os890.dtp.core.domain.ConcurrencyPolicy;
 import org.os890.dtp.core.engine.ColorAdmin.ColorState;
 import org.os890.dtp.core.engine.ColorAdmin.ColorSwitch;
 import org.os890.dtp.core.engine.ColorAdmin.SwitchView;
+import org.os890.dtp.core.jdbc.Sql;
 import org.os890.dtp.core.query.FlowQueries.ActivationView;
 import org.os890.dtp.core.query.FlowQueries.FlowView;
+import org.os890.dtp.core.query.JourneyQueries;
+import org.os890.dtp.core.query.JourneyQueries.Detail;
 import org.os890.dtp.core.testsupport.MapStepRegistry;
 import org.os890.dtp.core.testsupport.TestCluster;
 
@@ -276,6 +280,13 @@ class RedGreenTest {
             assertThat(cluster.count("SELECT COUNT(*) FROM dtp_item WHERE state = 'COMPLETED'")).isEqualTo(200);
             assertThat(cluster.count("SELECT COUNT(*) FROM dtp_run WHERE owner_node_id = ? AND outcome = 'SUCCEEDED'",
                     red.nodeId())).isPositive();
+            // the journey of an item that red processed names the node the run was taken over from (operators)
+            String key = cluster.tx().withConnection(c -> Sql.queryOne(c, "SELECT i.business_key FROM dtp_item i"
+                    + " JOIN dtp_item_event e ON e.item_id = i.id WHERE e.event_type = 'COMPLETED'"
+                    + " AND e.run_attempt = 2 ORDER BY i.business_key", rs -> rs.getString(1))).orElseThrow();
+            assertThat(red.journeys().graph(TestTrade.ITEM.name(), key, new JourneyQueries.Options(Detail.FULL, true,
+                    ZoneOffset.UTC)).orElseThrow().nodes()).anySatisfy(n -> assertThat(n.lines())
+                    .contains("processed in run attempt 2, after a takeover from green-1"));
 
             // without an active color, all colors claim again
             assertThat(red.colors().activate(null, "ops", "only red is left").activeColor()).isNull();

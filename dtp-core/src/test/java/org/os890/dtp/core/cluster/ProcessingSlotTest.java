@@ -26,8 +26,10 @@ import java.time.temporal.ChronoUnit;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.Test;
+import org.os890.dtp.api.DecisionOption;
 import org.os890.dtp.api.DefaultOutcome;
 import org.os890.dtp.api.ItemProcessing;
 import org.os890.dtp.api.ItemProcessor;
@@ -38,6 +40,7 @@ import org.os890.dtp.api.JobResult;
 import org.os890.dtp.api.NoParams;
 import org.os890.dtp.api.TrackedItem;
 import org.os890.dtp.core.DtpEngine;
+import org.os890.dtp.core.engine.Decisions;
 import org.os890.dtp.core.jdbc.Sql;
 import org.os890.dtp.core.testsupport.TestCluster;
 
@@ -83,6 +86,52 @@ class ProcessingSlotTest {
         @Override
         public JobResult<DefaultOutcome> execute(JobContext<NoParams> ctx) {
             return JobResult.success();
+        }
+    }
+
+    enum Check implements DecisionOption {
+        GO
+    }
+
+    /** Asks a person on its first execution: the run waits, the decision plans it again. */
+    static class Asking implements JobHandler<NoParams, DefaultOutcome> {
+
+        final AtomicInteger executions = new AtomicInteger();
+
+        @Override
+        public JobResult<DefaultOutcome> execute(JobContext<NoParams> ctx) {
+            executions.incrementAndGet();
+            if (ctx.decision(Check.class).isEmpty()) {
+                ctx.requestDecision("check the statement", Check.class);
+            }
+            return JobResult.success();
+        }
+    }
+
+    @Test
+    void aRunThatADecisionPlansAgainStartsInTheNextSlot() {
+        try (TestCluster cluster = new TestCluster()) {
+            Asking asking = new Asking();
+            DtpEngine node = cluster.start("a", asking);
+            Instant start = cluster.dbNow().plusSeconds(1).truncatedTo(ChronoUnit.SECONDS);
+            Instant end = start.plusSeconds(2);
+            UUID job = cluster.definitions().define(Asking.class).external().slot(null, utc(start), utc(end)).save();
+            UUID run = UUID.fromString(node.jobEngine().trigger(Asking.class, new NoParams()).runId());
+            await().atMost(Duration.ofSeconds(5)).until(() -> "WAITING_FOR_DECISION".equals(
+                    cluster.queries().run(run).orElseThrow().state()));
+
+            // decided after the slot ended: the run is planned for the slot of the next day at once (D39)
+            await().atMost(Duration.ofSeconds(5)).until(() -> cluster.dbNow().isAfter(end));
+            Decisions.Decider bea = Decisions.Decider.of("bea");
+            node.decisions().decide(node.decisions().open(bea).getFirst().id(), "GO", bea, null);
+            assertThat(instant(cluster, "SELECT not_before AS v FROM dtp_run WHERE id = ?", run))
+                    .isEqualTo(start.plus(1, ChronoUnit.DAYS));
+            assertThat(instant(cluster, "SELECT slot_end AS v FROM dtp_run WHERE id = ?", run))
+                    .isEqualTo(end.plus(1, ChronoUnit.DAYS));
+            sleep(Duration.ofMillis(500));
+            assertThat(asking.executions).hasValue(1);
+            assertThat(cluster.count("SELECT COUNT(*) FROM dtp_run WHERE job_id = ? AND state = 'PENDING'", job))
+                    .isEqualTo(1);
         }
     }
 

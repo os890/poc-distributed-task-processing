@@ -38,6 +38,7 @@ import org.os890.dtp.api.RunOutcome;
 import org.os890.dtp.api.event.DecisionFallbackDue;
 import org.os890.dtp.api.event.DecisionMade;
 import org.os890.dtp.api.event.DecisionRequested;
+import org.os890.dtp.api.event.DecisionWithdrawn;
 import org.os890.dtp.api.event.VoteCast;
 import org.os890.dtp.api.event.WindowClosed;
 import org.os890.dtp.core.DtpException;
@@ -48,6 +49,7 @@ import org.os890.dtp.core.domain.ItemEventType;
 import org.os890.dtp.core.domain.ItemState;
 import org.os890.dtp.core.domain.JobDefinition;
 import org.os890.dtp.core.domain.OccurrenceState;
+import org.os890.dtp.core.domain.ProcessingSlots;
 import org.os890.dtp.core.domain.SubjectType;
 import org.os890.dtp.core.domain.TriggerType;
 import org.os890.dtp.core.jdbc.DecisionStore;
@@ -58,6 +60,7 @@ import org.os890.dtp.core.jdbc.ItemStore.ItemEvent;
 import org.os890.dtp.core.jdbc.ItemStore.ItemRow;
 import org.os890.dtp.core.jdbc.PackageStore;
 import org.os890.dtp.core.jdbc.PackageStore.PackageRow;
+import org.os890.dtp.core.jdbc.RunStore.RunRecord;
 import org.os890.dtp.core.jdbc.WindowStore;
 import org.os890.dtp.core.spi.Transactions;
 
@@ -495,6 +498,9 @@ public class Decisions {
             if (!ctx.runs().decided(c, request.subjectId(), outcome, now)) {
                 throw new DtpException("run " + request.subjectId() + " doesn't wait for a decision");
             }
+            if (outcome == null) {
+                slotAfterDecision(c, request.subjectId(), now);
+            }
             new FlowInstances(ctx).runEnded(c, request.subjectId(), now);
             return;
         }
@@ -602,6 +608,45 @@ public class Decisions {
             throw new DtpException("decision request " + request.id() + " is assigned to "
                     + request.responsibleGroup() + ", " + who.user() + " isn't a member");
         }
+    }
+
+    /**
+     * A run planned again by a decision starts in the processing slot that is open now, or in the next one (D39): the
+     * slot it was planned for may be over.
+     */
+    private void slotAfterDecision(Connection c, UUID runId, Instant now) throws SQLException {
+        RunRecord run = ctx.runs().load(c, runId);
+        JobDefinition job = ctx.catalog().revision(run.jobId(), run.revision());
+        if (!job.hasSlots()) {
+            return;
+        }
+        ProcessingSlots.window(job.slots(), ctx.catalog()::calendar, job.zone(), now).ifPresent(window -> {
+            try {
+                ctx.runs().setSlot(c, runId, window.start().isAfter(now) ? window.start() : null, window.end());
+            } catch (SQLException e) {
+                throw new DtpException(e);
+            }
+        });
+    }
+
+    /**
+     * Withdraws an open request without a decision, because its subject ended otherwise (a cancelled run or flow
+     * instance), and publishes {@link DecisionWithdrawn} after the commit.
+     *
+     * @param c      the connection
+     * @param id     the request
+     * @param by     who ended the subject, or {@code null}
+     * @param reason why
+     * @param now    the DB time
+     * @return {@code false} if the request wasn't open
+     * @throws SQLException on DB errors
+     */
+    public boolean withdraw(Connection c, UUID id, String by, String reason, Instant now) throws SQLException {
+        if (!store.withdraw(c, id, by, reason, now)) {
+            return false;
+        }
+        ctx.publishAfterCommit(new DecisionWithdrawn(event(c, request(c, id, false)), by, reason));
+        return true;
     }
 
     private RequestRow request(Connection c, UUID id, boolean lock) throws SQLException {

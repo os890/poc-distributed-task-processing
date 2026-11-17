@@ -63,9 +63,11 @@ public class FlowInstances {
     private final RunPlanner planner;
     private final FlowInstanceStore store;
     private final DecisionStore decisions = new DecisionStore();
+    private final Decisions decisionRequests;
 
     public FlowInstances(EngineContext ctx) {
         this.ctx = ctx;
+        this.decisionRequests = new Decisions(ctx);
         this.planner = new RunPlanner(ctx);
         this.store = new FlowInstanceStore(ctx.dialect());
     }
@@ -346,7 +348,7 @@ public class FlowInstances {
             int runs = store.cancelRuns(c, instanceId, now);
             int withdrawn = 0;
             for (UUID request : requests) {
-                if (decisions.withdraw(c, request, by, "flow instance cancelled: " + reason, now)) {
+                if (decisionRequests.withdraw(c, request, by, "flow instance cancelled: " + reason, now)) {
                     withdrawn++;
                 }
             }

@@ -129,10 +129,19 @@ public class JourneyQueries {
     record BranchInfo(String job, String state, Instant updatedAt, Instant nextAttemptAt) {
     }
 
-    /** Everything the folding needs. */
+    /**
+     * Everything the folding needs; {@code takenOverFrom} names, per run of the item, the node whose lease of the run
+     * expired last (the node a takeover came from).
+     */
     record Context(ItemInfo item, List<JourneyEntry> entries, Map<String, String> handlers,
                    Map<UUID, DecisionInfo> decisions, Map<UUID, PackageInfo> packages, List<BranchInfo> openBranches,
-                   Map<String, String> statusReasons, Instant now) {
+                   Map<String, String> statusReasons, Instant now, Map<UUID, String> takenOverFrom) {
+
+        Context(ItemInfo item, List<JourneyEntry> entries, Map<String, String> handlers,
+                Map<UUID, DecisionInfo> decisions, Map<UUID, PackageInfo> packages, List<BranchInfo> openBranches,
+                Map<String, String> statusReasons, Instant now) {
+            this(item, entries, handlers, decisions, packages, openBranches, statusReasons, now, Map.of());
+        }
     }
 
     /**
@@ -190,7 +199,19 @@ public class JourneyQueries {
     private Context context(ItemInfo item) {
         List<JourneyEntry> entries = queries.journey(item.id());
         return tx.withConnection(c -> new Context(item, entries, handlers(c), decisions(c, item.id()),
-                packages(c, item), branches(c, item.id()), statusReasons(c), clock.now(c)));
+                packages(c, item), branches(c, item.id()), statusReasons(c), clock.now(c), takenOverFrom(c, entries)));
+    }
+
+    /** The node whose lease expired last, per run of the item that was taken over (slice 25). */
+    private Map<UUID, String> takenOverFrom(Connection c, List<JourneyEntry> entries) throws SQLException {
+        Map<UUID, String> from = new HashMap<>();
+        for (UUID run : entries.stream().filter(e -> e.runId() != null && e.runAttempt() != null
+                && e.runAttempt() > 1).map(JourneyEntry::runId).distinct().toList()) {
+            Sql.query(c, "SELECT n.name FROM dtp_run_attempt a JOIN dtp_node n ON n.id = a.node_id WHERE a.run_id = ?"
+                    + " AND a.end_reason = 'LEASE_EXPIRED' ORDER BY a.attempt DESC LIMIT 1",
+                    rs -> from.put(run, rs.getString("name")), run);
+        }
+        return from;
     }
 
     private Map<String, String> handlers(Connection c) throws SQLException {

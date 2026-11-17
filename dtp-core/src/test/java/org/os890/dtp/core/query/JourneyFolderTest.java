@@ -86,6 +86,13 @@ class JourneyFolderTest {
         // operators see the error of the package, steps only hides the package
         assertThat(JourneyFolder.fold(ctx, new Options(Detail.FULL, true, ZoneOffset.UTC)).nodes().getLast().lines())
                 .contains("1 failed attempt: gateway down");
+        // operators also see the node a takeover came from
+        Context known = new Context(ctx.item(), ctx.entries(), ctx.handlers(), ctx.decisions(), ctx.packages(),
+                ctx.openBranches(), ctx.statusReasons(), ctx.now(), Map.of(run, "n1"));
+        assertThat(node(JourneyFolder.fold(known, new Options(Detail.FULL, true, ZoneOffset.UTC)), "TradeCheck")
+                .lines()).contains("processed in run attempt 2, after a takeover from n1");
+        assertThat(node(JourneyFolder.fold(known, FULL), "TradeCheck").lines())
+                .contains("processed in run attempt 2, after a takeover");
         JourneyGraph steps = JourneyFolder.fold(ctx, STEPS);
         assertThat(steps.nodes()).extracting(Node::kind).doesNotContain(NodeKind.PACKAGE);
         assertThat(node(steps, "TradeCheck").lines()).isEmpty();

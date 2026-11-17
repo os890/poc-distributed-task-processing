@@ -188,6 +188,13 @@ classDiagram
     JobContext ..> DecisionOption
 ```
 
+> **First implementation ([IMPLEMENTATION.md](../../IMPLEMENTATION.md)):** of the members marked `*`,
+> `JobContext.flowInstance()` exists since slice 6 (`Optional<FlowInstance>`) and `JobContext.requestDecision` since
+> slice 19, together with `requestApproval`, `decision(Options.class)` and `approval()`; the run waits instead of
+> getting a `DecisionHandle` (it's executed again with the decision). Not implemented: `job()`, `run()`,
+> `WorkPackages.createFrom(refs, size)` and `WorkPackage.requestDecision` (a failed package asks through its retry
+> policy).
+
 Notes
 - The full signatures are generic in two parameters: `JobHandler<P, R extends ResultStatus>`,
   `JobResult<R extends ResultStatus>`, `ItemRef<E, ID>`, `TrackedItem<E, ID>`, `Inbox<E, ID>`.

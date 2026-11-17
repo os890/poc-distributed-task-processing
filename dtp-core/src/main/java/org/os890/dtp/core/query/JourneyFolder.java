@@ -390,6 +390,7 @@ class JourneyFolder {
         }
         if (e.runAttempt() != null && e.runAttempt() > node.runAttempt) {
             node.runAttempt = e.runAttempt();
+            node.takenOverFrom = ctx.takenOverFrom().get(e.runId());
         }
     }
 
@@ -561,6 +562,7 @@ class JourneyFolder {
         private int sends;
         private int rejections;
         private int runAttempt;
+        private String takenOverFrom;
         private String result;
         private String current;
         private JourneyEntry lastFailure;
@@ -623,7 +625,9 @@ class JourneyFolder {
                 lines.add("reprocessed " + times(reprocessed) + " after a batch rollback");
             }
             if (runAttempt > 1) {
-                lines.add("processed in run attempt " + runAttempt + ", after a takeover");
+                // node names only for operators, like the workers
+                lines.add("processed in run attempt " + runAttempt + ", after a takeover"
+                        + (options.technical() && takenOverFrom != null ? " from " + takenOverFrom : ""));
             }
             lines.addAll(annotations);
             return lines;
