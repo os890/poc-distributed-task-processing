@@ -26,13 +26,18 @@ import org.os890.dtp.core.spi.DomainEventPublisher;
  * the engine. As always in CDI, a failing synchronous observer stops the remaining synchronous observers of the
  * event; the asynchronous observers are notified anyway.
  */
-class CdiEventPublisher implements DomainEventPublisher {
+public class CdiEventPublisher implements DomainEventPublisher {
 
     private static final System.Logger LOG = System.getLogger(CdiEventPublisher.class.getName());
 
     private final BeanManager beanManager;
 
-    CdiEventPublisher(BeanManager beanManager) {
+    /**
+     * A publisher into a container, e.g. of a test cluster ({@code dtp-test}).
+     *
+     * @param beanManager the bean manager of the container
+     */
+    public CdiEventPublisher(BeanManager beanManager) {
         this.beanManager = beanManager;
     }
 

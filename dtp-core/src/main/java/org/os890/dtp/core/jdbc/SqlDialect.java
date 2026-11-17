@@ -22,19 +22,22 @@ import java.util.Locale;
 /** The few SQL differences between the supported databases. */
 public enum SqlDialect {
 
-    H2("h2", "CURRENT_TIMESTAMP", "NEXT VALUE FOR %s", false),
-    POSTGRESQL("postgresql", "clock_timestamp()", "nextval('%s')", true);
+    H2("h2", "CURRENT_TIMESTAMP", "NEXT VALUE FOR %s", false, "DATEADD(MILLISECOND, ?, %s)"),
+    POSTGRESQL("postgresql", "clock_timestamp()", "nextval('%s')", true, "%s + ? * INTERVAL '1 millisecond'");
 
     private final String migrationFolder;
     private final String now;
     private final String nextValue;
     private final boolean onConflictDoNothing;
+    private final String plusMillis;
 
-    SqlDialect(String migrationFolder, String now, String nextValue, boolean onConflictDoNothing) {
+    SqlDialect(String migrationFolder, String now, String nextValue, boolean onConflictDoNothing,
+               String plusMillis) {
         this.migrationFolder = migrationFolder;
         this.now = now;
         this.nextValue = nextValue;
         this.onConflictDoNothing = onConflictDoNothing;
+        this.plusMillis = plusMillis;
     }
 
     /**
@@ -78,5 +81,16 @@ public enum SqlDialect {
     /** {@code true} if duplicates can be ignored via {@code ON CONFLICT DO NOTHING}. */
     public boolean supportsOnConflictDoNothing() {
         return onConflictDoNothing;
+    }
+
+    /**
+     * SQL expression of a timestamp moved by milliseconds, given as the one parameter ({@code ?}) of the expression,
+     * e.g. to move heartbeats and leases with the clock of a test cluster.
+     *
+     * @param timestamp the timestamp expression, e.g. a column
+     * @return the expression
+     */
+    public String plusMillis(String timestamp) {
+        return String.format(plusMillis, timestamp);
     }
 }

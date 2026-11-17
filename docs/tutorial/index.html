@@ -1331,7 +1331,8 @@ The core's own tests run three such engines in one JVM on a shared in-memory H2 
 </section>
 <section class="step" id="test" aria-labelledby="test-h"><h2 id="test-h"><span class="n">Step 28</span>Test your steps and flows</h2>
 <p><code>dtp-test</code> runs your steps the way production does, on several nodes that coordinate only via the
-database, but in one JVM on an in-memory H2 database and without a server. Add it with test scope:</p>
+database, but in one JVM and without a server, on an in-memory H2 database or on your PostgreSQL. Add it with
+test scope:</p>
 <figure class="code"><pre><code class="language-xml">&lt;dependency&gt;
     &lt;groupId&gt;org.os890.dtp&lt;/groupId&gt;
     &lt;artifactId&gt;dtp-test&lt;/artifactId&gt;
@@ -1380,6 +1381,33 @@ cluster.queries().nodes();                              // node-1 is DEAD after 
 <p>The nodes of the cluster use fast settings: they poll every 50 ms, a lease lasts 1 s, and a node is dead
 after 2 s. <code>cluster.config(&quot;green-1&quot;)</code> returns these settings to change before
 <code>cluster.start(config, …)</code>, e.g. to give a node a color for a red/green test.</p>
+<p>The same tests run on PostgreSQL when a JDBC URL is set, e.g. by the CI job. Each cluster gets a schema of its
+own, dropped after the test, so the tests can share one database server. The driver
+<code>org.postgresql:postgresql</code> has to be on the test classpath:</p>
+<figure class="code"><pre><code class="language-bash">mvn test -Ddtp.test.jdbc-url=jdbc:postgresql://localhost:5432/ci \
+         -Ddtp.test.jdbc-user=ci -Ddtp.test.jdbc-password=secret      # or DTP_TEST_JDBC_URL, …</code></pre></figure>
+<p>A test that starts the database itself, e.g. with Testcontainers, sets these properties before the first
+cluster or creates the cluster with <code>new DtpTestCluster(TestDatabase.postgresql(url, user, password))</code>.</p>
+<p>When your steps are CDI beans with injected dependencies, take them from a CDI container instead of creating
+them. <code>DtpTestCdi.connect</code> returns the beans of a Weld SE container as the steps of the nodes, fires the
+domain events as CDI events to your observers, and routes the <code>FlowEvent</code>s of the steps on the node whose
+run fired them (<code>FlowEventBridge</code> has to be a bean of the container, <code>DtpBootstrap</code> must not be one):</p>
+<figure class="code"><figcaption>ParcelFlowTest.java</figcaption><pre><code class="language-java">@Test
+void heavyParcelsTakeTheDetour(DtpTestCluster cluster) {
+    try (WeldContainer container = new Weld().disableDiscovery()
+            .addBeanClasses(FlowEventBridge.class, ParcelFlow.class, ParcelCheck.class, HeavyHandling.class,
+                    ParcelShipping.class, Scale.class)
+            .initialize()) {
+        cluster.start(2, DtpTestCdi.connect(cluster, container.getBeanManager()));
+        container.getBeanManager().getEvent().select(FlowEvent.class)
+                 .fire(FlowEvent.start(ParcelFlow.class, ItemRef.of(Parcel.ITEM, 8L), &quot;P-8&quot;));
+        cluster.awaitIdle();
+
+        assertThat(cluster.journey(Parcel.ITEM, &quot;P-8&quot;))
+                .hasPath(ParcelCheck.class, HeavyHandling.class, ParcelShipping.class)
+                .isCompleted();
+    }
+}</code></pre></figure>
 </section>
 
 <section class="reference" aria-labelledby="ref">

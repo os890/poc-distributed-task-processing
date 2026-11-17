@@ -83,8 +83,10 @@ public class Journey {
     public List<String> path() {
         List<String> path = new ArrayList<>();
         for (JourneyEntry entry : entries) {
-            // an entry without source job (e.g. the first routing of a tracked item) comes from the job of its run
-            add(path, entry.fromJob() != null ? entry.fromJob() : jobsByRun.get(entry.runId()));
+            // an entry without source job (e.g. the first routing of a tracked item) comes from the job of its run;
+            // an item started outside of a run (a FlowEvent of the application) has neither
+            add(path, entry.fromJob() != null ? entry.fromJob()
+                    : entry.runId() != null ? jobsByRun.get(entry.runId()) : null);
             // a fork and a finished branch name the join step, which the item reaches only with the JOINED entry
             if (!"FORKED".equals(entry.type()) && !"BRANCH_FINISHED".equals(entry.type())) {
                 add(path, entry.toJob());

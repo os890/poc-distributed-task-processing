@@ -71,8 +71,8 @@ an end of day started by mistake (slice 20), red/green deployments with an activ
 test support `dtp-test` for applications, a JUnit 5 extension with simulated nodes and a clock the test moves
 forward (slice 22), the domain events of the execution (runs, leases, nodes, windows, packages, jobs; slice 23),
 red/green follow-ups (runs the old color holds, an active color without live node, slice 24), corrections of
-decisions and journeys (slice 25), and the remaining domain events of definitions and runs (slice 26): see
-[IMPLEMENTATION.md](IMPLEMENTATION.md).
+decisions and journeys (slice 25), the remaining domain events of definitions and runs (slice 26), and `dtp-test`
+on PostgreSQL and with process steps as CDI beans (slice 27): see [IMPLEMENTATION.md](IMPLEMENTATION.md).
 
 ## License
 

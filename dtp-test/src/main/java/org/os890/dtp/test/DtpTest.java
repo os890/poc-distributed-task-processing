@@ -25,8 +25,9 @@ import org.junit.jupiter.api.extension.ExtendWith;
 
 /**
  * A test of process steps and flows on a cluster of simulated nodes (design 06 §6.4). Each test method that declares a
- * {@link DtpTestCluster} parameter gets a new cluster on its own in-memory H2 database; the cluster is closed after
- * the test (its nodes are killed, the database is dropped).
+ * {@link DtpTestCluster} parameter gets a new cluster on its own database, an in-memory H2 database or a schema of its
+ * own on PostgreSQL ({@link TestDatabase#fromEnvironment()}); the cluster is closed after the test (its nodes are
+ * killed, the database or schema is dropped).
  *
  * <pre>{@code
  * @DtpTest

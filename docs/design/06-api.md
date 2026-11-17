@@ -342,4 +342,6 @@ revision table from the user.
 > covers a frozen node: its handlers continue as zombies), `advance(Duration)`/`advanceTo(Instant)`, `awaitIdle()`,
 > `DtpAssertions.assertThat(cluster.journey(Order.ITEM, number)).hasPath(…).isCompleted()`. The clock is the DB time
 > plus a shift shared by all nodes; `advance` moves heartbeats and leases with it, so a jump in time doesn't look
-> like a crash. The job definition builder (`JobDefinitions`) lives in `dtp-core`.
+> like a crash. The job definition builder (`JobDefinitions`) lives in `dtp-core`. Since slice 27 a cluster also
+> runs on PostgreSQL (a schema of its own per cluster, `TestDatabase`), and its process steps can be the beans of a
+> CDI container (`DtpTestCdi.connect`), still without injecting the cluster itself.

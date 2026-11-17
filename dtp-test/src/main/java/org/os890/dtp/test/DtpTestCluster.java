@@ -25,17 +25,18 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import javax.sql.DataSource;
 
-import org.h2.jdbcx.JdbcDataSource;
+import org.os890.dtp.api.FlowEvent;
 import org.os890.dtp.api.ItemType;
 import org.os890.dtp.api.JobEngine;
+import org.os890.dtp.api.TrackedItem;
 import org.os890.dtp.core.DtpConfig;
 import org.os890.dtp.core.DtpEngine;
 import org.os890.dtp.core.JobDefinitions;
+import org.os890.dtp.core.engine.RunContext;
 import org.os890.dtp.core.jdbc.DbClock;
 import org.os890.dtp.core.jdbc.JdbcTransactions;
 import org.os890.dtp.core.jdbc.SchemaMigrator;
@@ -43,17 +44,23 @@ import org.os890.dtp.core.jdbc.Sql;
 import org.os890.dtp.core.jdbc.SqlDialect;
 import org.os890.dtp.core.query.DtpQueries;
 import org.os890.dtp.core.query.DtpQueries.JourneyEntry;
+import org.os890.dtp.core.spi.DomainEventPublisher;
+import org.os890.dtp.core.spi.StepRegistry;
 import org.os890.dtp.core.spi.Transactions;
 
 /**
- * A cluster of simulated nodes in one JVM on an in-memory H2 database (design 06 §6.4): the nodes coordinate only via
- * the database, as in production. The test defines jobs ({@link #definitions()}), starts nodes with its process steps
- * and flows, moves the clock forward ({@link #advance(Duration)}), kills nodes ({@link #kill(String)}) and checks the
- * journeys of items ({@link #journey(ItemType, String)}, {@link DtpAssertions}).
+ * A cluster of simulated nodes in one JVM on a database of its own (design 06 §6.4): the nodes coordinate only via
+ * the database, as in production. The database is an in-memory H2 database, or a schema of its own on PostgreSQL
+ * ({@link TestDatabase#fromEnvironment()}). The test defines jobs ({@link #definitions()}), starts nodes with its
+ * process steps and flows, moves the clock forward ({@link #advance(Duration)}), kills nodes ({@link #kill(String)})
+ * and checks the journeys of items ({@link #journey(ItemType, String)}, {@link DtpAssertions}).
  *
  * <p>The nodes have fast settings (polling every 50 ms, leases of 1 s, a node is dead after 2 s), see
  * {@link #config(String)}. The definition scripts of the application ({@code db/dtp-definitions}) are applied like at
  * the start of a node.
+ *
+ * <p>The process steps are instances given to {@link #start(String, Object...)}, or the beans of a CDI container
+ * ({@link #start(String, StepRegistry)}, {@code org.os890.dtp.test.cdi.DtpTestCdi}).
  */
 public class DtpTestCluster implements AutoCloseable {
 
@@ -62,25 +69,36 @@ public class DtpTestCluster implements AutoCloseable {
 
     private static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(30);
     private static final Duration POLL = Duration.ofMillis(25);
-    private static final AtomicInteger DATABASES = new AtomicInteger();
-
-    private final JdbcDataSource dataSource = new JdbcDataSource();
+    private final TestDatabase database;
+    private final DataSource dataSource;
+    private final SqlDialect dialect;
     private final Transactions jdbc;
     private final PausingTransactions tx;
     private final AtomicReference<Duration> shift = new AtomicReference<>(Duration.ZERO);
     private final DbClock clock;
     private final Map<String, DtpEngine> nodes = new LinkedHashMap<>();
     private final List<Object> events = new CopyOnWriteArrayList<>();
+    private final List<DomainEventPublisher> forwards = new CopyOnWriteArrayList<>();
     private final Map<String, String> placeholders = new HashMap<>();
     private boolean migrated;
 
-    /** A new cluster on its own in-memory database, without nodes. */
+    /** A new cluster without nodes on the database the environment configures, see {@link TestDatabase}. */
     public DtpTestCluster() {
-        dataSource.setURL("jdbc:h2:mem:dtp-test-" + DATABASES.incrementAndGet() + "-" + UUID.randomUUID()
-                + ";DB_CLOSE_DELAY=-1;LOCK_TIMEOUT=5000");
+        this(TestDatabase.fromEnvironment());
+    }
+
+    /**
+     * A new cluster without nodes on a database of its own; the cluster drops it on {@link #close()}.
+     *
+     * @param database the database, e.g. {@link TestDatabase#postgresql(String, String, String)}
+     */
+    public DtpTestCluster(TestDatabase database) {
+        this.database = database;
+        this.dataSource = database.dataSource();
         jdbc = new JdbcTransactions(dataSource);
         tx = new PausingTransactions(jdbc);
-        clock = new DbClock(SqlDialect.H2, shift::get);
+        dialect = jdbc.withConnection(SqlDialect::detect);
+        clock = new DbClock(dialect, shift::get);
     }
 
     /**
@@ -110,7 +128,7 @@ public class DtpTestCluster implements AutoCloseable {
 
     private synchronized void migrate() {
         if (!migrated) {
-            SchemaMigrator.migrate(dataSource, SqlDialect.H2, classLoader(), Map.copyOf(placeholders));
+            SchemaMigrator.migrate(dataSource, dialect, classLoader(), Map.copyOf(placeholders));
             migrated = true;
         }
     }
@@ -175,7 +193,46 @@ public class DtpTestCluster implements AutoCloseable {
      * @param stepsAndFlows  the process steps and flow definitions (instances)
      * @return the node
      */
-    public synchronized DtpEngine start(DtpConfig config, Object... stepsAndFlows) {
+    public DtpEngine start(DtpConfig config, Object... stepsAndFlows) {
+        return start(config, new InstanceRegistry(stepsAndFlows));
+    }
+
+    /**
+     * Starts a node whose process steps and flows come from a registry, e.g. the beans of a CDI container
+     * ({@code org.os890.dtp.test.cdi.DtpTestCdi}).
+     *
+     * @param nodeName the node name
+     * @param steps    the process steps and flow definitions
+     * @return the node
+     */
+    public DtpEngine start(String nodeName, StepRegistry steps) {
+        return start(config(nodeName).build(), steps);
+    }
+
+    /**
+     * Starts nodes ({@code node-1}, {@code node-2}, ...) whose process steps and flows come from a registry. The nodes
+     * share the instances.
+     *
+     * @param count the number of nodes
+     * @param steps the process steps and flow definitions
+     * @return the nodes
+     */
+    public List<DtpEngine> start(int count, StepRegistry steps) {
+        List<DtpEngine> started = new ArrayList<>();
+        for (int i = 0; i < count; i++) {
+            started.add(start("node-" + (nodes.size() + 1), steps));
+        }
+        return started;
+    }
+
+    /**
+     * Starts a node with own settings whose process steps and flows come from a registry.
+     *
+     * @param config the settings, from {@link #config(String)}
+     * @param steps  the process steps and flow definitions
+     * @return the node
+     */
+    public synchronized DtpEngine start(DtpConfig config, StepRegistry steps) {
         if (!NAMESPACE.equals(config.namespace())) {
             throw new IllegalArgumentException("the nodes of a test cluster use the namespace " + NAMESPACE);
         }
@@ -186,14 +243,53 @@ public class DtpTestCluster implements AutoCloseable {
         DtpEngine node = DtpEngine.builder()
                                   .dataSource(dataSource)
                                   .transactions(tx)
-                                  .steps(new InstanceRegistry(stepsAndFlows))
+                                  .steps(steps)
                                   .config(config)
-                                  .events(events::add)
+                                  .events(this::publish)
                                   .clockShift(shift::get)
                                   .build()
                                   .start();
         nodes.put(config.nodeName(), node);
         return node;
+    }
+
+    private void publish(Object event) {
+        events.add(event);
+        forwards.forEach(forward -> forward.publish(event));
+    }
+
+    /**
+     * Forwards the domain events of all nodes, e.g. as CDI events to the observers of the application
+     * ({@code org.os890.dtp.test.cdi.DtpTestCdi}). {@link #events(Class)} records them anyway.
+     *
+     * @param publisher the publisher
+     * @return this cluster
+     */
+    public DtpTestCluster forwardEvents(DomainEventPublisher publisher) {
+        forwards.add(publisher);
+        return this;
+    }
+
+    /**
+     * Starts a flow or routes an item by a signal, like a {@code FlowEvent} of CDI: on the node whose run fires it
+     * (joining the unit of work of the run), outside of a run on the first running node.
+     *
+     * @param event the event
+     * @return the item
+     */
+    public TrackedItem<?, ?> fire(FlowEvent event) {
+        RunContext run = RunContext.current();
+        DtpEngine node = null;
+        if (run != null) {
+            synchronized (this) {
+                node = nodes.values().stream().filter(n -> n.nodeId().equals(run.engine().nodeId())).findFirst()
+                            .orElse(null);
+            }
+        }
+        if (node == null) {
+            node = runningNodes().stream().findFirst().orElseThrow(() -> new IllegalStateException("no node runs"));
+        }
+        return node.fire(event);
     }
 
     /**
@@ -270,11 +366,11 @@ public class DtpTestCluster implements AutoCloseable {
         try {
             long millis = duration.toMillis();
             jdbc.required(() -> jdbc.withConnection(c -> {
-                Sql.update(c, "UPDATE dtp_node SET heartbeat_at = DATEADD(MILLISECOND, ?, heartbeat_at)"
+                Sql.update(c, "UPDATE dtp_node SET heartbeat_at = " + dialect.plusMillis("heartbeat_at")
                         + " WHERE namespace = ?", millis, NAMESPACE);
-                Sql.update(c, "UPDATE dtp_job_lease SET lease_until = DATEADD(MILLISECOND, ?, lease_until)"
+                Sql.update(c, "UPDATE dtp_job_lease SET lease_until = " + dialect.plusMillis("lease_until")
                         + " WHERE namespace = ? AND lease_until IS NOT NULL", millis, NAMESPACE);
-                Sql.update(c, "UPDATE dtp_leader SET lease_until = DATEADD(MILLISECOND, ?, lease_until)"
+                Sql.update(c, "UPDATE dtp_leader SET lease_until = " + dialect.plusMillis("lease_until")
                         + " WHERE namespace = ? AND lease_until IS NOT NULL", millis, NAMESPACE);
                 return null;
             }));
@@ -425,15 +521,20 @@ public class DtpTestCluster implements AutoCloseable {
         return tx;
     }
 
-    /** The data source of the in-memory database. */
+    /** The data source of the cluster's database. */
     public DataSource dataSource() {
         return dataSource;
     }
 
-    /** Kills all nodes and drops the database. */
+    /** The database of the cluster. */
+    public TestDatabase database() {
+        return database;
+    }
+
+    /** Kills all nodes and drops the database (H2) or its schema (PostgreSQL). */
     @Override
     public synchronized void close() {
         nodes.values().forEach(DtpEngine::kill);
-        jdbc.withConnection(c -> c.createStatement().execute("SHUTDOWN"));
+        database.close();
     }
 }
